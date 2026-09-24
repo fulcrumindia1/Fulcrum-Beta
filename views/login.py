@@ -378,7 +378,7 @@ def render_login_page():
                         st.session_state.show_recovery_form = True
                         st.rerun()
                 else:
-                    st.info("In local development mode (SQLite), password resets via email are disabled. Please use the verified demo test accounts below or contact admin@fulcrum.in.")
+                    st.info("In local development mode (SQLite), password resets via email are disabled. Please use the verified demo test accounts below or contact fulcrumindia1@gmail.com.")
 
             # Contact System Maintenance notice requested by user
             st.markdown("""

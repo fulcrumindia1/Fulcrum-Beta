@@ -65,7 +65,7 @@ def render_admin_portal(admin_profile: dict):
             st.markdown("<p style='font-size:0.85rem; color:#64748B;'>Sync registered Supabase Auth users to application profiles, journeys, and mentor relationship records.</p>", unsafe_allow_html=True)
             col_bf1, col_bf2 = st.columns([2, 1])
             with col_bf1:
-                admin_email_to_promote = st.text_input("Designated Super Admin Email", value="admin@fulcrum.in", key="admin_sync_email")
+                admin_email_to_promote = st.text_input("Designated Super Admin Email", value="fulcrumindia1@gmail.com", key="admin_sync_email")
             with col_bf2:
                 st.write("")
                 st.write("")
