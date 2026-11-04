@@ -180,7 +180,7 @@ def list_profiles_by_role(role: str) -> List[Dict]:
     backend = get_data_backend()
 
     if backend == "supabase":
-        client = _get_admin_client()
+        client = _get_admin_client() or _get_user_client()
         if client:
             try:
                 # 1. Fetch user_ids holding this role with status 'active' in user_roles
@@ -212,6 +212,7 @@ def list_profiles_by_role(role: str) -> List[Dict]:
                     r["completion_pct"] = calculate_completion(r)
                 return profile_rows
             except Exception as e:
+                print(f"[Profiles] list_profiles_by_role error: {e}")
                 return []
         return []
 

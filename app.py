@@ -818,6 +818,40 @@ def main():
                 st.session_state["active_workspace"] = curr_ws
 
             if len(ws_options) > 1:
+                st.markdown("""
+                <style>
+                /* Direct In-Sidebar Scoped Current Workspace Dropdown Styles */
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace,
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace > div,
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"],
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] > div,
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] > div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] {
+                    background-color: #162032 !important;
+                    background: #162032 !important;
+                    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+                    border-radius: 10px !important;
+                    min-height: 42px !important;
+                    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+                }
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] *,
+                div.st-key-sb_current_workspace [data-baseweb="select"] *,
+                div.st-key-sb_current_workspace [data-baseweb="select"] span,
+                div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] input {
+                    color: #F8FAFC !important;
+                    font-weight: 600 !important;
+                    font-size: 0.92rem !important;
+                }
+                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] svg,
+                div.st-key-sb_current_workspace [data-baseweb="select"] svg {
+                    fill: #94A3B8 !important;
+                    color: #94A3B8 !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
                 st.markdown("<div style='font-size: 0.68rem; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 0.5px; margin-top:0.6rem; margin-bottom:0.2rem;'>Current Workspace</div>", unsafe_allow_html=True)
                 sel_idx = ws_keys.index(curr_ws)
                 selected_ws = st.selectbox(

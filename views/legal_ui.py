@@ -52,7 +52,9 @@ def render_terms_and_conditions_gate(user: dict) -> bool:
     col1, col2, col3 = st.columns([1, 6, 1])
     with col2:
         with st.container(border=True):
-            st.text_area("Official Agreement Text", doc_content, height=220, disabled=True, key="txt_terms_content")
+            clean_content = doc_content.replace("\\n", "\n")
+            with st.container(height=320):
+                st.markdown(clean_content)
 
             with st.form("form_accept_terms"):
                 st.markdown("#### Formal Agreement Confirmation")
@@ -123,7 +125,9 @@ def render_nda_gate(user: dict, role: str) -> bool:
     col1, col2, col3 = st.columns([1, 6, 1])
     with col2:
         with st.container(border=True):
-            st.text_area("Official Non-Disclosure Agreement Text", doc_content, height=240, disabled=True, key=f"txt_nda_content_{role}")
+            clean_nda_content = doc_content.replace("\\n", "\n")
+            with st.container(height=260):
+                st.markdown(clean_nda_content)
 
             with st.form(f"form_sign_nda_{role}"):
                 st.markdown("#### Digital Signature & Confidentiality Pledge")
