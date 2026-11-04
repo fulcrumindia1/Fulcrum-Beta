@@ -890,12 +890,6 @@ SELECT id, role, 'active', created_at, created_at
 FROM public.profiles
 ON CONFLICT (user_id, role) DO NOTHING;
 
--- Ensure every existing user also retains their base 'aspirant' role grant
-INSERT INTO public.user_roles (user_id, role, status, granted_at, activated_at)
-SELECT id, 'aspirant', 'active', created_at, created_at
-FROM public.profiles
-WHERE role != 'aspirant'
-ON CONFLICT (user_id, role) DO NOTHING;
 
 
 

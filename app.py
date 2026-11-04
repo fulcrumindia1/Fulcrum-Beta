@@ -332,42 +332,62 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         }
 
         /* Workspace Selector & Sidebar Selectbox — Dark Navy Theme Alignment */
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] {
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"],
+        [data-testid="stSidebar"] .stSelectbox {
             margin-bottom: 0.6rem !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div {
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"],
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] > div,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] div {
             background-color: #162032 !important;
             background: #162032 !important;
-            border: 1px solid rgba(255, 255, 255, 0.14) !important;
+            border: 1px solid rgba(255, 255, 255, 0.16) !important;
             border-radius: 10px !important;
-            padding: 0.25rem 0.5rem !important;
             min-height: 42px !important;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
             transition: all 0.2s ease-in-out !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover {
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div:hover,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] > div:hover {
             background-color: #1e293b !important;
             border-color: rgba(96, 165, 250, 0.45) !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div {
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"]:focus-within > div,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"]:focus-within > div {
             border-color: #3b82f6 !important;
             box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35) !important;
         }
 
         /* High-contrast crisp typography for sidebar selectbox text and chevron */
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] span,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] input {
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] span,
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] input,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] span,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] input,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] *,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] span,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] input {
             color: #F8FAFC !important;
             font-weight: 600 !important;
             font-size: 0.92rem !important;
         }
 
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] svg {
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] svg,
+        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
+        [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] svg {
             fill: #94A3B8 !important;
             color: #94A3B8 !important;
         }
@@ -795,10 +815,17 @@ def main():
             # ─────────────────────────────────────────────────────────────────
             from services.roles import get_active_roles, get_pending_nda_roles
             user_id = user.get("id")
+            base_p_role = user.get("role", "aspirant")
             active_r = get_active_roles(user_id) if user_id else []
             pending_r = get_pending_nda_roles(user_id) if user_id else []
 
-            ws_options = [("aspirant", "🌱 Aspirant Dashboard")]
+            # If user has no explicit multi-role grants in user_roles, use base profile role
+            if not active_r and not pending_r:
+                active_r = [base_p_role]
+
+            ws_options = []
+            if "aspirant" in active_r:
+                ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
             if "guide" in active_r or "guide" in pending_r:
                 g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
                 ws_options.append(("guide", g_lbl))
@@ -808,8 +835,11 @@ def main():
             if any(r in active_r for r in ("admin", "district_admin", "operational_admin")):
                 ws_options.append(("admin", "🏛️ Admin Dashboard"))
 
+            if not ws_options:
+                ws_options.append((base_p_role, f"{base_p_role.title()} Dashboard"))
+
             if "active_workspace" not in st.session_state:
-                st.session_state["active_workspace"] = user.get("role", "aspirant")
+                st.session_state["active_workspace"] = base_p_role
 
             curr_ws = st.session_state["active_workspace"]
             ws_keys = [opt[0] for opt in ws_options]
@@ -821,22 +851,31 @@ def main():
                 st.markdown("""
                 <style>
                 /* Direct In-Sidebar Scoped Current Workspace Dropdown Styles */
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace,
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace > div,
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"],
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"],
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] div,
+                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
+                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
+                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"],
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] > div,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                div.st-key-sb_current_workspace [data-baseweb="select"],
                 div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] {
+                div.st-key-sb_current_workspace [data-baseweb="select"] div {
                     background-color: #162032 !important;
                     background: #162032 !important;
-                    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+                    border: 1px solid rgba(255, 255, 255, 0.20) !important;
                     border-radius: 10px !important;
                     min-height: 42px !important;
                     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
                 }
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] *,
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] *,
+                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] *,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] span,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] input,
                 div.st-key-sb_current_workspace [data-baseweb="select"] *,
                 div.st-key-sb_current_workspace [data-baseweb="select"] span,
                 div.st-key-sb_current_workspace [data-baseweb="select"] div,
@@ -845,7 +884,9 @@ def main():
                     font-weight: 600 !important;
                     font-size: 0.92rem !important;
                 }
-                div[data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] svg,
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] svg,
+                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
+                [data-testid="stSidebar"] div.st-key-sb_current_workspace [data-baseweb="select"] svg,
                 div.st-key-sb_current_workspace [data-baseweb="select"] svg {
                     fill: #94A3B8 !important;
                     color: #94A3B8 !important;
