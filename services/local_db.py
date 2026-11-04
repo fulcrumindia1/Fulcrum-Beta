@@ -110,6 +110,8 @@ class LocalDatabase:
             change_reason TEXT,
             created_at TEXT
         );
+        """)
+        cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_rev_event ON journey_event_revisions(journey_event_id);
         """)
 

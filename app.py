@@ -373,20 +373,23 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         }
 
         /* Popover dropdown menu (dark-themed list) */
+        div[data-baseweb="popover"] > div,
         div[data-baseweb="popover"] [data-baseweb="menu"],
-        div[data-baseweb="popover"] ul[role="listbox"] {
+        div[data-baseweb="popover"] ul,
+        div[data-baseweb="popover"] ul[role="listbox"],
+        div[data-baseweb="popover"] ul[data-testid="stSelectboxVirtualDropdown"] {
             background-color: #0f172a !important;
             background: #0f172a !important;
             border: 1px solid rgba(255, 255, 255, 0.15) !important;
             border-radius: 10px !important;
-            padding: 6px !important;
+            padding: 4px !important;
             box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6) !important;
         }
 
-        div[data-baseweb="popover"] [data-baseweb="menu"] li,
-        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"] {
+        div[data-baseweb="popover"] li,
+        div[data-baseweb="popover"] li[role="option"] {
             background-color: transparent !important;
-            color: #E2E8F0 !important;
+            color: #F8FAFC !important;
             border-radius: 6px !important;
             padding: 8px 12px !important;
             font-weight: 500 !important;
@@ -394,23 +397,23 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             transition: background 0.15s ease !important;
         }
 
-        div[data-baseweb="popover"] [data-baseweb="menu"] li *,
-        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"] * {
-            color: #E2E8F0 !important;
+        div[data-baseweb="popover"] li *,
+        div[data-baseweb="popover"] li[role="option"] * {
+            color: #F8FAFC !important;
         }
 
-        div[data-baseweb="popover"] [data-baseweb="menu"] li:hover,
-        div[data-baseweb="popover"] [data-baseweb="menu"] li[aria-selected="true"],
-        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"]:hover,
-        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"][aria-selected="true"] {
+        div[data-baseweb="popover"] li:hover,
+        div[data-baseweb="popover"] li[aria-selected="true"],
+        div[data-baseweb="popover"] li[role="option"]:hover,
+        div[data-baseweb="popover"] li[role="option"][aria-selected="true"] {
             background-color: #1e293b !important;
             color: #60a5fa !important;
         }
 
-        div[data-baseweb="popover"] [data-baseweb="menu"] li:hover *,
-        div[data-baseweb="popover"] [data-baseweb="menu"] li[aria-selected="true"] *,
-        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"]:hover *,
-        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"][aria-selected="true"] * {
+        div[data-baseweb="popover"] li:hover *,
+        div[data-baseweb="popover"] li[aria-selected="true"] *,
+        div[data-baseweb="popover"] li[role="option"]:hover *,
+        div[data-baseweb="popover"] li[role="option"][aria-selected="true"] * {
             color: #60a5fa !important;
         }
 

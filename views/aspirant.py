@@ -461,15 +461,16 @@ def render_aspirant_portal(user_profile: dict):
                     <span style="display:inline-block; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:10px; background:{badge_bg}; color:#ffffff; text-transform:uppercase;">{std_role}</span>
                     """, unsafe_allow_html=True)
                 with col_body:
-                    st.markdown(f"""
-                    <div style="{card_bg} {card_border} border-radius:12px; padding:0.9rem 1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                        {status_badge}
-                        <div style="font-weight:700; color:#0F172A; font-size:1.05rem;">{title}</div>
-                        <div style="color:#334155; font-size:0.9rem; margin-top:0.3rem; line-height:1.5;">{desc}</div>
-                        {link_html}
-                        <div style="font-size:0.75rem; color:#64748B; margin-top:0.4rem;">Contributor: <strong>{actor_name}</strong> ({std_role}){edited_badge}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    card_html = (
+                        f'<div style="{card_bg} {card_border} border-radius:12px; padding:0.9rem 1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">'
+                        f'{status_badge}'
+                        f'<div style="font-weight:700; color:#0F172A; font-size:1.05rem;">{title}</div>'
+                        f'<div style="color:#334155; font-size:0.9rem; margin-top:0.3rem; line-height:1.5;">{desc}</div>'
+                        f'{link_html}'
+                        f'<div style="font-size:0.75rem; color:#64748B; margin-top:0.4rem;">Contributor: <strong>{actor_name}</strong> ({std_role}){edited_badge}</div>'
+                        f'</div>'
+                    )
+                    st.markdown(card_html, unsafe_allow_html=True)
                 with col_del:
                     # Aspirants can edit or delete their own manual entries
                     if actor_role == "aspirant":
