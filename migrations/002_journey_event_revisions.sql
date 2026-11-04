@@ -27,3 +27,4 @@ CREATE POLICY "Users read related journey_event_revisions" ON public.journey_eve
     FOR SELECT TO authenticated USING (
         editor_id = auth.uid() OR public.is_admin()
     );
+

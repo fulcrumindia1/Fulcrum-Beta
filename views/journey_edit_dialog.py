@@ -84,3 +84,4 @@ def render_edit_journey_dialog(event: Dict, user_id: str, active_role: str):
                     st.rerun()
                 else:
                     st.error(err or "Failed to update entry.")
+
