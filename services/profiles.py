@@ -171,18 +171,46 @@ def get_profiles_batch(user_ids: List[str]) -> Dict[str, Dict]:
     return result
 
 def list_profiles_by_role(role: str) -> List[Dict]:
-    """Lists profiles by role from active backend."""
+    """Lists profiles holding a specific role from active backend.
+    In Multi-Role architecture, a user holds a role if:
+      1. profiles.role == role, OR
+      2. user_roles contains an active grant with user_roles.role == role AND status == 'active'.
+    Users are deduplicated by ID so each distinct user is returned exactly once.
+    """
     backend = get_data_backend()
 
     if backend == "supabase":
         client = _get_admin_client()
         if client:
             try:
-                res = client.table("profiles").select("*").eq("role", role).order("created_at", desc=True).execute()
-                rows = res.data or []
-                for r in rows:
+                # 1. Fetch user_ids holding this role with status 'active' in user_roles
+                role_uids = set()
+                try:
+                    ur_res = client.table("user_roles").select("user_id").eq("role", role).eq("status", "active").execute()
+                    if ur_res.data:
+                        for row in ur_res.data:
+                            if row.get("user_id"):
+                                role_uids.add(row["user_id"])
+                except Exception:
+                    pass
+
+                # 2. Fetch profiles where primary role is this role
+                res1 = client.table("profiles").select("*").eq("role", role).eq("is_active", True).execute()
+                profile_rows = res1.data or []
+                found_ids = {p["id"] for p in profile_rows}
+
+                # 3. Fetch missing profiles where user holds this role via active user_roles grant
+                missing_ids = [uid for uid in role_uids if uid not in found_ids]
+                if missing_ids:
+                    res2 = client.table("profiles").select("*").in_("id", missing_ids).eq("is_active", True).execute()
+                    if res2.data:
+                        profile_rows.extend(res2.data)
+
+                # Sort by created_at desc
+                profile_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+                for r in profile_rows:
                     r["completion_pct"] = calculate_completion(r)
-                return rows
+                return profile_rows
             except Exception as e:
                 return []
         return []

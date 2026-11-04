@@ -25,6 +25,7 @@ from services.cache import is_tab_active
 from services.profiles import get_profile, update_aspirant_profile
 from services.relationships import get_aspirant_mentors
 from services.journey import get_journey_timeline, add_manual_aspirant_entry, soft_delete_event, get_standard_role_label, toggle_event_roadmap_inclusion
+from views.journey_edit_dialog import render_edit_journey_dialog
 from services.schemes import get_released_schemes_for_aspirant
 from services.schemes_ui import render_fund_explorer_card
 from services.help_requests import create_request, list_requests, aspirant_respond_request
@@ -360,6 +361,13 @@ def render_aspirant_portal(user_profile: dict):
                         st.warning("Please provide both title and description.")
 
         # Display Chronological Timeline
+        if "edit_event_success" in st.session_state:
+            _e_msg = st.session_state.pop("edit_event_success")
+            st.success(_e_msg)
+            try:
+                st.toast(_e_msg, icon="✅")
+            except Exception:
+                pass
         if "del_event_success" in st.session_state:
             _d_msg = st.session_state.pop("del_event_success")
             st.success(_d_msg)
@@ -424,6 +432,14 @@ def render_aspirant_portal(user_profile: dict):
                 title = html.escape(str(raw_title))
                 desc = html.escape(str(raw_desc)).replace("\n", "<br>")
                 date_display = str(event.get("event_date", ""))[:10]
+                ev_link = ev_data.get("link") or ""
+                link_html = ""
+                if ev_link and ev_link not in str(raw_desc):
+                    link_html = f'<div style="margin-top:0.35rem; font-size:0.85rem;"><strong style="color:#0F172A;">Website:</strong> <a href="{html.escape(ev_link)}" target="_blank" style="color:#2563EB; text-decoration:underline;">{html.escape(ev_link)}</a></div>'
+                edited_badge = ""
+                if ev_data.get("last_edited_at"):
+                    ed_dt = str(ev_data["last_edited_at"])[:10]
+                    edited_badge = f'<span style="color:#94a3b8; font-size:0.72rem; margin-left:8px;">• Edited on {ed_dt}</span>'
 
                 # Role-specific styling
                 badge_bg = "#6366f1" if actor_role == "aspirant" else "#10b981" if actor_role == "guide" else "#f59e0b" if actor_role == "sme" else "#2563eb"
@@ -450,19 +466,25 @@ def render_aspirant_portal(user_profile: dict):
                         {status_badge}
                         <div style="font-weight:700; color:#0F172A; font-size:1.05rem;">{title}</div>
                         <div style="color:#334155; font-size:0.9rem; margin-top:0.3rem; line-height:1.5;">{desc}</div>
-                        <div style="font-size:0.75rem; color:#64748B; margin-top:0.4rem;">Contributor: <strong>{actor_name}</strong> ({std_role})</div>
+                        {link_html}
+                        <div style="font-size:0.75rem; color:#64748B; margin-top:0.4rem;">Contributor: <strong>{actor_name}</strong> ({std_role}){edited_badge}</div>
                     </div>
                     """, unsafe_allow_html=True)
                 with col_del:
-                    # Aspirants can delete only their own manual entries
+                    # Aspirants can edit or delete their own manual entries
                     if actor_role == "aspirant":
-                        if st.button("🗑️", key=f"del_ev_{event['id']}", help="Delete your entry"):
-                            ok, err = soft_delete_event(event["id"], user_id, "aspirant")
-                            if ok:
-                                st.session_state["del_event_success"] = "Entry deleted from your journey."
-                            else:
-                                st.session_state["del_event_err"] = err or "Could not delete entry."
-                            st.rerun()
+                        c_ed, c_dl = st.columns(2)
+                        with c_ed:
+                            if st.button("✏️", key=f"edit_ev_{event['id']}", help="Edit this journey entry"):
+                                render_edit_journey_dialog(event, user_id, "aspirant")
+                        with c_dl:
+                            if st.button("🗑️", key=f"del_ev_{event['id']}", help="Delete your entry"):
+                                ok, err = soft_delete_event(event["id"], user_id, "aspirant")
+                                if ok:
+                                    st.session_state["del_event_success"] = "Entry deleted from your journey."
+                                else:
+                                    st.session_state["del_event_err"] = err or "Could not delete entry."
+                                st.rerun()
                     else:
                         # For contributions by Guide, SME, or Admin, the founder can curate their roadmap
                         if is_included:

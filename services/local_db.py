@@ -97,6 +97,22 @@ class LocalDatabase:
         );
         """)
 
+        # 4B. Journey Event Revisions (Audit Trail)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS journey_event_revisions (
+            id TEXT PRIMARY KEY,
+            journey_event_id TEXT NOT NULL REFERENCES journey_events(id),
+            editor_id TEXT NOT NULL REFERENCES profiles(id),
+            editor_role TEXT NOT NULL,
+            previous_data TEXT NOT NULL DEFAULT '{}',
+            new_data TEXT NOT NULL DEFAULT '{}',
+            revision_number INTEGER NOT NULL DEFAULT 1,
+            change_reason TEXT,
+            created_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_rev_event ON journey_event_revisions(journey_event_id);
+        """)
+
         # 5. Help Requests
         cur.execute("""
         CREATE TABLE IF NOT EXISTS help_requests (
@@ -697,7 +713,13 @@ class LocalDatabase:
     def list_profiles_by_role(self, role: str) -> List[Dict]:
         conn = self._get_conn()
         cur = conn.cursor()
-        cur.execute("SELECT * FROM profiles WHERE role = ? AND is_active = 1 ORDER BY created_at DESC", (role,))
+        cur.execute("""
+            SELECT DISTINCT p.* FROM profiles p
+            LEFT JOIN user_roles ur ON p.id = ur.user_id
+            WHERE (p.role = ? OR (ur.role = ? AND ur.status = 'active'))
+              AND p.is_active = 1
+            ORDER BY p.created_at DESC
+        """, (role, role))
         rows = cur.fetchall()
         conn.close()
         res = []
@@ -1006,6 +1028,65 @@ class LocalDatabase:
         changes = conn.total_changes
         conn.close()
         return changes > 0
+
+    def update_journey_event(
+        self,
+        event_id: str,
+        new_event_data: Dict,
+        new_date: Optional[str] = None,
+        new_included_in_roadmap: Optional[bool] = None,
+        now_iso: Optional[str] = None
+    ) -> bool:
+        if not now_iso:
+            now_iso = datetime.now(timezone.utc).isoformat()
+        conn = self._get_conn()
+        cur = conn.cursor()
+        data_str = json.dumps(new_event_data)
+        
+        sql = "UPDATE journey_events SET event_data = ?, updated_at = ?"
+        params = [data_str, now_iso]
+        if new_date:
+            sql += ", event_date = ?"
+            params.append(new_date)
+        if new_included_in_roadmap is not None:
+            sql += ", included_in_roadmap = ?"
+            params.append(1 if new_included_in_roadmap else 0)
+        sql += " WHERE id = ?"
+        params.append(event_id)
+
+        cur.execute(sql, tuple(params))
+        conn.commit()
+        changes = conn.total_changes
+        conn.close()
+        return changes > 0
+
+    def record_journey_event_revision(
+        self,
+        event_id: str,
+        editor_id: str,
+        editor_role: str,
+        previous_data: Dict,
+        new_data: Dict,
+        revision_number: int = 1,
+        change_reason: str = ""
+    ) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        rev_id = str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+            INSERT INTO journey_event_revisions (
+                id, journey_event_id, editor_id, editor_role,
+                previous_data, new_data, revision_number, change_reason, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            rev_id, event_id, editor_id, editor_role,
+            json.dumps(previous_data), json.dumps(new_data),
+            revision_number, change_reason, now_iso
+        ))
+        conn.commit()
+        conn.close()
+        return True
 
     # ── HELP REQUESTS ──
     def create_help_request(

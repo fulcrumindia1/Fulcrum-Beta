@@ -23,6 +23,7 @@ from services.cache import is_tab_active
 from services.relationships import get_assigned_aspirants_for_sme, get_assignment_history, get_aspirant_mentors
 from services.profiles import get_profile, update_mentor_profile
 from services.journey import get_journey_timeline, add_sme_contribution, soft_delete_event, get_standard_role_label
+from views.journey_edit_dialog import render_edit_journey_dialog
 from services.constants import MASTER_DISTRICTS_TN
 from services.help_requests import (
     list_sme_requests,
@@ -295,14 +296,19 @@ def render_sme_portal(user_profile: dict):
                                 """, unsafe_allow_html=True)
                             with col_act:
                                 if event.get("actor_id") == sme_id and actor_role == "sme":
-                                    if st.button("🗑️", key=f"sme_del_sub_{event['id']}", help="Delete your contribution"):
-                                        ok, err = soft_delete_event(event["id"], sme_id, "sme")
-                                        st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "journey"
-                                        if ok:
-                                            st.session_state["del_event_success"] = "Domain contribution deleted."
-                                        else:
-                                            st.session_state["del_event_err"] = err or "Could not delete contribution."
-                                        st.rerun()
+                                    col_se, col_sd = st.columns(2)
+                                    with col_se:
+                                        if st.button("✏️", key=f"sme_edit_{event['id']}", help="Edit your advisory contribution"):
+                                            render_edit_journey_dialog(event, sme_id, "sme")
+                                    with col_sd:
+                                        if st.button("🗑️", key=f"sme_del_sub_{event['id']}", help="Delete your contribution"):
+                                            ok, err = soft_delete_event(event["id"], sme_id, "sme")
+                                            st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "journey"
+                                            if ok:
+                                                st.session_state["del_event_success"] = "Domain contribution deleted."
+                                            else:
+                                                st.session_state["del_event_err"] = err or "Could not delete contribution."
+                                            st.rerun()
 
                 # ─────────────────────────────────────────────────────────
                 # SUBTAB 3: GUIDANCE TEAM

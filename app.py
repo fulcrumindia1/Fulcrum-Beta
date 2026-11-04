@@ -331,6 +331,89 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             color: #cbd5e1;
         }
 
+        /* Workspace Selector & Sidebar Selectbox — Dark Navy Theme Alignment */
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] {
+            margin-bottom: 0.6rem !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div {
+            background-color: #162032 !important;
+            background: #162032 !important;
+            border: 1px solid rgba(255, 255, 255, 0.14) !important;
+            border-radius: 10px !important;
+            padding: 0.25rem 0.5rem !important;
+            min-height: 42px !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+            transition: all 0.2s ease-in-out !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover {
+            background-color: #1e293b !important;
+            border-color: rgba(96, 165, 250, 0.45) !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div {
+            border-color: #3b82f6 !important;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35) !important;
+        }
+
+        /* High-contrast crisp typography for sidebar selectbox text and chevron */
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] span,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] input {
+            color: #F8FAFC !important;
+            font-weight: 600 !important;
+            font-size: 0.92rem !important;
+        }
+
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] svg {
+            fill: #94A3B8 !important;
+            color: #94A3B8 !important;
+        }
+
+        /* Popover dropdown menu (dark-themed list) */
+        div[data-baseweb="popover"] [data-baseweb="menu"],
+        div[data-baseweb="popover"] ul[role="listbox"] {
+            background-color: #0f172a !important;
+            background: #0f172a !important;
+            border: 1px solid rgba(255, 255, 255, 0.15) !important;
+            border-radius: 10px !important;
+            padding: 6px !important;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6) !important;
+        }
+
+        div[data-baseweb="popover"] [data-baseweb="menu"] li,
+        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"] {
+            background-color: transparent !important;
+            color: #E2E8F0 !important;
+            border-radius: 6px !important;
+            padding: 8px 12px !important;
+            font-weight: 500 !important;
+            font-size: 0.9rem !important;
+            transition: background 0.15s ease !important;
+        }
+
+        div[data-baseweb="popover"] [data-baseweb="menu"] li *,
+        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"] * {
+            color: #E2E8F0 !important;
+        }
+
+        div[data-baseweb="popover"] [data-baseweb="menu"] li:hover,
+        div[data-baseweb="popover"] [data-baseweb="menu"] li[aria-selected="true"],
+        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"]:hover,
+        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"][aria-selected="true"] {
+            background-color: #1e293b !important;
+            color: #60a5fa !important;
+        }
+
+        div[data-baseweb="popover"] [data-baseweb="menu"] li:hover *,
+        div[data-baseweb="popover"] [data-baseweb="menu"] li[aria-selected="true"] *,
+        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"]:hover *,
+        div[data-baseweb="popover"] ul[role="listbox"] li[role="option"][aria-selected="true"] * {
+            color: #60a5fa !important;
+        }
+
         /* Sidebar Expander & Notification Center — Dark Theme Seamless Integration */
         section[data-testid="stSidebar"] [data-testid="stExpander"],
         section[data-testid="stSidebar"] details {

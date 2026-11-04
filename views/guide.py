@@ -35,6 +35,7 @@ from services.cache import is_tab_active
 from services.relationships import get_assigned_aspirants_for_guide, get_aspirant_mentors, get_assignment_history
 from services.profiles import get_profile, update_mentor_profile
 from services.journey import get_journey_timeline, add_guide_contribution, soft_delete_event, get_standard_role_label
+from views.journey_edit_dialog import render_edit_journey_dialog
 from services.schemes import (
     list_schemes,
     match_schemes_for_aspirant,
@@ -341,14 +342,19 @@ def render_guide_portal(user_profile: dict):
                                 """, unsafe_allow_html=True)
                             with col_act:
                                 if event.get("actor_id") == guide_id and actor_role == "guide":
-                                    if st.button("🗑️", key=f"guide_del_{event['id']}", help="Delete your contribution"):
-                                        ok, err = soft_delete_event(event["id"], guide_id, "guide")
-                                        st.session_state[f"guide_subtab_pending_{selected_asp_id}"] = "journey"
-                                        if ok:
-                                            st.session_state["del_event_success"] = "Mentorship contribution deleted."
-                                        else:
-                                            st.session_state["del_event_err"] = err or "Could not delete contribution."
-                                        st.rerun()
+                                    col_ge, col_gd = st.columns(2)
+                                    with col_ge:
+                                        if st.button("✏️", key=f"guide_edit_{event['id']}", help="Edit your mentorship contribution"):
+                                            render_edit_journey_dialog(event, guide_id, "guide")
+                                    with col_gd:
+                                        if st.button("🗑️", key=f"guide_del_{event['id']}", help="Delete your contribution"):
+                                            ok, err = soft_delete_event(event["id"], guide_id, "guide")
+                                            st.session_state[f"guide_subtab_pending_{selected_asp_id}"] = "journey"
+                                            if ok:
+                                                st.session_state["del_event_success"] = "Mentorship contribution deleted."
+                                            else:
+                                                st.session_state["del_event_err"] = err or "Could not delete contribution."
+                                            st.rerun()
 
                 # ─────────────────────────────────────────────────────────
                 # SUBTAB 3: ASSIGNED MENTORS

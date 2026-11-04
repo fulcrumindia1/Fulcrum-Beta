@@ -24,7 +24,9 @@ def _safe_esc(val, default=""):
 from services.auth import admin_create_mentor, backfill_auth_users, get_data_backend
 from services.profiles import get_profile, list_profiles_by_role
 from services.relationships import get_aspirant_mentors, assign_guide, assign_sme
-from services.journey import get_journey_timeline, soft_delete_event, log_meaningful_event, add_admin_journey_entry, get_standard_role_label
+from services.journey import get_journey_timeline, soft_delete_event, log_meaningful_event, add_admin_journey_entry, get_standard_role_label, count_active_journeys
+from views.journey_edit_dialog import render_edit_journey_dialog
+from services.roles import get_active_roles
 from services.schemes import list_schemes, get_scheme, upsert_scheme, toggle_archive_scheme, delete_scheme, match_schemes_for_aspirant
 from services.pdf_generator import generate_aspirant_dossier_pdf
 from services.schemes_ui import render_fund_explorer_card
@@ -92,6 +94,7 @@ def render_admin_portal(admin_profile: dict):
     all_schemes = list_schemes(active_only=False)
     mentor_queries = list_mentor_admin_queries()
     pending_directives = [q for q in mentor_queries if q.get("status") == "PENDING_ADMIN"]
+    active_journeys_count = count_active_journeys()
 
     # 6 Top Metric Cards
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -120,7 +123,7 @@ def render_admin_portal(admin_profile: dict):
         st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-bottom:3px solid #3b82f6; border-radius:12px; padding:0.9rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-size:0.72rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">Active Journeys</div>
-            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{len(aspirants)}</div>
+            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{active_journeys_count}</div>
         </div>
         """, unsafe_allow_html=True)
     with c5:
@@ -165,7 +168,14 @@ def render_admin_portal(admin_profile: dict):
         else:
             col_sel1, col_sel2 = st.columns([2, 1])
             with col_sel1:
-                asp_options = {a["id"]: f"{a['full_name']} — {a.get('profile_data',{}).get('business',{}).get('business_name','Enterprise')} ({a.get('district','TN')})" for a in aspirants}
+                def _format_asp_label(a):
+                    bname = a.get('profile_data',{}).get('business',{}).get('business_name','Enterprise')
+                    dist = a.get('district','TN')
+                    roles = get_active_roles(a['id'])
+                    extra = [r.title() for r in roles if r != 'aspirant']
+                    extra_str = f" [{', '.join(extra)}]" if extra else ""
+                    return f"{a['full_name']} — {bname} ({dist}){extra_str}"
+                asp_options = {a["id"]: _format_asp_label(a) for a in aspirants}
                 selected_asp_id = st.selectbox("Select Entrepreneur to inspect", list(asp_options.keys()), format_func=lambda x: asp_options[x], key="adm_sel_asp")
             with col_sel2:
                 st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
@@ -313,14 +323,19 @@ def render_admin_portal(admin_profile: dict):
                             </div>
                             """, unsafe_allow_html=True)
                         with col_ov:
-                            # Admin override soft delete
-                            if st.button("🗑️", key=f"adm_del_{event['id']}", help="Administrative removal (Soft Delete)"):
-                                ok, err = soft_delete_event(event["id"], admin_id, "admin")
-                                if ok:
-                                    st.session_state["del_event_success"] = "Journey entry removed."
-                                else:
-                                    st.session_state["del_event_err"] = err or "Could not remove entry."
-                                st.rerun()
+                            # Admin oversight: Edit correction & removal
+                            col_ae, col_ad = st.columns(2)
+                            with col_ae:
+                                if st.button("✏️", key=f"adm_edit_{event['id']}", help="Administrative correction"):
+                                    render_edit_journey_dialog(event, admin_id, "admin")
+                            with col_ad:
+                                if st.button("🗑️", key=f"adm_del_{event['id']}", help="Administrative removal (Soft Delete)"):
+                                    ok, err = soft_delete_event(event["id"], admin_id, "admin")
+                                    if ok:
+                                        st.session_state["del_event_success"] = "Journey entry removed."
+                                    else:
+                                        st.session_state["del_event_err"] = err or "Could not remove entry."
+                                    st.rerun()
 
     # ─────────────────────────────────────────────────────────────
     # TAB 2: GUIDES MANAGEMENT & PROVISIONING

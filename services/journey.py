@@ -801,3 +801,292 @@ def soft_delete_event(event_id: str, user_id: str, user_role: str) -> Tuple[bool
 
     success = local_db.soft_delete_journey_event(event_id, user_id)
     return success, None
+
+
+def count_active_journeys() -> int:
+    """Returns the total count of active entrepreneurial journeys."""
+    backend = get_data_backend()
+    if backend == "supabase":
+        client = _get_admin_client()
+        if client:
+            try:
+                res = client.table("journeys").select("id", count="exact").eq("status", "active").execute()
+                return res.count if res.count is not None else len(res.data or [])
+            except Exception:
+                pass
+        return 0
+
+    # SQLite
+    try:
+        conn = get_local_db()._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM journeys WHERE status = 'active'")
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
+    except Exception:
+        return 0
+
+
+def can_user_edit_event(event: Dict, user_id: str, active_role: str) -> bool:
+    """Checks whether the user is authorized to edit a specific journey event.
+    Rules:
+      1. Aspirant: Can edit only their own manual entries (actor_id == user_id, actor_role == 'aspirant', aspirant_id == user_id) in 'aspirant' workspace.
+      2. Guide: Can edit only their own contributions (actor_id == user_id, actor_role == 'guide') to an assigned mentee, in 'guide' workspace.
+      3. SME: Can edit only their own contributions (actor_id == user_id, actor_role == 'sme') to an assigned mentee, in 'sme' workspace.
+      4. Admin: Can edit with audit oversight in 'admin' workspace.
+    """
+    if not event or not user_id or not active_role:
+        return False
+
+    actor_id = str(event.get("actor_id") or "").strip()
+    actor_role = str(event.get("actor_role") or "").strip().lower()
+    req_uid = str(user_id or "").strip()
+    active_role = str(active_role).strip().lower()
+
+    if active_role == "admin":
+        return True
+
+    if active_role == "aspirant":
+        return actor_id == req_uid and actor_role == "aspirant" and str(event.get("aspirant_id") or "").strip() == req_uid
+
+    if active_role == "guide":
+        return actor_id == req_uid and actor_role == "guide"
+
+    if active_role == "sme":
+        return actor_id == req_uid and actor_role == "sme"
+
+    return False
+
+
+def update_journey_event(
+    event_id: str,
+    editor_id: str,
+    editor_role: str,
+    new_title: str,
+    new_description: str,
+    new_link: Optional[str] = None,
+    new_date: Optional[str] = None,
+    new_included_in_roadmap: Optional[bool] = None,
+    expected_updated_at: Optional[str] = None,
+    change_reason: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
+    """Updates an existing Journey event while strictly preserving its original ID,
+    creation timestamp, and original author attribution.
+    Enforces optimistic concurrency control and records an immutable revision entry.
+    """
+    import copy
+    from services.cache import invalidate_memo
+
+    if not new_title or not new_title.strip():
+        return False, "Validation Error: Entry title cannot be empty."
+
+    backend = get_data_backend()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    if backend == "supabase":
+        user_client = _get_user_client()
+        admin = _get_admin_client()
+        client = user_client or admin
+        if not client:
+            return False, "Database connection not available."
+
+        try:
+            ev = None
+            if user_client:
+                try:
+                    res = user_client.table("journey_events").select("*").eq("id", event_id).execute()
+                    if res.data and len(res.data) > 0:
+                        ev = res.data[0]
+                except Exception:
+                    pass
+            if not ev and admin:
+                try:
+                    res = admin.table("journey_events").select("*").eq("id", event_id).execute()
+                    if res.data and len(res.data) > 0:
+                        ev = res.data[0]
+                except Exception:
+                    pass
+
+            if not ev:
+                return False, "Journey event not found."
+
+            # Authorization Check
+            if not can_user_edit_event(ev, editor_id, editor_role):
+                return False, "Permission denied: You are not authorized to edit this journey entry."
+
+            # Optimistic Concurrency Control
+            if expected_updated_at:
+                curr_updated = str(ev.get("updated_at") or "").strip()
+                exp_updated = str(expected_updated_at).strip()
+                if curr_updated and exp_updated and curr_updated != exp_updated:
+                    return False, "Concurrency Conflict: This record was modified by another session. Please refresh the timeline."
+
+            old_event_data = copy.deepcopy(ev.get("event_data", {})) if isinstance(ev.get("event_data"), dict) else {}
+            new_event_data = copy.deepcopy(old_event_data)
+            new_event_data["title"] = new_title.strip()
+            new_event_data["event_title"] = new_title.strip()
+            new_event_data["description"] = new_description.strip()
+            if new_link is not None:
+                new_event_data["link"] = new_link.strip()
+
+            new_event_data["last_edited_at"] = now_iso
+            new_event_data["last_edited_by"] = editor_id
+            new_event_data["last_edited_role"] = editor_role
+
+            revisions = new_event_data.get("revisions", [])
+            rev_number = len(revisions) + 1
+            revision_entry = {
+                "revision_number": rev_number,
+                "editor_id": editor_id,
+                "editor_role": editor_role,
+                "edited_at": now_iso,
+                "change_reason": change_reason or "User edited entry via Journey UI",
+                "previous": {
+                    "title": old_event_data.get("title") or ev.get("event_type"),
+                    "description": old_event_data.get("description"),
+                    "link": old_event_data.get("link"),
+                    "event_date": str(ev.get("event_date") or ""),
+                    "included_in_roadmap": ev.get("included_in_roadmap")
+                },
+                "current": {
+                    "title": new_title.strip(),
+                    "description": new_description.strip(),
+                    "link": new_link.strip() if new_link else "",
+                    "event_date": new_date or str(ev.get("event_date") or ""),
+                    "included_in_roadmap": new_included_in_roadmap if new_included_in_roadmap is not None else ev.get("included_in_roadmap")
+                }
+            }
+            revisions.append(revision_entry)
+            new_event_data["revisions"] = revisions
+
+            payload = {
+                "event_data": new_event_data,
+                "updated_at": now_iso
+            }
+            if new_date:
+                payload["event_date"] = new_date
+            if new_included_in_roadmap is not None:
+                payload["included_in_roadmap"] = new_included_in_roadmap
+
+            updated = False
+            if user_client:
+                try:
+                    u_res = user_client.table("journey_events").update(payload).eq("id", event_id).execute()
+                    if u_res.data and len(u_res.data) > 0:
+                        updated = True
+                except Exception:
+                    pass
+
+            if not updated and admin:
+                try:
+                    a_res = admin.table("journey_events").update(payload).eq("id", event_id).execute()
+                    if a_res.data and len(a_res.data) > 0:
+                        updated = True
+                except Exception as ex:
+                    print(f"[Journey] update_journey_event admin error: {ex}")
+
+            if not updated:
+                return False, "Database update failed."
+
+            # Record in journey_event_revisions table if it exists
+            if admin:
+                try:
+                    admin.table("journey_event_revisions").insert({
+                        "journey_event_id": event_id,
+                        "editor_id": editor_id,
+                        "editor_role": editor_role,
+                        "previous_data": revision_entry["previous"],
+                        "new_data": revision_entry["current"],
+                        "revision_number": rev_number,
+                        "change_reason": change_reason or "User edited entry via Journey UI",
+                        "created_at": now_iso
+                    }).execute()
+                except Exception:
+                    pass
+
+            invalidate_memo(f"journey:{ev['aspirant_id']}")
+            return True, None
+        except Exception as e:
+            return False, f"Failed to save changes: {e}"
+
+    # SQLite mode
+    local_db = get_local_db()
+    conn = local_db._get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM journey_events WHERE id = ?", (event_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return False, "Journey event not found."
+
+    ev = dict(row)
+    if not can_user_edit_event(ev, editor_id, editor_role):
+        return False, "Permission denied: You are not authorized to edit this journey entry."
+
+    if expected_updated_at:
+        curr_updated = str(ev.get("updated_at") or "").strip()
+        exp_updated = str(expected_updated_at).strip()
+        if curr_updated and exp_updated and curr_updated != exp_updated:
+            return False, "Concurrency Conflict: This record was modified by another session. Please refresh the timeline."
+
+    old_event_data = json.loads(ev["event_data"]) if ev.get("event_data") else {}
+    new_event_data = copy.deepcopy(old_event_data)
+    new_event_data["title"] = new_title.strip()
+    new_event_data["event_title"] = new_title.strip()
+    new_event_data["description"] = new_description.strip()
+    if new_link is not None:
+        new_event_data["link"] = new_link.strip()
+    new_event_data["last_edited_at"] = now_iso
+    new_event_data["last_edited_by"] = editor_id
+    new_event_data["last_edited_role"] = editor_role
+
+    revisions = new_event_data.get("revisions", [])
+    rev_number = len(revisions) + 1
+    revision_entry = {
+        "revision_number": rev_number,
+        "editor_id": editor_id,
+        "editor_role": editor_role,
+        "edited_at": now_iso,
+        "change_reason": change_reason or "User edited entry via Journey UI",
+        "previous": {
+            "title": old_event_data.get("title") or ev.get("event_type"),
+            "description": old_event_data.get("description"),
+            "link": old_event_data.get("link"),
+            "event_date": str(ev.get("event_date") or ""),
+            "included_in_roadmap": ev.get("included_in_roadmap")
+        },
+        "current": {
+            "title": new_title.strip(),
+            "description": new_description.strip(),
+            "link": new_link.strip() if new_link else "",
+            "event_date": new_date or str(ev.get("event_date") or ""),
+            "included_in_roadmap": new_included_in_roadmap if new_included_in_roadmap is not None else ev.get("included_in_roadmap")
+        }
+    }
+    revisions.append(revision_entry)
+    new_event_data["revisions"] = revisions
+
+    success = local_db.update_journey_event(
+        event_id=event_id,
+        new_event_data=new_event_data,
+        new_date=new_date,
+        new_included_in_roadmap=new_included_in_roadmap,
+        now_iso=now_iso
+    )
+    if not success:
+        return False, "Failed to update record in local database."
+
+    local_db.record_journey_event_revision(
+        event_id=event_id,
+        editor_id=editor_id,
+        editor_role=editor_role,
+        previous_data=revision_entry["previous"],
+        new_data=revision_entry["current"],
+        revision_number=rev_number,
+        change_reason=change_reason or "User edited entry via Journey UI"
+    )
+
+    invalidate_memo(f"journey:{ev['aspirant_id']}")
+    return True, None
