@@ -264,19 +264,11 @@ def get_unread_count(user_id: str) -> int:
         if reader:
             try:
                 res = reader.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).execute()
-                if hasattr(res, "count") and res.count is not None and res.count > 0:
-                    return int(res.count)
-                if res.data is not None and len(res.data) > 0:
-                    return len(res.data)
-                if admin and admin != reader:
-                    res2 = admin.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).execute()
-                    if hasattr(res2, "count") and res2.count is not None:
-                        return int(res2.count)
-                    if res2.data is not None:
-                        return len(res2.data)
                 if hasattr(res, "count") and res.count is not None:
                     return int(res.count)
-                return len(res.data) if res.data is not None else 0
+                if res.data is not None:
+                    return len(res.data)
+                return 0
             except Exception as e:
                 app_logger.error("notifications", "get_unread_count", f"Supabase unread count error: {e}", error=e, actor_id=user_id)
                 if admin and admin != reader:

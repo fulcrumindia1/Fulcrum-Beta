@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
+from services.cache import (
+    get_global_cache, set_global_cache, invalidate_global_cache,
+    get_memo, set_memo, invalidate_memo
+)
 
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
@@ -35,7 +39,11 @@ def list_schemes(
     """Retrieves schemes from the active backend."""
     backend = get_data_backend()
 
-    if backend == "supabase":
+    # Fast in-memory cache check for active schemes
+    cached_active = get_global_cache("schemes:all_active") if active_only else None
+    if cached_active is not None:
+        schemes_data = cached_active
+    elif backend == "supabase":
         client = _get_user_client()
         admin = _get_admin_client()
         reader = client if (client and hasattr(client, "auth") and client.auth.get_session()) else admin
@@ -46,10 +54,6 @@ def list_schemes(
                 q = reader.table("schemes").select("*")
                 if active_only:
                     q = q.eq("is_active", True)
-                if category and category != "ALL":
-                    q = q.eq("category_type", category)
-                if stage and stage != "ALL":
-                    q = q.eq("stage", stage)
                 try:
                     res = q.order("display_order", desc=False).order("name", desc=False).execute()
                 except Exception:
@@ -60,49 +64,61 @@ def list_schemes(
                     q_admin = admin.table("schemes").select("*")
                     if active_only:
                         q_admin = q_admin.eq("is_active", True)
-                    if category and category != "ALL":
-                        q_admin = q_admin.eq("category_type", category)
-                    if stage and stage != "ALL":
-                        q_admin = q_admin.eq("stage", stage)
                     try:
                         res_admin = q_admin.order("display_order", desc=False).order("name", desc=False).execute()
                     except Exception:
                         res_admin = q_admin.order("name", desc=False).execute()
                     schemes_data = res_admin.data or []
 
-                if schemes_data:
-                    filtered = []
-                    for s in schemes_data:
-                        # Filter by search term
-                        if search:
-                            term = search.lower()
-                            text_corpus = f"{s.get('name','')} {s.get('agency','')} {s.get('description','')} {s.get('brief','')}".lower()
-                            if term not in text_corpus:
-                                continue
-                        # Filter by sector
-                        if sector and sector != "ALL":
-                            sec_raw = s.get("sectors") or []
-                            if isinstance(sec_raw, str):
-                                try:
-                                    sec_raw = json.loads(sec_raw)
-                                except Exception:
-                                    sec_raw = [sec_raw]
-                            sec_list = [str(x).lower() for x in sec_raw]
-                            if sector.lower() not in sec_list and "all sectors" not in sec_list:
-                                continue
-                        filtered.append(s)
-                    return filtered
-                return []
+                if active_only and schemes_data:
+                    set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
             except Exception as e:
                 print(f"[Schemes] Supabase list error: {e}")
                 if admin and admin != reader:
                     try:
                         res_admin = admin.table("schemes").select("*").eq("is_active", True).execute()
-                        return res_admin.data or []
+                        schemes_data = res_admin.data or []
+                        if active_only and schemes_data:
+                            set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
                     except Exception:
-                        pass
-                return []
-        return []
+                        schemes_data = []
+                else:
+                    schemes_data = []
+        else:
+            schemes_data = []
+    else:
+        schemes_data = get_local_db().list_schemes(active_only=active_only)
+        if active_only and schemes_data:
+            set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
+
+    # In-memory filtering (instant execution without extra round-trips)
+    filtered = []
+    for s in schemes_data:
+        if active_only and not s.get("is_active", True):
+            continue
+        if category and category != "ALL" and s.get("category_type") != category:
+            continue
+        if stage and stage != "ALL" and s.get("stage") != stage:
+            continue
+        # Filter by search term
+        if search:
+            term = search.lower()
+            text_corpus = f"{s.get('name','')} {s.get('agency','')} {s.get('description','')} {s.get('brief','')}".lower()
+            if term not in text_corpus:
+                continue
+        # Filter by sector
+        if sector and sector != "ALL":
+            sec_raw = s.get("sectors") or []
+            if isinstance(sec_raw, str):
+                try:
+                    sec_raw = json.loads(sec_raw)
+                except Exception:
+                    sec_raw = [sec_raw]
+            sec_list = [str(x).lower() for x in sec_raw]
+            if sector.lower() not in sec_list and "all sectors" not in sec_list:
+                continue
+        filtered.append(s)
+    return filtered
 
     # SQLite local mode
     return get_local_db().list_schemes(search, category, stage, sector, active_only)
@@ -228,6 +244,14 @@ def match_schemes_for_aspirant(
     
     Returns list of matched schemes scoring >= min_score ordered by match_score DESC.
     """
+    if not aspirant_id:
+        return []
+
+    cache_key = f"scheme_matches:{aspirant_id}:{min_score}:{limit}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
+
     import re
 
     if profile is None:
@@ -281,19 +305,7 @@ def match_schemes_for_aspirant(
     is_founder_food_agri = bool(founder_keywords & agri_food_kws or "food" in asp_sector or "agri" in asp_sector)
     is_founder_tech = bool(founder_keywords & {"tech", "software", "ai", "deeptech", "hardware", "saas", "electronics"})
 
-    backend = get_data_backend()
-    if backend == "supabase":
-        admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("schemes").select("*").eq("is_active", True).execute()
-                all_schemes = res.data or []
-            except Exception:
-                all_schemes = []
-        else:
-            all_schemes = []
-    else:
-        all_schemes = list_schemes(active_only=True)
+    all_schemes = list_schemes(active_only=True)
 
     results = []
 
@@ -444,9 +456,9 @@ def match_schemes_for_aspirant(
             results.append(s_copy)
 
     results.sort(key=lambda x: x["match_score"], reverse=True)
-    if limit is not None:
-        return results[:limit]
-    return results
+    res_final = results[:limit] if limit is not None else results
+    set_memo(cache_key, res_final, ttl_seconds=60)
+    return res_final
 
 def evaluate_scheme_for_aspirant(aspirant_id: str, scheme_or_id: Any, profile: Optional[Dict] = None) -> Dict[str, Any]:
     """
@@ -715,6 +727,14 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
     Sanitizes and eliminates all Guide-only private intelligence
     (hidden_agenda, red_flags, AI pitch prompt) from the payload.
     """
+    if not aspirant_id:
+        return []
+
+    cache_key = f"released_schemes:{aspirant_id}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -782,13 +802,16 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
                     s_clean.pop("red_flags", None)
                     s_clean.pop("application_prompt", None)
                     cleaned.append(s_clean)
+                set_memo(cache_key, cleaned, ttl_seconds=60)
                 return cleaned
             except Exception as e:
                 print(f"[Schemes] Supabase released schemes query error: {e}")
                 return []
         return []
 
-    return get_local_db().get_released_schemes_for_aspirant(aspirant_id)
+    local_res = get_local_db().get_released_schemes_for_aspirant(aspirant_id)
+    set_memo(cache_key, local_res, ttl_seconds=60)
+    return local_res
 
 def get_guide_scheme_releases(guide_id: str, aspirant_id: Optional[str] = None) -> List[Dict]:
     """

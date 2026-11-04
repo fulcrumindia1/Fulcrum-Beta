@@ -425,6 +425,159 @@ class LocalDatabase:
                 except Exception as e:
                     print(f"[LocalDB] Notice seeding schemes: {e}")
 
+        # ── 11. Multi-Role & Legal Governance Tables ──
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_roles (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK (role IN ('aspirant', 'guide', 'sme', 'admin', 'district_admin', 'operational_admin')),
+            status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending_nda', 'suspended', 'revoked')),
+            granted_by TEXT REFERENCES profiles(id),
+            granted_at TEXT,
+            activated_at TEXT,
+            suspended_at TEXT,
+            revoked_at TEXT,
+            revocation_reason TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(user_id, role)
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS legal_documents (
+            id TEXT PRIMARY KEY,
+            doc_type TEXT NOT NULL CHECK (doc_type IN ('terms_and_conditions', 'nda_guide', 'nda_sme', 'nda_dual')),
+            version TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            roles_covered TEXT DEFAULT '[]',
+            effective_date TEXT,
+            is_mandatory INTEGER DEFAULT 1,
+            is_active INTEGER DEFAULT 1,
+            created_at TEXT
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS legal_acceptances (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            document_id TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            doc_version TEXT NOT NULL,
+            doc_hash TEXT NOT NULL,
+            user_email_snapshot TEXT NOT NULL,
+            typed_legal_name TEXT NOT NULL,
+            typed_acceptance_phrase TEXT NOT NULL,
+            checkbox_confirmed INTEGER DEFAULT 1,
+            roles_covered TEXT DEFAULT '[]',
+            ip_address TEXT,
+            user_agent TEXT,
+            status TEXT DEFAULT 'ACCEPTED',
+            accepted_at TEXT
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_legal_acceptances_user ON legal_acceptances(user_id, doc_type);")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS guide_complaints (
+            id TEXT PRIMARY KEY,
+            aspirant_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            guide_id TEXT NOT NULL REFERENCES profiles(id),
+            reason TEXT NOT NULL CHECK (reason IN ('inactivity', 'poor_communication', 'conflict_of_interest', 'professional_conduct', 'other')),
+            details TEXT,
+            status TEXT DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'UNDER_REVIEW', 'RESOLVED', 'DISMISSED')),
+            resolution_notes TEXT,
+            resolved_by TEXT REFERENCES profiles(id),
+            resolved_at TEXT,
+            created_at TEXT
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_guide_complaints_asp ON guide_complaints(aspirant_id);")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS sme_conflict_declarations (
+            id TEXT PRIMARY KEY,
+            sme_id TEXT NOT NULL REFERENCES profiles(id),
+            aspirant_id TEXT NOT NULL REFERENCES profiles(id),
+            has_conflict INTEGER DEFAULT 0,
+            conflict_details TEXT,
+            status TEXT DEFAULT 'DECLARED' CHECK (status IN ('DECLARED', 'APPROVED', 'REJECTED')),
+            reviewed_by TEXT REFERENCES profiles(id),
+            reviewed_at TEXT,
+            created_at TEXT
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sme_conflict ON sme_conflict_declarations(sme_id, aspirant_id);")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS case_discussions (
+            id TEXT PRIMARY KEY,
+            aspirant_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            author_id TEXT NOT NULL REFERENCES profiles(id),
+            author_role TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL,
+            attachments TEXT DEFAULT '[]',
+            is_private_mentor_note INTEGER DEFAULT 0,
+            created_at TEXT
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_case_discussions_asp ON case_discussions(aspirant_id);")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS inactivity_logs (
+            id TEXT PRIMARY KEY,
+            relationship_id TEXT,
+            guide_id TEXT NOT NULL REFERENCES profiles(id),
+            aspirant_id TEXT NOT NULL REFERENCES profiles(id),
+            days_inactive INTEGER NOT NULL,
+            escalation_stage TEXT NOT NULL CHECK (escalation_stage IN ('DAY_7_REMINDER', 'DAY_10_ADMIN_ALERT', 'DAY_14_ADMIN_REVIEW')),
+            notification_sent_at TEXT,
+            created_at TEXT,
+            UNIQUE(guide_id, aspirant_id, escalation_stage)
+        );
+        """)
+        conn.commit()
+
+        # Seed legal documents if empty
+        cur.execute("SELECT COUNT(*) FROM legal_documents")
+        if cur.fetchone()[0] == 0:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            terms_hash = hashlib.sha256("FULCRUM_TERMS_V1".encode("utf-8")).hexdigest()
+            nda_hash = hashlib.sha256("FULCRUM_NDA_V1".encode("utf-8")).hexdigest()
+            cur.execute("""
+            INSERT OR REPLACE INTO legal_documents (id, doc_type, version, title, content, content_hash, roles_covered, effective_date, is_mandatory, is_active, created_at)
+            VALUES (?, 'terms_and_conditions', '1.0.0', 'Fulcrum Platform Terms & Conditions', 'FULCRUM-INDIA TERMS AND CONDITIONS\\nVersion 1.0.0\\nBy accessing Fulcrum, you agree to comply with platform guidelines, data privacy standards, and entrepreneurial integrity.', ?, '["aspirant", "guide", "sme", "admin"]', '2026-09-01', 1, 1, ?)
+            """, ("terms_v1_0", terms_hash, now_iso))
+            cur.execute("""
+            INSERT OR REPLACE INTO legal_documents (id, doc_type, version, title, content, content_hash, roles_covered, effective_date, is_mandatory, is_active, created_at)
+            VALUES (?, 'nda_dual', '1.0.0', 'Fulcrum Confidentiality & Non-Disclosure Agreement (Guide & SME)', 'FULCRUM-INDIA CONFIDENTIALITY & NON-DISCLOSURE AGREEMENT (NDA)\\nVersion 1.0.0\\nGuides and Subject Matter Experts agree to maintain strict confidentiality of entrepreneur venture secrets, financial details, and proprietary business documents.', ?, '["guide", "sme"]', '2026-09-01', 1, 1, ?)
+            """, ("nda_dual_v1_0", nda_hash, now_iso))
+            conn.commit()
+
+        # Backfill user_roles from profiles if empty
+        cur.execute("SELECT COUNT(*) FROM user_roles")
+        if cur.fetchone()[0] == 0:
+            cur.execute("SELECT id, role, created_at FROM profiles")
+            profs = cur.fetchall()
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for p in profs:
+                p_id, p_role, p_created = p[0], p[1], p[2] or now_iso
+                cur.execute("""
+                INSERT OR IGNORE INTO user_roles (id, user_id, role, status, granted_at, activated_at, created_at, updated_at)
+                VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+                """, (f"ur_{p_id}_{p_role}", p_id, p_role, p_created, p_created, p_created, p_created))
+                if p_role != "aspirant":
+                    cur.execute("""
+                    INSERT OR IGNORE INTO user_roles (id, user_id, role, status, granted_at, activated_at, created_at, updated_at)
+                    VALUES (?, ?, 'aspirant', 'active', ?, ?, ?, ?)
+                    """, (f"ur_{p_id}_aspirant", p_id, p_created, p_created, p_created, p_created))
+            conn.commit()
+
         conn.close()
 
     # ── PASSWORD HELPERS ──
@@ -573,6 +726,25 @@ class LocalDatabase:
         else:
             d["sme_ids"] = []
         return d
+
+    def list_all_relationships(self) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM relationships WHERE status = 'active'")
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        for d in rows:
+            if d.get("sme_ids"):
+                try: d["sme_ids"] = json.loads(d["sme_ids"])
+                except Exception: d["sme_ids"] = []
+            else:
+                d["sme_ids"] = []
+            if d.get("guide_ids"):
+                try: d["guide_ids"] = json.loads(d["guide_ids"])
+                except Exception: d["guide_ids"] = []
+            else:
+                d["guide_ids"] = []
+        return rows
 
     def assign_guide(self, aspirant_id: str, guide_id: str, admin_id: str, notes: str = ""):
         conn = self._get_conn()
@@ -1599,6 +1771,339 @@ class LocalDatabase:
         """, (str(uuid.uuid4()), user_id, action, entity, entity_id, json.dumps(details or {}), now_iso))
         conn.commit()
         conn.close()
+
+    # ── USER ROLES ──
+    def upsert_user_role(self, r: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        import uuid
+        role_id = r.get("id") or str(uuid.uuid4())
+        cur.execute("""
+        INSERT INTO user_roles (id, user_id, role, status, granted_by, granted_at, activated_at, suspended_at, revoked_at, revocation_reason, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, role) DO UPDATE SET
+            status = excluded.status,
+            activated_at = COALESCE(excluded.activated_at, user_roles.activated_at),
+            suspended_at = excluded.suspended_at,
+            revoked_at = excluded.revoked_at,
+            revocation_reason = excluded.revocation_reason,
+            updated_at = excluded.updated_at
+        """, (
+            role_id, r["user_id"], r["role"], r.get("status", "active"),
+            r.get("granted_by"), r.get("granted_at", now_iso), r.get("activated_at"),
+            r.get("suspended_at"), r.get("revoked_at"), r.get("revocation_reason"),
+            r.get("created_at", now_iso), r.get("updated_at", now_iso)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def get_user_roles(self, user_id: str) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM user_roles WHERE user_id = ?", (user_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+
+    def update_role_status(self, user_id: str, role: str, status: str, activated_at: Optional[str] = None, suspended_at: Optional[str] = None, revoked_at: Optional[str] = None, revocation_reason: Optional[str] = None) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        UPDATE user_roles
+        SET status = ?, activated_at = COALESCE(?, activated_at), suspended_at = ?, revoked_at = ?, revocation_reason = ?, updated_at = ?
+        WHERE user_id = ? AND role = ?
+        """, (status, activated_at, suspended_at, revoked_at, revocation_reason, now_iso, user_id, role))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_all_user_roles(self) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM user_roles ORDER BY created_at DESC")
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+
+    # ── LEGAL DOCUMENTS & ACCEPTANCES ──
+    def get_legal_document(self, doc_type_or_id: str) -> Optional[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM legal_documents WHERE doc_type = ? OR id = ? ORDER BY created_at DESC LIMIT 1", (doc_type_or_id, doc_type_or_id))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        d = dict(row)
+        if isinstance(d.get("roles_covered"), str):
+            try: d["roles_covered"] = json.loads(d["roles_covered"])
+            except Exception: pass
+        return d
+
+    def upsert_legal_document(self, d: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT INTO legal_documents (id, doc_type, version, title, content, content_hash, roles_covered, effective_date, is_mandatory, is_active, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            version = excluded.version,
+            title = excluded.title,
+            content = excluded.content,
+            content_hash = excluded.content_hash,
+            roles_covered = excluded.roles_covered,
+            is_active = excluded.is_active
+        """, (
+            d["id"], d["doc_type"], d["version"], d["title"], d["content"],
+            d["content_hash"], json.dumps(d.get("roles_covered", [])),
+            d.get("effective_date"), 1 if d.get("is_mandatory", True) else 0,
+            1 if d.get("is_active", True) else 0, d.get("created_at", now_iso)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def record_legal_acceptance(self, a: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        acc_id = a.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT INTO legal_acceptances (
+            id, user_id, document_id, doc_type, doc_version, doc_hash, user_email_snapshot,
+            typed_legal_name, typed_acceptance_phrase, checkbox_confirmed, roles_covered,
+            ip_address, user_agent, status, accepted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            acc_id, a["user_id"], a.get("document_id", "doc_default"), a["doc_type"],
+            a.get("doc_version", "1.0.0"), a.get("doc_hash", ""), a["user_email_snapshot"],
+            a["typed_legal_name"], a["typed_acceptance_phrase"],
+            1 if a.get("checkbox_confirmed", True) else 0,
+            json.dumps(a.get("roles_covered", [])), a.get("ip_address", "127.0.0.1"),
+            a.get("user_agent", "LocalApp"), a.get("status", "ACCEPTED"),
+            a.get("accepted_at", now_iso)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def get_legal_acceptances(self, user_id: Optional[str] = None, doc_type: Optional[str] = None) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        sql = "SELECT * FROM legal_acceptances WHERE 1=1"
+        params = []
+        if user_id:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        if doc_type:
+            sql += " AND doc_type = ?"
+            params.append(doc_type)
+        sql += " ORDER BY accepted_at DESC"
+        cur.execute(sql, tuple(params))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        for r in rows:
+            if isinstance(r.get("roles_covered"), str):
+                try: r["roles_covered"] = json.loads(r["roles_covered"])
+                except Exception: pass
+        return rows
+
+    def check_legal_acceptance(self, user_id: str, doc_type_or_role: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        if doc_type_or_role == "terms_and_conditions":
+            cur.execute("SELECT id FROM legal_acceptances WHERE user_id = ? AND doc_type = 'terms_and_conditions' LIMIT 1", (user_id,))
+        else:
+            cur.execute("SELECT roles_covered, doc_type FROM legal_acceptances WHERE user_id = ?", (user_id,))
+            rows = cur.fetchall()
+            conn.close()
+            for r in rows:
+                if doc_type_or_role in str(r[0]) or r[1] == "nda_dual" or r[1] == f"nda_{doc_type_or_role}":
+                    return True
+            return False
+        row = cur.fetchone()
+        conn.close()
+        return bool(row)
+
+    # ── COMPLAINTS ──
+    def insert_guide_complaint(self, c: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        cid = c.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT INTO guide_complaints (id, aspirant_id, guide_id, reason, details, status, resolution_notes, resolved_by, resolved_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            cid, c["aspirant_id"], c["guide_id"], c["reason"], c.get("details", ""),
+            c.get("status", "PENDING"), c.get("resolution_notes"), c.get("resolved_by"),
+            c.get("resolved_at"), c.get("created_at", now_iso)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_guide_complaints(self, aspirant_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        sql = "SELECT * FROM guide_complaints WHERE 1=1"
+        params = []
+        if aspirant_id:
+            sql += " AND aspirant_id = ?"
+            params.append(aspirant_id)
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY created_at DESC"
+        cur.execute(sql, tuple(params))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+
+    def update_guide_complaint(self, cid: str, status: str, resolution_notes: str = "", resolved_by: Optional[str] = None) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        UPDATE guide_complaints
+        SET status = ?, resolution_notes = ?, resolved_by = ?, resolved_at = ?
+        WHERE id = ?
+        """, (status, resolution_notes, resolved_by, now_iso, cid))
+        conn.commit()
+        conn.close()
+        return True
+
+    # ── SME CONFLICTS ──
+    def insert_sme_conflict(self, c: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        cid = c.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT INTO sme_conflict_declarations (id, sme_id, aspirant_id, has_conflict, conflict_details, status, reviewed_by, reviewed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            cid, c["sme_id"], c["aspirant_id"], 1 if c.get("has_conflict") else 0,
+            c.get("conflict_details", ""), c.get("status", "DECLARED"),
+            c.get("reviewed_by"), c.get("reviewed_at"), c.get("created_at", now_iso)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_sme_conflicts(self, sme_id: Optional[str] = None, aspirant_id: Optional[str] = None) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        sql = "SELECT * FROM sme_conflict_declarations WHERE 1=1"
+        params = []
+        if sme_id:
+            sql += " AND sme_id = ?"
+            params.append(sme_id)
+        if aspirant_id:
+            sql += " AND aspirant_id = ?"
+            params.append(aspirant_id)
+        sql += " ORDER BY created_at DESC"
+        cur.execute(sql, tuple(params))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        for r in rows:
+            r["has_conflict"] = bool(r.get("has_conflict"))
+        return rows
+
+    def update_sme_conflict(self, cid: str, status: str, reviewed_by: Optional[str] = None) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        UPDATE sme_conflict_declarations
+        SET status = ?, reviewed_by = ?, reviewed_at = ?
+        WHERE id = ?
+        """, (status, reviewed_by, now_iso, cid))
+        conn.commit()
+        conn.close()
+        return True
+
+    # ── CASE DISCUSSIONS ──
+    def insert_case_discussion(self, d: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        mid = d.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT INTO case_discussions (id, aspirant_id, author_id, author_role, title, message, attachments, is_private_mentor_note, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            mid, d["aspirant_id"], d["author_id"], d["author_role"], d["title"],
+            d["message"], json.dumps(d.get("attachments", [])),
+            1 if d.get("is_private_mentor_note") else 0, d.get("created_at", now_iso)
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_case_discussions(self, aspirant_id: str, include_private: bool = True) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        if include_private:
+            cur.execute("SELECT * FROM case_discussions WHERE aspirant_id = ? ORDER BY created_at ASC", (aspirant_id,))
+        else:
+            cur.execute("SELECT * FROM case_discussions WHERE aspirant_id = ? AND is_private_mentor_note = 0 ORDER BY created_at ASC", (aspirant_id,))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        for r in rows:
+            r["is_private_mentor_note"] = bool(r.get("is_private_mentor_note"))
+            if isinstance(r.get("attachments"), str):
+                try: r["attachments"] = json.loads(r["attachments"])
+                except Exception: pass
+        return rows
+
+    # ── INACTIVITY LOGS ──
+    def insert_inactivity_log(self, l: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        lid = l.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            cur.execute("""
+            INSERT INTO inactivity_logs (id, relationship_id, guide_id, aspirant_id, days_inactive, escalation_stage, notification_sent_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                lid, l.get("relationship_id"), l["guide_id"], l["aspirant_id"],
+                l["days_inactive"], l["escalation_stage"], l.get("notification_sent_at", now_iso),
+                l.get("created_at", now_iso)
+            ))
+            conn.commit()
+            conn.close()
+            return True
+        except sqlite3.IntegrityError:
+            conn.close()
+            return False
+
+    def list_inactivity_logs(self, guide_id: Optional[str] = None, aspirant_id: Optional[str] = None) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        sql = "SELECT * FROM inactivity_logs WHERE 1=1"
+        params = []
+        if guide_id:
+            sql += " AND guide_id = ?"
+            params.append(guide_id)
+        if aspirant_id:
+            sql += " AND aspirant_id = ?"
+            params.append(aspirant_id)
+        sql += " ORDER BY created_at DESC"
+        cur.execute(sql, tuple(params))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
 
 # Singleton accessor
 _LOCAL_DB_INSTANCE = None

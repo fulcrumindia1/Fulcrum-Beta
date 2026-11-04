@@ -19,6 +19,7 @@ def _safe_esc(val, default=""):
         return default
     return html.escape(str(val))
 
+from services.cache import is_tab_active
 from services.relationships import get_assigned_aspirants_for_sme, get_assignment_history, get_aspirant_mentors
 from services.profiles import get_profile, update_mentor_profile
 from services.journey import get_journey_timeline, add_sme_contribution, soft_delete_event, get_standard_role_label
@@ -53,18 +54,17 @@ def render_sme_portal(user_profile: dict):
     </div>
     """, unsafe_allow_html=True)
 
-    assigned_aspirants = get_assigned_aspirants_for_sme(sme_id)
-
     tabs = st.tabs([
         "👥 My Assigned Cases",
         "💬 All Consultations Overview",
         "👤 My Profile"
-    ])
+    ], on_change="rerun", key="sme_nav_tabs")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 1: MY ASSIGNED CASES (CASELOAD WORKSPACE)
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
+        assigned_aspirants = get_assigned_aspirants_for_sme(sme_id)
         if not assigned_aspirants:
             st.info("No cases currently assigned to you. When the Admin assigns an entrepreneur to your advisory roster, or when an entrepreneur submits a domain consultation query, they will appear here.")
         else:

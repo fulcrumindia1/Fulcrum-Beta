@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
+from services.cache import get_memo, set_memo, invalidate_memo
 
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
@@ -64,7 +65,15 @@ def calculate_completion(p: Dict) -> int:
     return int((points / total) * 100)
 
 def get_profile(user_id: str) -> Optional[Dict]:
-    """Fetches user profile by ID using active backend."""
+    """Fetches user profile by ID using active backend with request-scoped memoization."""
+    if not user_id:
+        return None
+
+    # Check request memo cache first
+    cached = get_memo(f"profile:{user_id}")
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -75,6 +84,7 @@ def get_profile(user_id: str) -> Optional[Dict]:
                 if res.data and len(res.data) > 0:
                     p = res.data[0]
                     p["completion_pct"] = calculate_completion(p)
+                    set_memo(f"profile:{user_id}", p, ttl_seconds=60)
                     return p
             except Exception as e:
                 pass
@@ -87,6 +97,7 @@ def get_profile(user_id: str) -> Optional[Dict]:
                 if res.data and len(res.data) > 0:
                     p = res.data[0]
                     p["completion_pct"] = calculate_completion(p)
+                    set_memo(f"profile:{user_id}", p, ttl_seconds=60)
                     return p
             except Exception as e:
                 pass
@@ -96,8 +107,68 @@ def get_profile(user_id: str) -> Optional[Dict]:
     p = get_local_db().get_profile_by_id(user_id)
     if p:
         p["completion_pct"] = calculate_completion(p)
+        set_memo(f"profile:{user_id}", p, ttl_seconds=60)
         return p
     return None
+
+def get_profiles_batch(user_ids: List[str]) -> Dict[str, Dict]:
+    """
+    Batched profile retrieval to completely eliminate N+1 queries.
+    Retrieves multiple profiles in a single query and caches them in session memo.
+    """
+    if not user_ids:
+        return {}
+
+    unique_ids = list(set(filter(None, user_ids)))
+    result: Dict[str, Dict] = {}
+    missing_ids: List[str] = []
+
+    # Check cache first
+    for uid in unique_ids:
+        cached = get_memo(f"profile:{uid}")
+        if cached is not None:
+            result[uid] = cached
+        else:
+            missing_ids.append(uid)
+
+    if not missing_ids:
+        return result
+
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        client = _get_user_client() or _get_admin_client()
+        admin = _get_admin_client()
+        fetcher = client or admin
+        if fetcher:
+            try:
+                # Query in single batch with in_ filter
+                res = fetcher.table("profiles").select("*").in_("id", missing_ids).execute()
+                for p in (res.data or []):
+                    p["completion_pct"] = calculate_completion(p)
+                    set_memo(f"profile:{p['id']}", p, ttl_seconds=60)
+                    result[p["id"]] = p
+            except Exception as e:
+                if admin and admin != fetcher:
+                    try:
+                        res = admin.table("profiles").select("*").in_("id", missing_ids).execute()
+                        for p in (res.data or []):
+                            p["completion_pct"] = calculate_completion(p)
+                            set_memo(f"profile:{p['id']}", p, ttl_seconds=60)
+                            result[p["id"]] = p
+                    except Exception:
+                        pass
+        return result
+
+    # SQLite mode
+    db = get_local_db()
+    for uid in missing_ids:
+        p = db.get_profile_by_id(uid)
+        if p:
+            p["completion_pct"] = calculate_completion(p)
+            set_memo(f"profile:{uid}", p, ttl_seconds=60)
+            result[uid] = p
+    return result
 
 def list_profiles_by_role(role: str) -> List[Dict]:
     """Lists profiles by role from active backend."""

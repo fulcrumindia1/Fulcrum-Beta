@@ -705,11 +705,53 @@ def main():
             """, unsafe_allow_html=True)
 
             # ─────────────────────────────────────────────────────────────────
+            # MULTI-ROLE: CURRENT WORKSPACE SELECTOR
+            # ─────────────────────────────────────────────────────────────────
+            from services.roles import get_active_roles, get_pending_nda_roles
+            user_id = user.get("id")
+            active_r = get_active_roles(user_id) if user_id else []
+            pending_r = get_pending_nda_roles(user_id) if user_id else []
+
+            ws_options = [("aspirant", "🌱 Aspirant Dashboard")]
+            if "guide" in active_r or "guide" in pending_r:
+                g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
+                ws_options.append(("guide", g_lbl))
+            if "sme" in active_r or "sme" in pending_r:
+                s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
+                ws_options.append(("sme", s_lbl))
+            if any(r in active_r for r in ("admin", "district_admin", "operational_admin")):
+                ws_options.append(("admin", "🏛️ Admin Dashboard"))
+
+            if "active_workspace" not in st.session_state:
+                st.session_state["active_workspace"] = user.get("role", "aspirant")
+
+            curr_ws = st.session_state["active_workspace"]
+            ws_keys = [opt[0] for opt in ws_options]
+            if curr_ws not in ws_keys:
+                curr_ws = ws_keys[0]
+                st.session_state["active_workspace"] = curr_ws
+
+            if len(ws_options) > 1:
+                st.markdown("<div style='font-size: 0.68rem; font-weight: 700; color: #60a5fa; text-transform: uppercase; letter-spacing: 0.5px; margin-top:0.6rem; margin-bottom:0.2rem;'>Current Workspace</div>", unsafe_allow_html=True)
+                sel_idx = ws_keys.index(curr_ws)
+                selected_ws = st.selectbox(
+                    "Current Workspace",
+                    ws_keys,
+                    format_func=lambda k: next(opt[1] for opt in ws_options if opt[0] == k),
+                    index=sel_idx,
+                    key="sb_current_workspace",
+                    label_visibility="collapsed"
+                )
+                if selected_ws != curr_ws:
+                    st.session_state["active_workspace"] = selected_ws
+                    st.rerun()
+
+            # ─────────────────────────────────────────────────────────────────
             # IN-APP NOTIFICATION CENTER (Universal & Mobile-Friendly)
             # ─────────────────────────────────────────────────────────────────
             from services.notifications import get_unread_count, list_notifications, mark_as_read, mark_all_as_read
-            user_id = user.get("id")
             unread_count = get_unread_count(user_id) if user_id else 0
+            st.session_state["_current_unread_count"] = unread_count
 
             notif_expander_title = f"🔔 Notifications ({unread_count} New)" if unread_count > 0 else "🔔 Notifications"
             with st.expander(notif_expander_title, expanded=(unread_count > 0)):
@@ -742,7 +784,9 @@ def main():
             # Role-Specific Navigation Links
             st.markdown("<div style='font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-top: 0.5rem; margin-bottom: 0.5rem;'>Navigation</div>", unsafe_allow_html=True)
 
-            if role == "aspirant":
+            effective_role = st.session_state.get("active_workspace", role)
+
+            if effective_role == "aspirant":
                 nav_items = [
                     "📊 Dashboard Overview",
                     "👤 My Profile",
@@ -751,19 +795,19 @@ def main():
                     "🏦 Scheme Matches",
                     "🤝 Consult a Guide or SME"
                 ]
-            elif role == "guide":
+            elif effective_role == "guide":
                 nav_items = [
                     "👥 My Aspirants",
                     "💬 All Consultations Overview",
                     "👤 My Profile"
                 ]
-            elif role == "sme":
+            elif effective_role == "sme":
                 nav_items = [
                     "👥 My Assigned Cases",
                     "💬 All Consultations Overview",
                     "👤 My Profile"
                 ]
-            elif role == "admin":
+            elif effective_role in ("admin", "district_admin", "operational_admin"):
                 nav_items = [
                     "📊 Command Metrics",
                     "👥 Aspirants Directory",
@@ -771,7 +815,12 @@ def main():
                     "🔬 SMEs Management",
                     "🤝 Mentorship Assignments",
                     "🏛️ Mentor Inquiries & Directives",
-                    "🏛️ Scheme Catalogue"
+                    "🏛️ Scheme Catalogue",
+                    "🔑 Multi-Role Grants",
+                    "📜 Legal & NDA Records",
+                    "🛡️ Confidential Complaints",
+                    "⏱️ Inactivity Monitor",
+                    "⚖️ SME Conflict Governance"
                 ]
             else:
                 nav_items = ["Dashboard"]
@@ -835,26 +884,33 @@ def main():
                                 st.error(err or "Failed to update password.")
             return
 
-        # Mobile-friendly banner for unread notifications
-        if user and user.get("id"):
-            try:
-                from services.notifications import get_unread_count
-                u_cnt = get_unread_count(user.get("id"))
-                if u_cnt > 0:
-                    st.info(f"🔔 You have **{u_cnt}** new notification{'s' if u_cnt > 1 else ''}! Review them in the sidebar notification center.")
-            except Exception:
-                pass
+        active_role = st.session_state.get("active_workspace", role)
 
-        if role == "aspirant":
+        # 1. Mandatory Platform Terms & Conditions Gate
+        from views.legal_ui import render_terms_and_conditions_gate, render_nda_gate
+        if not render_terms_and_conditions_gate(user):
+            return
+
+        # 2. Mandatory Non-Disclosure Agreement (NDA) Gate for Guide & SME
+        if active_role in ("guide", "sme"):
+            if not render_nda_gate(user, active_role):
+                return
+
+        # Mobile-friendly banner for unread notifications (reuses cached count, zero extra network queries)
+        u_cnt = st.session_state.get("_current_unread_count", 0)
+        if u_cnt > 0:
+            st.info(f"🔔 You have **{u_cnt}** new notification{'s' if u_cnt > 1 else ''}! Review them in the sidebar notification center.")
+
+        if active_role == "aspirant":
             render_aspirant_portal(user)
-        elif role == "guide":
+        elif active_role == "guide":
             render_guide_portal(user)
-        elif role == "sme":
+        elif active_role == "sme":
             render_sme_portal(user)
-        elif role == "admin":
+        elif active_role in ("admin", "district_admin", "operational_admin"):
             render_admin_portal(user)
         else:
-            st.error(f"Unrecognized user role: '{role}'. Please contact support.")
+            st.error(f"Unrecognized workspace: '{active_role}'. Please contact support.")
             if st.button("Reset Session"):
                 logout_user()
                 st.rerun()

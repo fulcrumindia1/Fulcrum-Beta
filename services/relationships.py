@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
+from services.cache import get_memo, set_memo, invalidate_memo
 
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
@@ -23,10 +24,33 @@ def _get_admin_client():
     """Returns the privileged admin Supabase client (bypasses RLS). Use sparingly."""
     return get_supabase_admin_client()
 
-def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
-    """Fetches assigned Guide and SME details for an Aspirant from active backend."""
+def get_all_relationships() -> List[Dict]:
+    """Retrieves all active relationship records."""
     backend = get_data_backend()
-    from services.profiles import get_profile
+    if backend == "supabase":
+        client = _get_admin_client() or _get_user_client()
+        if client:
+            try:
+                res = client.table("relationships").select("*").eq("status", "active").execute()
+                return res.data or []
+            except Exception:
+                pass
+    db = get_local_db()
+    if hasattr(db, "list_all_relationships"):
+        return db.list_all_relationships()
+    return []
+
+def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
+    """Fetches assigned Guide and SME details for an Aspirant from active backend with memoization & batch profile queries."""
+    if not aspirant_id:
+        return {"guide": None, "guide_b": None, "guides": [], "sme": None, "smes": [], "relationship": None}
+
+    cached = get_memo(f"mentors:{aspirant_id}")
+    if cached is not None:
+        return cached
+
+    backend = get_data_backend()
+    from services.profiles import get_profiles_batch
 
     if backend == "supabase":
         admin = _get_admin_client()
@@ -47,8 +71,6 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
         sme = None
         smes = []
         if rel:
-            if rel.get("guide_id"):
-                guide = get_profile(rel["guide_id"])
             guide_ids = rel.get("guide_ids") or []
             if isinstance(guide_ids, str):
                 try: guide_ids = json.loads(guide_ids)
@@ -57,35 +79,36 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
                 guide_ids = []
             if rel.get("guide_id") and rel["guide_id"] not in guide_ids:
                 guide_ids.insert(0, rel["guide_id"])
-            for gid in guide_ids:
-                gp = get_profile(gid)
-                if gp and not any(existing["id"] == gp["id"] for existing in guides):
-                    guides.append(gp)
-            if not guides and guide:
-                guides = [guide]
-            if len(guides) > 1:
-                guide_b = guides[1]
 
-            if rel.get("sme_id"):
-                sme = get_profile(rel["sme_id"])
             sme_ids = rel.get("sme_ids") or []
             if isinstance(sme_ids, str):
-                try:
-                    sme_ids = json.loads(sme_ids)
-                except Exception:
-                    sme_ids = []
+                try: sme_ids = json.loads(sme_ids)
+                except Exception: sme_ids = []
             if not isinstance(sme_ids, list):
                 sme_ids = []
             if rel.get("sme_id") and rel["sme_id"] not in sme_ids:
                 sme_ids.insert(0, rel["sme_id"])
+
+            all_mentor_ids = list(set(guide_ids + sme_ids))
+            mentor_profiles = get_profiles_batch(all_mentor_ids)
+
+            for gid in guide_ids:
+                gp = mentor_profiles.get(gid)
+                if gp and not any(existing["id"] == gp["id"] for existing in guides):
+                    guides.append(gp)
+            if guides:
+                guide = guides[0]
+            if len(guides) > 1:
+                guide_b = guides[1]
+
             for sid in sme_ids:
-                sp = get_profile(sid)
+                sp = mentor_profiles.get(sid)
                 if sp and not any(existing["id"] == sp["id"] for existing in smes):
                     smes.append(sp)
-            if not smes and sme:
-                smes = [sme]
+            if smes:
+                sme = smes[0]
 
-        return {
+        res_dict = {
             "guide": guide,
             "guide_b": guide_b,
             "guides": guides,
@@ -93,6 +116,8 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
             "smes": smes,
             "relationship": rel
         }
+        set_memo(f"mentors:{aspirant_id}", res_dict, ttl_seconds=60)
+        return res_dict
 
     # SQLite local mode
     rel = get_local_db().get_relationship(aspirant_id)
@@ -102,8 +127,6 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
     sme = None
     smes = []
     if rel:
-        if rel.get("guide_id"):
-            guide = get_profile(rel["guide_id"])
         guide_ids = rel.get("guide_ids") or []
         if isinstance(guide_ids, str):
             try: guide_ids = json.loads(guide_ids)
@@ -112,35 +135,36 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
             guide_ids = []
         if rel.get("guide_id") and rel["guide_id"] not in guide_ids:
             guide_ids.insert(0, rel["guide_id"])
-        for gid in guide_ids:
-            gp = get_profile(gid)
-            if gp and not any(existing["id"] == gp["id"] for existing in guides):
-                guides.append(gp)
-        if not guides and guide:
-            guides = [guide]
-        if len(guides) > 1:
-            guide_b = guides[1]
 
-        if rel.get("sme_id"):
-            sme = get_profile(rel["sme_id"])
         sme_ids = rel.get("sme_ids") or []
         if isinstance(sme_ids, str):
-            try:
-                sme_ids = json.loads(sme_ids)
-            except Exception:
-                sme_ids = []
+            try: sme_ids = json.loads(sme_ids)
+            except Exception: sme_ids = []
         if not isinstance(sme_ids, list):
             sme_ids = []
         if rel.get("sme_id") and rel["sme_id"] not in sme_ids:
             sme_ids.insert(0, rel["sme_id"])
+
+        all_mentor_ids = list(set(guide_ids + sme_ids))
+        mentor_profiles = get_profiles_batch(all_mentor_ids)
+
+        for gid in guide_ids:
+            gp = mentor_profiles.get(gid)
+            if gp and not any(existing["id"] == gp["id"] for existing in guides):
+                guides.append(gp)
+        if guides:
+            guide = guides[0]
+        if len(guides) > 1:
+            guide_b = guides[1]
+
         for sid in sme_ids:
-            sp = get_profile(sid)
+            sp = mentor_profiles.get(sid)
             if sp and not any(existing["id"] == sp["id"] for existing in smes):
                 smes.append(sp)
-        if not smes and sme:
-            smes = [sme]
+        if smes:
+            sme = smes[0]
 
-    return {
+    res_dict = {
         "guide": guide,
         "guide_b": guide_b,
         "guides": guides,
@@ -148,6 +172,8 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
         "smes": smes,
         "relationship": rel
     }
+    set_memo(f"mentors:{aspirant_id}", res_dict, ttl_seconds=60)
+    return res_dict
 
 def assign_guide(
     aspirant_id: str,
@@ -549,77 +575,113 @@ def get_assignment_history(aspirant_id: Optional[str] = None, mentor_id: Optiona
     return get_local_db().list_assignment_history(aspirant_id, mentor_id)
 
 def get_assigned_aspirants_for_guide(guide_id: str) -> List[Dict]:
-    """Retrieves all active caseload entrepreneurs for a Guide, including consultation requesters."""
+    """Retrieves all active caseload entrepreneurs for a Guide with memoization, single batch profile query, and server-side NDA gating."""
+    if not guide_id:
+        return []
+
+    # Strict Server-Side NDA Authorization Gate
+    from services.legal import check_user_nda_accepted
+    if not check_user_nda_accepted(guide_id, "guide"):
+        return []
+
+    cached = get_memo(f"guide_aspirants:{guide_id}")
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
-    rows = []
-    seen_ids = set()
-    from services.profiles import get_profile
+    from services.profiles import get_profiles_batch
 
     if backend == "supabase":
         client = _get_admin_client() or _get_user_client()
         if client:
+            rows = []
             try:
                 try:
                     res = client.table("relationships").select("aspirant_id, notes, status, created_at, guide_id, guide_ids").eq("status", "active").execute()
                 except Exception:
                     res = client.table("relationships").select("aspirant_id, notes, status, created_at, guide_id").eq("status", "active").execute()
+
+                rel_map = {}
                 for r in (res.data or []):
                     g_ids = r.get("guide_ids") or []
                     if isinstance(g_ids, str):
                         try: g_ids = json.loads(g_ids)
                         except Exception: g_ids = []
                     is_active_guide = (r.get("guide_id") == guide_id) or (isinstance(g_ids, list) and guide_id in g_ids)
-                    if is_active_guide:
-                        aid = r["aspirant_id"]
-                        if aid not in seen_ids:
-                            p = get_profile(aid)
-                            if p:
-                                p["assigned_at"] = r.get("created_at")
-                                p["assignment_notes"] = r.get("notes")
-                                rows.append(p)
-                                seen_ids.add(aid)
+                    if is_active_guide and r.get("aspirant_id"):
+                        rel_map[r["aspirant_id"]] = r
+
+                if rel_map:
+                    profiles_map = get_profiles_batch(list(rel_map.keys()))
+                    for aid, r in rel_map.items():
+                        p = profiles_map.get(aid)
+                        if p:
+                            p_copy = dict(p)
+                            p_copy["assigned_at"] = r.get("created_at")
+                            p_copy["assignment_notes"] = r.get("notes")
+                            rows.append(p_copy)
+                set_memo(f"guide_aspirants:{guide_id}", rows, ttl_seconds=60)
             except Exception as e:
                 print(f"[Relationships] Supabase list aspirants for guide error: {e}")
-
             return rows
         return []
 
-    return get_local_db().list_aspirants_for_guide(guide_id)
+    rows = get_local_db().list_aspirants_for_guide(guide_id)
+    set_memo(f"guide_aspirants:{guide_id}", rows, ttl_seconds=60)
+    return rows
 
 def get_assigned_aspirants_for_sme(sme_id: str) -> List[Dict]:
-    """Retrieves all active Aspirants assigned to an SME."""
+    """Retrieves all active Aspirants assigned to an SME with memoization, single batch profile query, and server-side NDA gating."""
+    if not sme_id:
+        return []
+
+    # Strict Server-Side NDA Authorization Gate
+    from services.legal import check_user_nda_accepted
+    if not check_user_nda_accepted(sme_id, "sme"):
+        return []
+
+    cached = get_memo(f"sme_aspirants:{sme_id}")
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
-    rows = []
-    seen_ids = set()
-    from services.profiles import get_profile
+    from services.profiles import get_profiles_batch
 
     if backend == "supabase":
         client = _get_admin_client() or _get_user_client()
         if client:
+            rows = []
             try:
                 try:
                     res = client.table("relationships").select("aspirant_id, notes, status, created_at, sme_id, sme_ids").eq("status", "active").execute()
                 except Exception:
                     res = client.table("relationships").select("aspirant_id, notes, status, created_at, sme_id").eq("status", "active").execute()
+
+                rel_map = {}
                 for r in (res.data or []):
                     s_ids = r.get("sme_ids") or []
                     if isinstance(s_ids, str):
                         try: s_ids = json.loads(s_ids)
                         except Exception: s_ids = []
                     is_assigned = (r.get("sme_id") == sme_id) or (isinstance(s_ids, list) and sme_id in s_ids)
-                    if is_assigned:
-                        aid = r["aspirant_id"]
-                        if aid not in seen_ids:
-                            p = get_profile(aid)
-                            if p:
-                                p["assigned_at"] = r.get("created_at")
-                                p["assignment_notes"] = r.get("notes")
-                                rows.append(p)
-                                seen_ids.add(aid)
+                    if is_assigned and r.get("aspirant_id"):
+                        rel_map[r["aspirant_id"]] = r
+
+                if rel_map:
+                    profiles_map = get_profiles_batch(list(rel_map.keys()))
+                    for aid, r in rel_map.items():
+                        p = profiles_map.get(aid)
+                        if p:
+                            p_copy = dict(p)
+                            p_copy["assigned_at"] = r.get("created_at")
+                            p_copy["assignment_notes"] = r.get("notes")
+                            rows.append(p_copy)
+                set_memo(f"sme_aspirants:{sme_id}", rows, ttl_seconds=60)
             except Exception as e:
                 print(f"[Relationships] Supabase list aspirants for sme error: {e}")
-
             return rows
         return []
 
-    return get_local_db().list_aspirants_for_sme(sme_id)
+    rows = get_local_db().list_aspirants_for_sme(sme_id)
+    set_memo(f"sme_aspirants:{sme_id}", rows, ttl_seconds=60)
+    return rows

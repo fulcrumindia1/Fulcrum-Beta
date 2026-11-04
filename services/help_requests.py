@@ -806,13 +806,7 @@ def list_mentor_admin_queries(
                     r["requester_name"] = req_p.get("full_name") or "Mentor"
                     r["requester_role_actual"] = req_p.get("role") or r.get("requester_role", "guide")
                     rows.append(r)
-                local_rows = get_local_db().list_mentor_admin_queries(mentor_id=mentor_id, aspirant_id=aspirant_id)
-                seen_ids = {r["id"] for r in rows}
-                for lr in local_rows:
-                    if lr["id"] not in seen_ids:
-                        rows.append(lr)
-                if rows:
-                    return rows
+                return rows
             except Exception as e:
                 print(f"[HelpRequests] Supabase list_mentor_admin_queries error: {e}")
 

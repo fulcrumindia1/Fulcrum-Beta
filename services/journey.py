@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
+from services.cache import get_memo, set_memo, invalidate_memo
 
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
@@ -157,7 +158,16 @@ def get_journey_timeline(aspirant_id: str) -> List[Dict]:
     Returns the complete chronological timeline of journey events, ordered
     with the most recent on top (DESC).
     Excludes soft-deleted records.
+    Uses request-scoped memoization to eliminate repeated calls within a dashboard render.
     """
+    if not aspirant_id:
+        return []
+
+    cache_key = f"journey:{aspirant_id}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -187,7 +197,9 @@ def get_journey_timeline(aspirant_id: str) -> List[Dict]:
                         e["description"] = data.get("description", "")
                         e["included_in_roadmap"] = (top_inc if top_inc is not None else data.get("included_in_roadmap", True)) is not False
                         timeline.append(e)
-                    return sort_journey_events(timeline)
+                    sorted_tl = sort_journey_events(timeline)
+                    set_memo(cache_key, sorted_tl, ttl_seconds=60)
+                    return sorted_tl
             except Exception as e:
                 print(f"[Journey] Supabase timeline user client error: {e}")
 
@@ -217,13 +229,17 @@ def get_journey_timeline(aspirant_id: str) -> List[Dict]:
                     e["description"] = data.get("description", "")
                     e["included_in_roadmap"] = (top_inc if top_inc is not None else data.get("included_in_roadmap", True)) is not False
                     timeline.append(e)
-                return sort_journey_events(timeline)
+                sorted_tl = sort_journey_events(timeline)
+                set_memo(cache_key, sorted_tl, ttl_seconds=60)
+                return sorted_tl
             except Exception as e:
                 pass
         return []
 
     # SQLite local fallback ONLY (when DATA_BACKEND=sqlite)
-    return sort_journey_events(get_local_db().get_journey_events(aspirant_id))
+    local_tl = sort_journey_events(get_local_db().get_journey_events(aspirant_id))
+    set_memo(cache_key, local_tl, ttl_seconds=60)
+    return local_tl
 
 def toggle_event_roadmap_inclusion(
     event_id: str,

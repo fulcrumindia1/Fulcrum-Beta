@@ -31,6 +31,7 @@ def _safe_esc(val, default=""):
         return default
     return html.escape(str(val))
 
+from services.cache import is_tab_active
 from services.relationships import get_assigned_aspirants_for_guide, get_aspirant_mentors, get_assignment_history
 from services.profiles import get_profile, update_mentor_profile
 from services.journey import get_journey_timeline, add_guide_contribution, soft_delete_event, get_standard_role_label
@@ -73,7 +74,7 @@ def render_guide_portal(user_profile: dict):
     </div>
     """, unsafe_allow_html=True)
 
-    main_tabs = st.tabs(["👥 My Aspirants", "💬 All Consultations Overview", "👤 My Profile"])
+    main_tabs = st.tabs(["👥 My Aspirants", "💬 All Consultations Overview", "👤 My Profile"], on_change="rerun", key="guide_main_tabs")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 1: MY ASPIRANTS WORKSPACE
@@ -126,15 +127,16 @@ def render_guide_portal(user_profile: dict):
                     except Exception:
                         pass
 
-                # 5 Dedicated Context Navigation Sections for Selected Aspirant
+                # 6 Dedicated Context Navigation Sections for Selected Aspirant
                 consult_label = f"💬 Consultations ({open_cnt})" if open_cnt > 0 else "💬 Consultations"
-                subtab_keys = ["profile", "journey", "guidance_team", "schemes", "consultations"]
+                subtab_keys = ["profile", "journey", "guidance_team", "schemes", "consultations", "collaboration"]
                 subtab_labels = {
                     "profile": "👤 Profile",
                     "journey": "🎬 Journey",
                     "guidance_team": "🤝 Guidance Team",
                     "schemes": f"🏦 Scheme Matches{rel_badge}",
-                    "consultations": consult_label
+                    "consultations": consult_label,
+                    "collaboration": "💬 Case Collaboration"
                 }
 
                 sub_key = f"guide_subtab_{selected_asp_id}"
@@ -1055,6 +1057,45 @@ def render_guide_portal(user_profile: dict):
                                         st.rerun()
                                     else:
                                         st.error(q_err or "Failed to submit request.")
+
+                # ── SUBTAB 6: CASE COLLABORATION & DISCUSSIONS ──
+                elif active_subtab == "collaboration":
+                    st.markdown(f"#### 💬 Case Discussions & Private Advisory Notes for {curr_asp['full_name']}")
+                    st.caption("Collaborate with the entrepreneur and assigned Subject Matter Experts. Notes flagged as Private are concealed from the entrepreneur.")
+                    from services.collaboration import list_case_messages, create_case_message
+                    msgs = list_case_messages(selected_asp_id, requesting_role="guide")
+                    if not msgs:
+                        st.info("No case discussion messages logged yet.")
+                    else:
+                        for m in msgs:
+                            is_priv = m.get("is_private_mentor_note")
+                            border_color = "#DC2626" if is_priv else "#2563EB"
+                            badge_text = "🔒 PRIVATE MENTOR NOTE (Hidden from Founder)" if is_priv else "🌐 OPEN CASE DISCUSSION"
+                            st.markdown(f"""
+                            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:10px; padding:1rem; margin-bottom:0.75rem;">
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <div style="font-weight:700; color:#1E293B;">{_safe_esc(m.get('title'))}</div>
+                                    <div style="font-size:0.72rem; font-weight:700; color:{border_color};">{badge_text}</div>
+                                </div>
+                                <div style="font-size:0.75rem; color:#64748B; margin-top:2px;">by {_safe_esc(m.get('author_name', 'Mentor'))} ({_safe_esc(m.get('author_role', '').upper())}) · {m.get('created_at', '')[:10]}</div>
+                                <div style="font-size:0.85rem; color:#334155; margin-top:6px;">{_safe_esc(m.get('message'))}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                    with st.form(f"form_guide_case_msg_{selected_asp_id}"):
+                        msg_title = st.text_input("Note / Discussion Subject*", placeholder="e.g. Assessment of financial statements or DPR gap")
+                        msg_body = st.text_area("Detailed Note / Message*", placeholder="Write note or advisory instructions...")
+                        is_priv_check = st.checkbox("🔒 Mark as Private Mentor Advisory Note (Visible to Guide, SME & Admin only; hidden from entrepreneur)", value=False)
+                        if st.form_submit_button("Post Case Message", type="primary"):
+                            if not msg_title.strip() or not msg_body.strip():
+                                st.warning("Please provide title and message.")
+                            else:
+                                ok, err = create_case_message(selected_asp_id, guide_id, "guide", msg_title, msg_body, is_private_mentor_note=is_priv_check)
+                                if ok:
+                                    st.success("Case message posted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(err or "Failed to post case message.")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 2: GUIDE CONSULTATIONS QUEUE

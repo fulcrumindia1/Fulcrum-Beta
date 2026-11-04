@@ -41,6 +41,8 @@ BACKUP_TABLES = [
     "notifications",
     "assignment_history",
     "schemes",
+    "scheme_releases",
+    "activity_log",
 ]
 
 BACKUP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backups"))
@@ -416,6 +418,79 @@ def restore_to_sqlite(zip_file_path: str):
                 ))
             conn.commit()
             print(f"  ✓ Restored {len(schemes)} schemes into local SQLite.")
+
+        # Restore notifications
+        notif_file = os.path.join(temp_extract_dir, "notifications.json")
+        if os.path.exists(notif_file):
+            with open(notif_file, "r", encoding="utf-8") as f:
+                notifs = json.load(f)
+            cur = conn.cursor()
+            for n in notifs:
+                cur.execute("""
+                    INSERT OR REPLACE INTO notifications (id, user_id, title, message, notification_type, is_read, metadata, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    n.get("id"), n.get("user_id"), n.get("title"), n.get("message"),
+                    n.get("notification_type", "SYSTEM"), 1 if n.get("is_read") else 0,
+                    json.dumps(n.get("metadata") or {}, ensure_ascii=False) if isinstance(n.get("metadata"), (dict, list)) else n.get("metadata", "{}"),
+                    n.get("created_at")
+                ))
+            conn.commit()
+            print(f"  ✓ Restored {len(notifs)} notifications into local SQLite.")
+
+        # Restore assignment_history
+        ah_file = os.path.join(temp_extract_dir, "assignment_history.json")
+        if os.path.exists(ah_file):
+            with open(ah_file, "r", encoding="utf-8") as f:
+                ahs = json.load(f)
+            cur = conn.cursor()
+            for a in ahs:
+                cur.execute("""
+                    INSERT OR REPLACE INTO assignment_history (id, relationship_id, aspirant_id, mentor_id, mentor_role, action, assigned_by, notes, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    a.get("id"), a.get("relationship_id"), a.get("aspirant_id"), a.get("mentor_id"),
+                    a.get("mentor_role"), a.get("action"), a.get("assigned_by"), a.get("notes"),
+                    a.get("created_at")
+                ))
+            conn.commit()
+            print(f"  ✓ Restored {len(ahs)} assignment_history entries into local SQLite.")
+
+        # Restore scheme_releases
+        sr_file = os.path.join(temp_extract_dir, "scheme_releases.json")
+        if os.path.exists(sr_file):
+            with open(sr_file, "r", encoding="utf-8") as f:
+                srs = json.load(f)
+            cur = conn.cursor()
+            for sr in srs:
+                cur.execute("""
+                    INSERT OR REPLACE INTO scheme_releases (id, aspirant_id, scheme_id, guide_id, notes, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    sr.get("id"), sr.get("aspirant_id"), sr.get("scheme_id"), sr.get("guide_id"),
+                    sr.get("notes"), sr.get("status", "released"), sr.get("created_at")
+                ))
+            conn.commit()
+            print(f"  ✓ Restored {len(srs)} scheme_releases into local SQLite.")
+
+        # Restore activity_log
+        al_file = os.path.join(temp_extract_dir, "activity_log.json")
+        if os.path.exists(al_file):
+            with open(al_file, "r", encoding="utf-8") as f:
+                als = json.load(f)
+            cur = conn.cursor()
+            for al in als:
+                cur.execute("""
+                    INSERT OR REPLACE INTO activity_log (id, user_id, action, target_type, target_id, details, ip_address, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    al.get("id"), al.get("user_id"), al.get("action"), al.get("target_type"),
+                    al.get("target_id"),
+                    json.dumps(al.get("details") or {}, ensure_ascii=False) if isinstance(al.get("details"), (dict, list)) else al.get("details", "{}"),
+                    al.get("ip_address"), al.get("created_at")
+                ))
+            conn.commit()
+            print(f"  ✓ Restored {len(als)} activity_log records into local SQLite.")
 
         print("=" * 70)
         print(" [SUCCESS] Local SQLite Emergency Restoration Complete!")
