@@ -332,80 +332,16 @@ class LocalDatabase:
             except Exception: pass
         conn.commit()
 
-        # Seed default demo accounts (Admin, Guide, SME, Aspirant) if missing
+        # Seed default super admin (fulcrumindia1@gmail.com) if missing
         cur.execute("SELECT id FROM profiles WHERE role = 'admin' LIMIT 1")
         if not cur.fetchone():
             now_iso = datetime.now(timezone.utc).isoformat()
-            # 1. Admin
-            admin_id = "72655c43-9f13-4309-a8a0-194570a6c2aa"
+            admin_id = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
             admin_pw_hash = hashlib.sha256("Admin@123".encode("utf-8")).hexdigest()
             cur.execute("""
             INSERT INTO profiles (id, email, role, full_name, phone, district, state, password_hash, profile_data, is_active, created_at, updated_at)
             VALUES (?, ?, 'admin', 'Fulcrum Administrator', '9876543213', 'Chennai', 'Tamil Nadu', ?, '{}', 1, ?, ?)
-            """, (admin_id, "admin@fulcrum.in", admin_pw_hash, now_iso, now_iso))
-
-            # 2. Guide
-            guide_id = "a21158e5-7850-4cad-94d2-1ef69e177765"
-            guide_pw_hash = hashlib.sha256("Welcome@2026".encode("utf-8")).hexdigest()
-            guide_data = json.dumps({"expertise": "Enterprise Strategy, Agribusiness Scaling", "bio": "Senior Enterprise Guide with 15+ years experience mentoring MSMEs.", "industry": "Agribusiness", "temp_password_issued": True})
-            cur.execute("""
-            INSERT INTO profiles (id, email, role, full_name, phone, district, state, password_hash, profile_data, is_active, created_at, updated_at)
-            VALUES (?, ?, 'guide', 'Rajendran Natarajan', '9840123456', 'Chennai', 'Tamil Nadu', ?, ?, 1, ?, ?)
-            """, (guide_id, "rajendran@fulcrum.in", guide_pw_hash, guide_data, now_iso, now_iso))
-
-            # 3. SME
-            sme_id = "953bdd1a-5aeb-4919-84a7-8ac0c3b0b47f"
-            sme_pw_hash = hashlib.sha256("Welcome@2026".encode("utf-8")).hexdigest()
-            sme_data = json.dumps({"expertise": "GST, Indirect Taxation & FSSAI Compliance", "bio": "Specialized Chartered Accountant & Compliance Consultant.", "industry": "Taxation & Regulatory", "temp_password_issued": True})
-            cur.execute("""
-            INSERT INTO profiles (id, email, role, full_name, phone, district, state, password_hash, profile_data, is_active, created_at, updated_at)
-            VALUES (?, ?, 'sme', 'Kumar S.', '9840654321', 'Madurai', 'Tamil Nadu', ?, ?, 1, ?, ?)
-            """, (sme_id, "kumar.sme@fulcrum.in", sme_pw_hash, sme_data, now_iso, now_iso))
-
-            # 4. Aspirant (Ravi Kumar)
-            asp_id = "6e667c86-84d3-4b65-b727-90f71f2b2875"
-            asp_pw_hash = hashlib.sha256("Aspirant@123".encode("utf-8")).hexdigest()
-            asp_data = json.dumps({
-                "personal": {"full_name": "Ravi Kumar", "email": "ravi.kumar@milletfoods.in", "phone": "9876543210", "district": "Madurai", "state": "Tamil Nadu", "gender": "Male", "dob": "15-08-1995", "address": "12 Main Road, Madurai"},
-                "professional": {"education": "B.Sc Agriculture", "experience_years": 4, "skills": ["Food Processing", "Supply Chain", "Retail"], "current_status": "Full-time Founder", "experience": "3 years in food manufacturing", "certifications": "FSSAI Basic, MSME EDI Training"},
-                "business": {"business_name": "Organic Millet Foods", "business_type": "Manufacturing", "sector": "Food Processing", "stage": "Pre-Seed / Seed", "investment_bracket": "10L-25L", "revenue": "₹12,00,000 / year", "employee_count": 3, "description": "Nutritional value-added millet products for urban families."},
-                "demographics": {"district": "Madurai", "state": "Tamil Nadu", "founder_category": "OBC", "social_category": "OBC", "gender": "Male", "is_dpiit_recognized": True, "is_startuptn_registered": True, "is_women_led": False}
-            })
-            cur.execute("""
-            INSERT INTO profiles (id, email, role, full_name, phone, district, state, password_hash, profile_data, is_active, created_at, updated_at)
-            VALUES (?, ?, 'aspirant', 'Ravi Kumar', '9876543210', 'Madurai', 'Tamil Nadu', ?, ?, 1, ?, ?)
-            """, (asp_id, "ravi.kumar@milletfoods.in", asp_pw_hash, asp_data, now_iso, now_iso))
-
-            # 5. Journey Record
-            journey_id = "j-6e667c86-84d3-4b65-b727-90f71f2b2875"
-            cur.execute("""
-            INSERT OR REPLACE INTO journeys (id, aspirant_id, title, status, created_at, updated_at)
-            VALUES (?, ?, 'Venture Formation & Scale Journey', 'active', ?, ?)
-            """, (journey_id, asp_id, now_iso, now_iso))
-
-            # 6. Default Relationship
-            rel_id = "05ce7f60-99b6-4228-b9cb-0e0b8338f546"
-            cur.execute("""
-            INSERT OR REPLACE INTO relationships (id, aspirant_id, guide_id, sme_id, assigned_by, status, notes, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'active', 'Dedicated Enterprise Mentor and Compliance SME assigned.', ?, ?)
-            """, (rel_id, asp_id, guide_id, sme_id, admin_id, now_iso, now_iso))
-
-            # 7. Milestone events
-            cur.execute("""
-            INSERT OR REPLACE INTO journey_events (id, journey_id, aspirant_id, actor_id, actor_role, event_type, event_data, event_date, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'aspirant', 'BUSINESS_STARTED', ?, '2026-01-10', ?, ?)
-            """, ("ev-seed-1", journey_id, asp_id, asp_id, json.dumps({"title": "Started Business", "description": "Founded Organic Millet Foods in Madurai to produce value-added millet health mixes.", "category": "Inception"}), now_iso, now_iso))
-
-            cur.execute("""
-            INSERT OR REPLACE INTO journey_events (id, journey_id, aspirant_id, actor_id, actor_role, event_type, event_data, event_date, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'guide', 'MENTOR_SESSION', ?, '2026-02-01', ?, ?)
-            """, ("ev-seed-2", journey_id, asp_id, guide_id, json.dumps({"title": "Refined Pricing & GTM Strategy", "description": "Helped Ravi refine retail pack pricing and identify B2B retail distribution channels.", "category": "Mentorship"}), now_iso, now_iso))
-
-            cur.execute("""
-            INSERT OR REPLACE INTO journey_events (id, journey_id, aspirant_id, actor_id, actor_role, event_type, event_data, event_date, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'sme', 'DOMAIN_ADVISORY', ?, '2026-02-15', ?, ?)
-            """, ("ev-seed-3", journey_id, asp_id, sme_id, json.dumps({"title": "GST & FSSAI Compliance Roadmap", "description": "Advised on GST threshold exemptions and completed mandatory FSSAI food licensing filing.", "category": "Compliance"}), now_iso, now_iso))
-
+            """, (admin_id, "fulcrumindia1@gmail.com", admin_pw_hash, now_iso, now_iso))
             conn.commit()
 
         # Seed 170 schemes from seed/schemes.json if empty
