@@ -24,16 +24,6 @@ DEFAULT_TERMS_DOC = {
     "content": """# FULCRUM-INDIA
 ## PLATFORM TERMS OF SERVICE & USER AGREEMENT
 
-**Version:** 1.0 — Legal Review Draft  
-**Effective Date:** [DD Month YYYY]  
-**Platform Operator:** [Full legally registered name of individual, proprietorship, partnership, LLP or company]  
-**Registered / Principal Business Address:** [Full address, India]  
-**Official Website:** [Verified website URL]  
-**Legal Contact:** [legal@your-domain]  
-**Grievance Contact:** [grievance@your-domain]
-
-**IMPORTANT: THIS IS A DRAFT. It must be reviewed, completed and approved by qualified Indian legal counsel before being presented as the official agreement.**
-
 ### 1. INTRODUCTION AND ACCEPTANCE
 1.1. Welcome to FULCRUM-INDIA ("FULCRUM", "Platform", "we", "us", or "our"), an entrepreneurship-support technology platform operated by the entity identified above ("Operator").
 1.2. FULCRUM provides digital tools for entrepreneurial profile management, business mentoring coordination, scheme discovery, preliminary eligibility assessment, Guide and Subject Matter Expert collaboration, opportunity tracking and related services.
