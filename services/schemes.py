@@ -236,23 +236,16 @@ def match_schemes_for_aspirant(
     assistance_need: Optional[Dict] = None
 ) -> List[Dict]:
     """
-    Explainable Deterministic X + Y -> Z Matching Engine:
+    Explainable Deterministic AI-Based Scheme Matching Engine:
     Computes a contextual match score (0-100%) for each active scheme based on:
-    - X = Founder Profile & Venture Reality (Domain, Stage, Geography, Demographics, Registrations)
-    - Y = Requested Assistance Goal & Support Quantum (Need, Type, Bracket, Timeline)
-    - Z = Rigorous 3-stage statutory & relevance evaluation
+    - Founder Profile & Venture Reality (Domain, Stage, Geography, Demographics, Registrations)
+    - Strategic Assistance Requirements (Need, Type, Bracket, Timeline)
+    - Rigorous 3-stage statutory & relevance evaluation
     
     Returns list of matched schemes scoring >= min_score ordered by match_score DESC.
     """
     if not aspirant_id:
         return []
-
-    y_goal = (assistance_need or {}).get("assistance_goal", "ALL")
-    y_quantum = (assistance_need or {}).get("quantum_range", "ANY_AMOUNT")
-    cache_key = f"scheme_matches_xyz:{aspirant_id}:{min_score}:{limit}:{y_goal}:{y_quantum}"
-    cached = get_memo(cache_key)
-    if cached is not None:
-        return cached
 
     if profile is None:
         from services.profiles import get_profile
@@ -268,6 +261,20 @@ def match_schemes_for_aspirant(
                     pass
     if not profile:
         return []
+
+    if assistance_need is None and profile:
+        p_data = profile.get("profile_data")
+        if isinstance(p_data, dict):
+            assistance_need = p_data.get("assistance_need") or {}
+        else:
+            assistance_need = {}
+
+    y_goal = (assistance_need or {}).get("assistance_goal", "ALL")
+    y_quantum = (assistance_need or {}).get("quantum_range", "ANY_AMOUNT")
+    cache_key = f"scheme_matches_ai:{aspirant_id}:{min_score}:{limit}:{y_goal}:{y_quantum}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
 
     from services.scheme_matching_engine import match_aspirant_schemes_intelligent
     all_schemes = list_schemes(active_only=True)
@@ -369,10 +376,13 @@ def release_scheme_to_aspirant(
     from services.relationships import get_aspirant_mentors
     from services.journey import log_meaningful_event
 
-    # 1. Authorization check
+    # 1. Authorization check: Assigned Guide or Admin
     mentors = get_aspirant_mentors(aspirant_id)
     assigned_guide = mentors.get("guide")
-    if not assigned_guide or str(assigned_guide.get("id")) != str(guide_id):
+    from services.profiles import get_profile
+    actor_prof = get_profile(guide_id)
+    is_admin = (actor_prof.get("role") == "admin") if actor_prof else False
+    if not is_admin and (not assigned_guide or str(assigned_guide.get("id")) != str(guide_id)):
         return False, "You are not authorized to release schemes to this Aspirant."
 
     scheme = get_scheme(scheme_id)
@@ -490,7 +500,10 @@ def withdraw_scheme_release(
 
     mentors = get_aspirant_mentors(aspirant_id)
     assigned_guide = mentors.get("guide")
-    if not assigned_guide or str(assigned_guide.get("id")) != str(guide_id):
+    from services.profiles import get_profile
+    actor_prof = get_profile(guide_id)
+    is_admin = (actor_prof.get("role") == "admin") if actor_prof else False
+    if not is_admin and (not assigned_guide or str(assigned_guide.get("id")) != str(guide_id)):
         return False, "You are not authorized to release schemes to this Aspirant."
 
     scheme = get_scheme(scheme_id)

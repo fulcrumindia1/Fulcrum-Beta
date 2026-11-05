@@ -125,3 +125,47 @@ def test_photo_validation_and_compression():
     assert w <= 512 and h <= 512
     assert len(proc_b) < 100 * 1024  # WebP 512x512 should be < 100 KB
 
+
+def test_saved_profile_assistance_need_matching():
+    # Profile with assistance_need saved in profile_data
+    profile_with_need = {
+        "id": "asp-need-01",
+        "full_name": "Agri Tech Founder",
+        "state": "Tamil Nadu",
+        "district": "Madurai",
+        "profile_data": {
+            "personal": {"gender": "Male"},
+            "business": {"sector": "Food Processing & Agribusiness", "stage": "Pre-Seed / Seed"},
+            "demographics": {"state": "Tamil Nadu", "district": "Madurai", "founder_category": "General"},
+            "assistance_need": {
+                "assistance_goal": "Capital Grant / Seed Subsidy",
+                "support_type": "Direct Project Subsidy (Capex)",
+                "quantum_range": "MICRO (< ₹5 Lakhs)",
+                "timeframe": "NEAR_TERM (1 to 3 Months)"
+            }
+        }
+    }
+
+    schemes = [
+        {
+            "id": "sch-pmfme",
+            "name": "PM Formalisation of Micro Food Processing Enterprises (PM FME)",
+            "agency": "Ministry of Food Processing Industries",
+            "funding_type": "Grant / Capital Subsidy",
+            "sectors": ["Food Processing & Agribusiness"],
+            "stage": "Seed",
+            "amount": "Up to ₹10 Lakhs",
+            "state_scope": "National",
+            "is_active": True
+        }
+    ]
+
+    # Calling matching engine WITHOUT passing assistance_need explicitly
+    # The engine must automatically extract it from profile["profile_data"]["assistance_need"]
+    matches = match_aspirant_schemes_intelligent(profile_with_need, schemes, assistance_need=None, min_score=50)
+    assert len(matches) == 1
+    m = matches[0]
+    assert m["match_score"] >= 80
+    assert any("assistance need match" in r.lower() or "capital grant" in r.lower() for r in m["match_reasons"])
+
+

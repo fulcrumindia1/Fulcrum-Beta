@@ -1,5 +1,5 @@
 """
-services/scheme_matching_engine.py — Rigorous 3-Stage X + Y -> Z Scheme Matching Engine
+services/scheme_matching_engine.py — Rigorous 3-Stage AI-Based Scheme Matching Engine
 ========================================================================================
 Architectural Foundation:
 X = Who the aspirant is and what business they operate (Identity, Sector, Stage, Geography, Demographics, Registrations)
@@ -375,12 +375,12 @@ def match_aspirant_schemes_intelligent(
     limit: Optional[int] = None
 ) -> List[Dict[str, Any]]:
     """
-    Master X + Y -> Z Pipeline Execution:
-    Compares normalized founder profile (X) and assistance requirements (Y)
+    Master AI-Based Scheme Matching Engine:
+    Compares normalized founder profile and assistance requirements (saved in profile or provided)
     against structured rules across the entire scheme catalogue.
     """
     x = normalize_aspirant_profile(profile)
-    y = assistance_need or {}
+    y = assistance_need or (profile.get("profile_data") or {}).get("assistance_need") or {}
 
     results = []
 

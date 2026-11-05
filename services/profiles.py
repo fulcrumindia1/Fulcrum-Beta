@@ -232,10 +232,11 @@ def update_aspirant_profile(
     professional_data: Optional[Dict] = None,
     business_data: Optional[Dict] = None,
     demographics_data: Optional[Dict] = None,
-    actor_id: Optional[str] = None
+    actor_id: Optional[str] = None,
+    assistance_need_data: Optional[Dict] = None
 ) -> Tuple[Optional[Dict], Optional[str]]:
     """
-    Updates Aspirant profile across the 4 core sections.
+    Updates Aspirant profile across the core sections and strategic assistance requirements.
     Supports either individual fields or a combined dictionary passed as second argument.
     Triggers automated scheme match recalculation & Journey event logging.
     """
@@ -267,6 +268,8 @@ def update_aspirant_profile(
         professional_data = d.get("professional", {})
         business_data = d.get("business", {})
         demographics_data = d.get("demographics", {})
+        if "assistance_need" in d:
+            assistance_need_data = d.get("assistance_need")
         full_name = personal_data.get("full_name") or current.get("full_name", "")
         phone = personal_data.get("phone") or current.get("phone", "")
         district = demographics_data.get("district") or personal_data.get("district") or current.get("district", "Tamil Nadu")
@@ -277,11 +280,16 @@ def update_aspirant_profile(
     district = (district or current.get("district", "")).strip()
     state = (state or current.get("state", "Tamil Nadu")).strip()
 
+    existing_pdata = current.get("profile_data") or {}
+    if not isinstance(existing_pdata, dict):
+        existing_pdata = {}
+
     profile_data = {
         "personal": personal_data or {},
         "professional": professional_data or {},
         "business": business_data or {},
-        "demographics": demographics_data or {}
+        "demographics": demographics_data or {},
+        "assistance_need": assistance_need_data if assistance_need_data is not None else existing_pdata.get("assistance_need", {})
     }
 
     updated_record = {
@@ -357,6 +365,7 @@ def update_aspirant_profile(
     )
 
     updated_record["completion_pct"] = calculate_completion(updated_record)
+    set_memo(f"profile:{user_id}", updated_record, ttl_seconds=60)
     return updated_record, None
 
 def update_mentor_profile(

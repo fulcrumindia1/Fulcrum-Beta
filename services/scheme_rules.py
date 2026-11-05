@@ -2,9 +2,9 @@
 services/scheme_rules.py — Structured Scheme Eligibility & Assistance Rules Layer
 ==================================================================================
 Provides structured machine-readable metadata and rules for government schemes,
-enabling rigorous 3-stage X + Y -> Z matching:
+enabling rigorous 3-stage AI-based matching:
 - Stage 1: Mandatory / Gatekeeper Eligibility (Hard constraints)
-- Stage 2: Relevance & Purpose Alignment (X + Y matching)
+- Stage 2: Relevance & Purpose Alignment (Profile & Need matching)
 - Stage 3: Human Review & Evidence Checklist
 
 Terminology:

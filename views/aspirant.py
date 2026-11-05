@@ -354,6 +354,50 @@ def render_aspirant_portal(user_profile: dict):
                 d_women_equity = st.number_input("Women Co-Founder Equity %", min_value=0, max_value=100, value=default_equity, help="Total women shareholding % (Schemes like TWEES mandate >=51% women ownership).")
                 is_qualifies_women = bool(d_women or d_women_equity >= 51)
 
+            # SECTION 5: FUNDING & ASSISTANCE REQUIREMENTS (AI-BASED ENGINE MATCHING)
+            st.markdown("#### 5. Funding & Strategic Assistance Requirements")
+            st.caption("Specify your venture's strategic assistance needs. Our AI-based matching engine analyzes these parameters to help your dedicated Guide curate and unlock verified government schemes, subsidies, and credit facilities.")
+
+            cur_need = p_data.get("assistance_need", {}) if isinstance(p_data.get("assistance_need"), dict) else {}
+            col_y1, col_y2 = st.columns(2)
+            with col_y1:
+                goal_options = [g for g in ASSISTANCE_GOALS if g != "ALL"] + ["All Assistance Goals"]
+                saved_goal = cur_need.get("assistance_goal") or "Capital Grant / Seed Subsidy"
+                if saved_goal not in goal_options:
+                    saved_goal = "Capital Grant / Seed Subsidy"
+                goal_idx = goal_options.index(saved_goal)
+                sel_goal = st.selectbox("1. Primary Assistance Goal *", goal_options, index=goal_idx)
+
+            with col_y2:
+                current_goal_key = sel_goal if sel_goal in SUPPORT_TYPES_BY_GOAL else "Capital Grant / Seed Subsidy"
+                primary_subs = SUPPORT_TYPES_BY_GOAL.get(current_goal_key, ["All Support Sub-Types"])
+                all_other_subs = [s for g, subs in SUPPORT_TYPES_BY_GOAL.items() if g != current_goal_key for s in subs]
+                type_options = primary_subs + [s for s in all_other_subs if s not in primary_subs]
+
+                saved_type = cur_need.get("support_type") or primary_subs[0]
+                if saved_type not in type_options:
+                    saved_type = type_options[0]
+                type_idx = type_options.index(saved_type)
+                sel_sub_type = st.selectbox("2. Specific Support Type *", type_options, index=type_idx)
+
+            col_y3, col_y4 = st.columns(2)
+            with col_y3:
+                quantum_options = FUNDING_QUANTUM_RANGES
+                saved_quantum = cur_need.get("quantum_range") or "MICRO (< ₹5 Lakhs)"
+                if saved_quantum not in quantum_options:
+                    saved_quantum = quantum_options[1]
+                quantum_idx = quantum_options.index(saved_quantum)
+                sel_quantum = st.selectbox("3. Funding / Support Quantum *", quantum_options, index=quantum_idx)
+
+            with col_y4:
+                timeframe_options = TIMEFRAME_OPTIONS
+                saved_timeframe = cur_need.get("timeframe") or "NEAR_TERM (1 to 3 Months)"
+                if saved_timeframe not in timeframe_options:
+                    saved_timeframe = timeframe_options[2]
+                timeframe_idx = timeframe_options.index(saved_timeframe)
+                sel_timeframe = st.selectbox("4. Deployment Timeframe *", timeframe_options, index=timeframe_idx)
+
+            st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
             btn_save = st.form_submit_button("SAVE PROFILE & UPDATE MATCHES", type="primary", use_container_width=True)
 
             if btn_save:
@@ -366,7 +410,8 @@ def render_aspirant_portal(user_profile: dict):
                     personal_data={"gender": f_gender, "dob": f_dob, "address": f_address},
                     professional_data={"education": f_edu, "skills": f_skills, "experience": f_exp, "certifications": f_certs},
                     business_data={"business_name": b_name, "business_type": b_type, "sector": b_sector, "stage": b_stage, "revenue": b_revenue, "employee_count": b_team, "description": b_desc},
-                    demographics_data={"district": d_final_district, "state": d_state, "founder_category": d_cat, "gender": f_gender, "is_dpiit_recognized": d_dpiit, "is_startuptn_registered": d_startuptn, "is_women_led": is_qualifies_women, "women_equity_pct": d_women_equity}
+                    demographics_data={"district": d_final_district, "state": d_state, "founder_category": d_cat, "gender": f_gender, "is_dpiit_recognized": d_dpiit, "is_startuptn_registered": d_startuptn, "is_women_led": is_qualifies_women, "women_equity_pct": d_women_equity},
+                    assistance_need_data={"assistance_goal": sel_goal, "support_type": sel_sub_type, "quantum_range": sel_quantum, "timeframe": sel_timeframe}
                 )
                 if updated:
                     st.success("✅ Profile updated! Scheme recommendations recalculated and Journey event logged.")
@@ -636,81 +681,21 @@ def render_aspirant_portal(user_profile: dict):
                             st.error(err or "Failed to submit request.")
 
     # ─────────────────────────────────────────────────────────────
-    # TAB 5: SCHEME MATCHES (Gatekeeper Governed)
+    # TAB 5: SCHEME MATCHES (Curated & Released by Guide)
     # ─────────────────────────────────────────────────────────────
     with tabs[4]:
-        st.markdown("### 🏦 Funding Intelligence & Scheme Matches")
-        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Discover targeted schemes using the intelligent X + Y → Z matching engine, and review officially released dossiers curated by your Guide.</p>", unsafe_allow_html=True)
-
-        # ── DEPENDENT DROPDOWNS: FIND FUNDING & SUPPORT (X + Y -> Z) ──
-        from services.scheme_rules import ASSISTANCE_GOALS, SUPPORT_TYPES_BY_GOAL, FUNDING_QUANTUM_RANGES, TIMEFRAME_OPTIONS
-        from services.schemes import match_schemes_for_aspirant
-
-        st.markdown("""
-        <div style="background:linear-gradient(135deg, #1E1B4B 0%, #0F172A 100%); border:1px solid #6366F1; border-radius:14px; padding:1.25rem 1.5rem; margin-bottom:1.2rem; color:#FFFFFF; box-shadow:0 4px 16px rgba(99,102,241,0.15);">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div>
-                    <h3 style="margin:0; font-size:1.15rem; color:#FFFFFF;">🎯 Find Funding & Support (X + Y → Z Explorer)</h3>
-                    <div style="font-size:0.84rem; color:#C7D2FE; margin-top:3px;">Select your specific assistance requirements to match against 170+ central and state government schemes.</div>
-                </div>
-                <span style="font-size:0.75rem; font-weight:700; background:rgba(99,102,241,0.3); border:1px solid #818CF8; color:#EEF2FF; padding:4px 10px; border-radius:8px;">X + Y → Z Engine</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        with st.container(border=True):
-            st.markdown("<div style='font-size:0.82rem; font-weight:700; color:#334155; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:0.5rem;'>Define Your Assistance Need (Y)</div>", unsafe_allow_html=True)
-            col_y1, col_y2 = st.columns(2)
-            with col_y1:
-                sel_goal = st.selectbox("1. Primary Assistance Goal", ASSISTANCE_GOALS, key="asp_y_goal")
-            with col_y2:
-                sub_options = SUPPORT_TYPES_BY_GOAL.get(sel_goal, ["All Support Sub-Types"]) if sel_goal != "ALL" else ["All Support Sub-Types"]
-                sel_sub_type = st.selectbox("2. Specific Support Type", sub_options, key="asp_y_subtype")
-
-            col_y3, col_y4 = st.columns(2)
-            with col_y3:
-                sel_quantum = st.selectbox("3. Funding / Support Quantum", FUNDING_QUANTUM_RANGES, key="asp_y_quantum")
-            with col_y4:
-                sel_timeframe = st.selectbox("4. Deployment Timeframe", TIMEFRAME_OPTIONS, key="asp_y_timeframe")
-
-        user_need = {
-            "assistance_goal": sel_goal,
-            "support_type": sel_sub_type,
-            "quantum_range": sel_quantum,
-            "timeframe": sel_timeframe
-        }
-        live_matched = match_schemes_for_aspirant(user_id, profile=profile, assistance_need=user_need, min_score=50)
-
-        with st.expander(f"🔍 View Matched Schemes for this Need ({len(live_matched)} Qualifying Opportunities)", expanded=(sel_goal != "ALL")):
-            if not live_matched:
-                st.info("No schemes met the 50% threshold for this specific combination. Try broadening your criteria or selecting 'ALL'.")
-            else:
-                for idx, sm in enumerate(live_matched[:9]):
-                    sc = sm["match_score"]
-                    sc_color = "#10B981" if sc >= 80 else "#F59E0B" if sc >= 65 else "#3B82F6"
-                    c_m1, c_m2 = st.columns([5, 1.2])
-                    with c_m1:
-                        st.markdown(f"**{sm.get('name')}** · <span style='color:#64748B;'>{sm.get('agency')}</span> · <span style='color:#059669; font-weight:700;'>{sm.get('amount')}</span>", unsafe_allow_html=True)
-                        if sm.get("match_reasons"):
-                            st.caption("✓ " + " · ".join(sm["match_reasons"][:2]))
-                    with c_m2:
-                        st.markdown(f"<div style='text-align:right;'><span style='background:{sc_color}; color:#fff; font-weight:700; font-size:0.75rem; padding:3px 10px; border-radius:12px;'>{sc}% {sm.get('recommendation_status')}</span></div>", unsafe_allow_html=True)
-                    if sm.get("application_url"):
-                        st.markdown(f"<div style='margin-bottom:0.75rem;'><a href='{sm['application_url']}' target='_blank' style='font-size:0.78rem; color:#2563EB;'>Official Application Portal &nearr;</a></div>", unsafe_allow_html=True)
-                    st.divider()
-
-        st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
-        st.markdown("#### 🎯 Curated & Released Schemes (Approved by Your Guide)")
-        st.markdown("<p style='color:#64748B; font-size:0.85rem;'>These schemes have been officially verified and unlocked for your venture by your dedicated Guide.</p>", unsafe_allow_html=True)
+        st.markdown("### 🏦 Funding Intelligence & Scheme Recommendations")
+        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Review officially verified and released scheme dossiers curated for your venture by your dedicated Guide using AI scheme intelligence.</p>", unsafe_allow_html=True)
 
         released_schemes = get_released_schemes_for_aspirant(user_id)
 
         if not released_schemes:
             st.markdown("""
-            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:2rem 1.5rem; text-align:center;">
-                <h3 style="color:#0F172A; margin:0 0 0.5rem 0;">No schemes have been released to you yet.</h3>
-                <p style="color:#64748B; font-size:0.95rem; max-width:540px; margin:0 auto; line-height:1.5;">
-                    Your Guide reviews relevant funding opportunities from the matching engine and will release curated schemes to your account with strategic notes.
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:14px; padding:2.5rem 1.8rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.03); margin-top:0.75rem;">
+                <div style="font-size:2.5rem; margin-bottom:0.75rem;">🧭</div>
+                <h3 style="color:#0F172A; margin:0 0 0.5rem 0; font-size:1.25rem; font-weight:800;">No Schemes Released Yet</h3>
+                <p style="color:#64748B; font-size:0.95rem; max-width:580px; margin:0 auto; line-height:1.6;">
+                    Your dedicated Guide evaluates your enterprise profile and funding assistance requirements using our AI-based scheme matching engine. When appropriate funding opportunities are verified, your Guide will release them directly to your venture dashboard with personalized strategic recommendations and direct application links.
                 </p>
             </div>
             """, unsafe_allow_html=True)
@@ -722,13 +707,7 @@ def render_aspirant_portal(user_profile: dict):
                 cols = st.columns(3)
                 for j, s in enumerate(row_schemes):
                     with cols[j]:
-                        render_fund_explorer_card(
-                            s,
-                            is_admin=False,
-                            key_prefix=f"asp_rel_{s.get('id', j)}",
-                            show_private_intelligence=False,
-                            guide_recommendation=s.get("guide_recommendation")
-                        )
+                        render_fund_explorer_card(s, user_id=user_id, is_aspirant=True)
 
     # ─────────────────────────────────────────────────────────────
     # TAB 6: CONSULT A GUIDE OR SME (Strictly Guides and SMEs)
