@@ -11,6 +11,7 @@ Implements the 5 new administrative oversight consoles:
 
 import streamlit as st
 import html
+import textwrap
 from datetime import datetime
 from services.roles import (
     list_users_with_multi_roles,
@@ -63,7 +64,7 @@ def render_admin_role_grants_tab(admin_id: str):
             pending_badges = " ".join([f"<span style='background:#F59E0B; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>PENDING NDA: {r.upper()}</span>" for r in u["pending_nda_roles"]])
             revoked_badges = " ".join([f"<span style='background:#EF4444; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>REVOKED: {r.upper()}</span>" for r in u["revoked_roles"]])
 
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -75,7 +76,7 @@ def render_admin_role_grants_tab(admin_id: str):
                     </div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """).strip(), unsafe_allow_html=True)
 
     with col_g2:
         st.markdown("#### Grant Additional Role")
@@ -141,7 +142,7 @@ def render_admin_legal_records_tab():
             roles_str = ", ".join(roles_cov) if isinstance(roles_cov, list) else str(roles_cov)
             hash_display = (r.get("doc_hash") or "")[:16] + "..."
 
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10B981; border-radius:10px; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start;">
                     <div>
@@ -156,7 +157,7 @@ def render_admin_legal_records_tab():
                     </div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """).strip(), unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,7 +189,7 @@ def render_admin_complaints_tab(admin_id: str):
             status_color = "#F59E0B" if status == "PENDING" else ("#3B82F6" if status == "UNDER_REVIEW" else "#10B981")
 
             with st.expander(f"Report: {asp.get('full_name', 'Founder')} on {guide.get('full_name', 'Guide')} [{status}]", expanded=(status == "PENDING")):
-                st.markdown(f"""
+                st.markdown(textwrap.dedent(f"""
                 <div style="margin-bottom:0.75rem;">
                     <p style="margin:0; font-size:0.9rem;"><strong>Entrepreneur:</strong> {asp.get('full_name')} ({asp.get('email')})</p>
                     <p style="margin:0; font-size:0.9rem;"><strong>Assigned Guide:</strong> {guide.get('full_name')} ({guide.get('email')})</p>
@@ -199,7 +200,7 @@ def render_admin_complaints_tab(admin_id: str):
                     <strong>Entrepreneur Statement:</strong><br/>
                     {_safe(c.get('details'))}
                 </div>
-                """, unsafe_allow_html=True)
+                """).strip(), unsafe_allow_html=True)
 
                 if c.get("resolution_notes"):
                     st.info(f"Resolution Notes: {c.get('resolution_notes')}")
@@ -248,7 +249,7 @@ def render_admin_inactivity_tab():
 
             badge_color = "#F59E0B" if "DAY_7" in stage else ("#DC2626" if "DAY_14" in stage else "#E11D48")
 
-            st.markdown(f"""
+            st.markdown(textwrap.dedent(f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {badge_color}; border-radius:10px; padding:0.9rem; margin-bottom:0.6rem;">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -263,7 +264,7 @@ def render_admin_inactivity_tab():
                     </div>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """).strip(), unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

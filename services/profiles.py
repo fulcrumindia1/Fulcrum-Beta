@@ -190,6 +190,7 @@ def list_profiles_by_role(role: str) -> List[Dict]:
     In Multi-Role architecture, a user holds a role if:
       1. profiles.role == role, OR
       2. user_roles contains an active grant with user_roles.role == role AND status == 'active'.
+      3. For 'aspirant', any user who has an enterprise roadmap in journeys (excluding admins).
     Users are deduplicated by ID so each distinct user is returned exactly once.
     """
     backend = get_data_backend()
@@ -198,8 +199,8 @@ def list_profiles_by_role(role: str) -> List[Dict]:
         client = _get_admin_client() or _get_user_client()
         if client:
             try:
-                # 1. Fetch user_ids holding this role with status 'active' in user_roles
                 role_uids = set()
+                # 1. Fetch user_ids holding this role with status 'active' in user_roles
                 try:
                     ur_res = client.table("user_roles").select("user_id").eq("role", role).eq("status", "active").execute()
                     if ur_res.data:
@@ -209,17 +210,32 @@ def list_profiles_by_role(role: str) -> List[Dict]:
                 except Exception:
                     pass
 
-                # 2. Fetch profiles where primary role is this role
-                res1 = client.table("profiles").select("*").eq("role", role).eq("is_active", True).execute()
+                # If querying aspirants, also include any user with a recorded venture journey
+                if role == "aspirant":
+                    try:
+                        j_res = client.table("journeys").select("aspirant_id").execute()
+                        if j_res.data:
+                            for row in j_res.data:
+                                if row.get("aspirant_id"):
+                                    role_uids.add(row["aspirant_id"])
+                    except Exception:
+                        pass
+
+                # 2. Fetch profiles where primary role is this role (excluding explicitly inactive)
+                res1 = client.table("profiles").select("*").eq("role", role).neq("is_active", False).execute()
                 profile_rows = res1.data or []
                 found_ids = {p["id"] for p in profile_rows}
 
-                # 3. Fetch missing profiles where user holds this role via active user_roles grant
+                # 3. Fetch missing profiles where user holds this role via user_roles grant or journey
                 missing_ids = [uid for uid in role_uids if uid not in found_ids]
                 if missing_ids:
-                    res2 = client.table("profiles").select("*").in_("id", missing_ids).eq("is_active", True).execute()
+                    res2 = client.table("profiles").select("*").in_("id", missing_ids).neq("is_active", False).execute()
                     if res2.data:
                         profile_rows.extend(res2.data)
+
+                # Strictly protect: never include designated administrators in aspirants list
+                if role == "aspirant":
+                    profile_rows = [p for p in profile_rows if p.get("role") != "admin"]
 
                 # Sort by created_at desc
                 profile_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)

@@ -213,39 +213,48 @@ def render_admin_portal(admin_profile: dict):
                 from services.aspirant_photos import get_aspirant_photo
                 adm_asp_photo = get_aspirant_photo(selected_asp_id)
                 if adm_asp_photo and adm_asp_photo.get("url"):
-                    photo_html = f'''
-                    <div style="text-align:center; padding:0 1.5rem;">
-                        <img src="{adm_asp_photo['url']}" alt="Founder Headshot" style="width:72px; height:72px; border-radius:50%; object-fit:cover; border:2.5px solid #2563EB; box-shadow:0 3px 10px rgba(37,99,235,0.2);" />
-                        <div style="font-size:0.68rem; color:#059669; font-weight:700; margin-top:4px;">✓ Verified Photo</div>
-                    </div>
-                    '''
+                    photo_html = (
+                        '<div style="text-align:center; padding:0 1.5rem;">'
+                        f'<img src="{adm_asp_photo["url"]}" alt="Founder Headshot" style="width:72px; height:72px; border-radius:50%; object-fit:cover; border:2.5px solid #2563EB; box-shadow:0 3px 10px rgba(37,99,235,0.2);" />'
+                        '<div style="font-size:0.68rem; color:#059669; font-weight:700; margin-top:4px;">✓ Verified Photo</div>'
+                        '</div>'
+                    )
                 else:
                     ini = "".join([part[0].upper() for part in curr_asp.get("full_name", "A").split()[:2]]) or "A"
-                    photo_html = f'''
-                    <div style="text-align:center; padding:0 1.5rem;">
-                        <div style="width:68px; height:68px; border-radius:50%; background:linear-gradient(135deg, #E2E8F0 0%, #CBD5E1 100%); color:#475569; display:flex; align-items:center; justify-content:center; font-size:1.3rem; font-weight:800; border:2px solid #E2E8F0; margin:0 auto; box-shadow:0 2px 6px rgba(0,0,0,0.04);">
-                            {ini}
-                        </div>
-                        <div style="font-size:0.68rem; color:#94A3B8; font-weight:600; margin-top:4px;">No Photo Uploaded</div>
-                    </div>
-                    '''
+                    photo_html = (
+                        '<div style="text-align:center; padding:0 1.5rem;">'
+                        f'<div style="width:68px; height:68px; border-radius:50%; background:linear-gradient(135deg, #E2E8F0 0%, #CBD5E1 100%); color:#475569; display:flex; align-items:center; justify-content:center; font-size:1.3rem; font-weight:800; border:2px solid #E2E8F0; margin:0 auto; box-shadow:0 2px 6px rgba(0,0,0,0.04);">{ini}</div>'
+                        '<div style="font-size:0.68rem; color:#94A3B8; font-weight:600; margin-top:4px;">No Photo Uploaded</div>'
+                        '</div>'
+                    )
 
-                st.markdown(f"""
-                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:14px; padding:1.25rem; margin:1rem 0; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
-                        <div style="flex:1;">
-                            <h3 style="margin:0; color:#0F172A;">{curr_asp['full_name']}</h3>
-                            <div style="color:#2563EB; font-weight:600; margin-top:2px;">{b_info.get('business_name','Enterprise')} · {b_info.get('sector','General')} ({b_info.get('stage','idea')})</div>
-                            <div style="color:#475569; font-size:0.85rem; margin-top:0.25rem;">Email: {curr_asp['email']} | Phone: {curr_asp.get('phone')} | District: {curr_asp.get('district')}</div>
-                        </div>
-                        {photo_html}
-                        <div style="text-align:right; flex-shrink:0;">
-                            <div style="font-size:0.9rem; color:#334155;"><strong style="color:#0F172A;">Guide:</strong> <span style="color:#059669; font-weight:700;">{g_assigned.get('full_name') if g_assigned else 'None'}</span></div>
-                            <div style="font-size:0.9rem; color:#334155; margin-top:3px;"><strong style="color:#0F172A;">SME:</strong> <span style="color:#D97706; font-weight:700;">{s_assigned.get('full_name') if s_assigned else 'None'}</span></div>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                guide_label = g_assigned.get('full_name') if g_assigned else 'None'
+                sme_label = s_assigned.get('full_name') if s_assigned else 'None'
+                b_name_disp = b_info.get('business_name', 'Enterprise')
+                b_sec_disp = b_info.get('sector', 'General')
+                b_stage_disp = b_info.get('stage', 'idea')
+                f_name_disp = curr_asp['full_name']
+                email_disp = curr_asp['email']
+                phone_disp = curr_asp.get('phone') or 'Not Provided'
+                district_disp = curr_asp.get('district') or 'Not Provided'
+
+                card_html = (
+                    '<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:14px; padding:1.25rem; margin:1rem 0; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                    '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">'
+                    '<div style="flex:1;">'
+                    f'<h3 style="margin:0; color:#0F172A;">{f_name_disp}</h3>'
+                    f'<div style="color:#2563EB; font-weight:600; margin-top:2px;">{b_name_disp} · {b_sec_disp} ({b_stage_disp})</div>'
+                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.25rem;">Email: {email_disp} | Phone: {phone_disp} | District: {district_disp}</div>'
+                    '</div>'
+                    f'{photo_html}'
+                    '<div style="text-align:right; flex-shrink:0;">'
+                    f'<div style="font-size:0.9rem; color:#334155;"><strong style="color:#0F172A;">Guide:</strong> <span style="color:#059669; font-weight:700;">{guide_label}</span></div>'
+                    f'<div style="font-size:0.9rem; color:#334155; margin-top:3px;"><strong style="color:#0F172A;">SME:</strong> <span style="color:#D97706; font-weight:700;">{sme_label}</span></div>'
+                    '</div>'
+                    '</div>'
+                    '</div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
 
                 st.markdown("#### Complete Chronological Journey")
 
@@ -330,19 +339,21 @@ def render_admin_portal(admin_profile: dict):
 
                         col_t, col_b, col_ov = st.columns([1.2, 5.2, 0.8])
                         with col_t:
-                            st.markdown(f"""
-                            <div style="font-weight:700; color:#64748B; font-size:0.9rem;">{date_display}</div>
-                            <span style="display:inline-block; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:10px; background:{badge_bg}; color:#ffffff; text-transform:uppercase;">{std_role}</span>
-                            """, unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div style="font-weight:700; color:#64748B; font-size:0.9rem;">{date_display}</div>'
+                                f'<span style="display:inline-block; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:10px; background:{badge_bg}; color:#ffffff; text-transform:uppercase;">{std_role}</span>',
+                                unsafe_allow_html=True
+                            )
                         with col_b:
-                            st.markdown(f"""
-                            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:0.9rem 1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
-                                {status_badge_html}
-                                <div style="font-weight:700; color:#0F172A; font-size:1.02rem;">{title}</div>
-                                <div style="color:#334155; font-size:0.88rem; margin-top:0.25rem; line-height:1.4;">{desc}</div>
-                                <div style="font-size:0.75rem; color:#64748B; margin-top:0.35rem;">Contributor: <strong>{actor_name}</strong> ({std_role})</div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                            st.markdown(
+                                f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:0.9rem 1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">'
+                                f'{status_badge_html}'
+                                f'<div style="font-weight:700; color:#0F172A; font-size:1.02rem;">{title}</div>'
+                                f'<div style="color:#334155; font-size:0.88rem; margin-top:0.25rem; line-height:1.4;">{desc}</div>'
+                                f'<div style="font-size:0.75rem; color:#64748B; margin-top:0.35rem;">Contributor: <strong>{actor_name}</strong> ({std_role})</div>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
                         with col_ov:
                             # Admin oversight: Edit correction & removal
                             col_ae, col_ad = st.columns(2)
@@ -416,18 +427,20 @@ def render_admin_portal(admin_profile: dict):
             st.info("No guides currently registered. Create one above.")
         else:
             for g in guides:
-                st.markdown(f"""
-                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <div>
-                            <strong style="color:#0F172A; font-size:1.05rem;">{g['full_name']}</strong>
-                            <span style="color:#059669; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({g['district']})</span>
-                            <div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Expertise: {g.get('profile_data',{}).get('expertise')} | Email: {g['email']}</div>
-                        </div>
-                        <span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE GUIDE</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                exp_g = g.get('profile_data', {}).get('expertise', 'Mentorship')
+                st.markdown(
+                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                    f'<div>'
+                    f'<strong style="color:#0F172A; font-size:1.05rem;">{g["full_name"]}</strong>'
+                    f'<span style="color:#059669; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({g.get("district", "Tamil Nadu")})</span>'
+                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Expertise: {exp_g} | Email: {g["email"]}</div>'
+                    f'</div>'
+                    f'<span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE GUIDE</span>'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
     # ─────────────────────────────────────────────────────────────
     # TAB 3: SMES MANAGEMENT & PROVISIONING
@@ -489,18 +502,20 @@ def render_admin_portal(admin_profile: dict):
             st.info("No SMEs registered. Create one above.")
         else:
             for s in smes:
-                st.markdown(f"""
-                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <div>
-                            <strong style="color:#0F172A; font-size:1.05rem;">{s['full_name']}</strong>
-                            <span style="color:#D97706; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({s['district']})</span>
-                            <div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Domain: {s.get('profile_data',{}).get('expertise')} | Email: {s['email']}</div>
-                        </div>
-                        <span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE SME</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                exp_s = s.get('profile_data', {}).get('expertise', 'Advisory')
+                st.markdown(
+                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                    f'<div>'
+                    f'<strong style="color:#0F172A; font-size:1.05rem;">{s["full_name"]}</strong>'
+                    f'<span style="color:#D97706; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({s.get("district", "Tamil Nadu")})</span>'
+                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Domain: {exp_s} | Email: {s["email"]}</div>'
+                    f'</div>'
+                    f'<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE SME</span>'
+                    f'</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
     # ─────────────────────────────────────────────────────────────
     # TAB 4: MENTOR ASSIGNMENTS (Admin Authority)
