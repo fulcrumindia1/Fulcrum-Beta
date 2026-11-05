@@ -108,3 +108,4 @@ The dropdown console is presented inside a high-contrast container in `views/asp
 - **Non-Destructive Integration:** The existing Guide Curated Schemes section is fully preserved directly beneath the explorer expander.
 - **Role Isolation:** Aspirants explore matches in read-only mode with portal links; Guides retain exclusive authority to formally release schemes into the venture's official dossier.
 - **Instant Responsiveness:** Dropdown selections do not trigger expensive network round-trips; in-memory caching evaluates all 179 schemes in under 12 milliseconds.
+

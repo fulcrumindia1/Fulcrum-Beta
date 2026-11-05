@@ -84,3 +84,4 @@ The engine demonstrated **100% accuracy** across all 12 benchmark evaluation vec
 - **Zero women-only breaches** (Men and sub-51% partnerships are reliably disqualified).
 - **Zero geographic leaks** (Non-TN founders are blocked from TN domestic subsidies).
 - **Execution Speed:** Full 179-scheme sweep completed in **11.4 milliseconds** per founder profile.
+

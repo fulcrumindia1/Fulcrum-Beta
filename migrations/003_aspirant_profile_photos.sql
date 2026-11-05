@@ -73,3 +73,4 @@ DROP POLICY IF EXISTS "Authorized read aspirant storage photos" ON storage.objec
 CREATE POLICY "Authorized read aspirant storage photos" ON storage.objects
     FOR SELECT TO authenticated
     USING (bucket_id = 'aspirant-profile-photos');
+

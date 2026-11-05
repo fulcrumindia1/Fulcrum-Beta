@@ -69,3 +69,4 @@ When the Guide clicks **"Release Scheme to Aspirant"**:
    - **Notes:** Personalized strategic guidance note.
 3. **In-App Notification:** A notification is generated in `notifications` table, alerting the founder that their Guide has unlocked a new funding dossier.
 4. **Instant Dashboard Appearance:** The scheme appears under **Aspirant Dashboard → Recommended Funding Schemes** with a distinctive purple border, Guide recommendation badge, and copyable AI application prompt.
+

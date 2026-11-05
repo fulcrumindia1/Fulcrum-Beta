@@ -98,3 +98,4 @@ if eval_res.get("is_disqualified") and not allow_disqualified_override:
     disq_reasons = "; ".join(eval_res.get("potential_concerns", [])) or "Statutory eligibility criteria not met"
     return False, f"Gatekeeper Restriction: Scheme does not meet mandatory criteria for this founder ({disq_reasons}). Please confirm verification override to proceed."
 ```
+

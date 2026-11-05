@@ -124,3 +124,4 @@ def test_photo_validation_and_compression():
     assert ctype == "image/webp"
     assert w <= 512 and h <= 512
     assert len(proc_b) < 100 * 1024  # WebP 512x512 should be < 100 KB
+

@@ -72,3 +72,4 @@ To prevent stale scheme information:
 1. Whenever an Admin modifies, archives, or adds a scheme via `upsert_scheme()` or `toggle_archive_scheme()`, `invalidate_global_cache("schemes:all_active")` is immediately triggered.
 2. Whenever an Aspirant saves their profile form via `update_aspirant_profile()`, all `scheme_matches:*` session memos are invalidated, ensuring immediate recalculation.
 3. Photo uploads (`upload_aspirant_photo`) explicitly bypass profile updates and cache invalidations, avoiding unnecessary matching re-runs.
+

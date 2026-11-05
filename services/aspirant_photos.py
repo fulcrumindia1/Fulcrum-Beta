@@ -227,3 +227,4 @@ def delete_aspirant_photo(user_id: str) -> Tuple[bool, Optional[str]]:
     # Local DB cleanup
     get_local_db().delete_aspirant_photo(user_id)
     return True, None
+

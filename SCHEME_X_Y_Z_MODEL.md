@@ -162,3 +162,4 @@ The engine outputs an itemized evidence checklist for each scheme. Rather than b
 | **65% – 79%** | `RECOMMENDED` | Strong baseline fit; minor documentation or registration steps needed. | Guide reviews checklist and suggests DPR preparation. |
 | **50% – 64%** | `POTENTIALLY ELIGIBLE` | Eligible under broad criteria; requires strategic refinement or secondary quota fit. | Secondary consideration for founder growth roadmap. |
 | **0% (Disqualified)**| `DISQUALIFIED` | Fails mandatory statutory boundaries (state, gender equity, sector). | Release blocked by gatekeeper; reasons displayed transparently. |
+

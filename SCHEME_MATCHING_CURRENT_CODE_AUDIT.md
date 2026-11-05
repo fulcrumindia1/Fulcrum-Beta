@@ -162,3 +162,4 @@ The data pipeline from founder registration to scheme release follows four disti
 | **8** | Matching Objective | Ignored what the founder actually needed (Y) | HIGH | Added Y-vector (Goal, Support Type, Quantum, Timeframe) |
 | **9** | Weight Alignment | Arbitrary additions/subtractions broke documented weights | MEDIUM | Re-calibrated 5 normalized weighting tiers summing to 100 |
 | **10** | Catalogue Schema | Unstructured text strings prevented programmatic logic | MEDIUM | Created structured rules layer in `scheme_rules.py` |
+
