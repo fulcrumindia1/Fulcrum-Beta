@@ -53,20 +53,20 @@ def get_user_roles(user_id: str) -> List[Dict]:
         db = get_local_db()
         roles = db.get_user_roles(user_id) if hasattr(db, "get_user_roles") else []
 
-    # If still no roles, fall back strictly to user's assigned base profile role
-    if not roles:
-        from services.profiles import get_profile
-        p = get_profile(user_id)
-        if p:
-            base_role = p.get("role", "aspirant")
-            roles = [{
+    # Always ensure base profile role is included as an active role if not explicitly recorded
+    from services.profiles import get_profile
+    p = get_profile(user_id)
+    if p:
+        base_role = p.get("role", "aspirant")
+        if not any(r.get("role") == base_role for r in roles):
+            roles.append({
                 "id": f"role_{user_id}_{base_role}",
                 "user_id": user_id,
                 "role": base_role,
                 "status": "active",
                 "granted_at": p.get("created_at"),
                 "activated_at": p.get("created_at")
-            }]
+            })
 
     set_memo(cache_key, roles, ttl_seconds=60)
     return roles

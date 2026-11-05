@@ -101,6 +101,12 @@ def get_profile(user_id: str) -> Optional[Dict]:
                     return p
             except Exception as e:
                 pass
+        # Fallback to local DB if record not found in cloud table
+        p_loc = get_local_db().get_profile_by_id(user_id)
+        if p_loc:
+            p_loc["completion_pct"] = calculate_completion(p_loc)
+            set_memo(f"profile:{user_id}", p_loc, ttl_seconds=60)
+            return p_loc
         return None
 
     # SQLite mode ONLY (when DATA_BACKEND=sqlite)
@@ -158,6 +164,15 @@ def get_profiles_batch(user_ids: List[str]) -> Dict[str, Dict]:
                             result[p["id"]] = p
                     except Exception:
                         pass
+        still_missing = [uid for uid in missing_ids if uid not in result]
+        if still_missing:
+            db = get_local_db()
+            for uid in still_missing:
+                p = db.get_profile_by_id(uid)
+                if p:
+                    p["completion_pct"] = calculate_completion(p)
+                    set_memo(f"profile:{uid}", p, ttl_seconds=60)
+                    result[uid] = p
         return result
 
     # SQLite mode

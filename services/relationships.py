@@ -189,11 +189,16 @@ def assign_guide(
     """
     admin_id = admin_id or assigned_by
     from services.profiles import get_profile
+    from services.roles import user_has_active_role
     from services.journey import log_meaningful_event
     from services.notifications import create_notification
 
+    if str(aspirant_id) == str(guide_id):
+        return False, "An entrepreneur cannot be assigned as their own Guide."
+
     guide = get_profile(guide_id)
-    if not guide or guide.get("role") != "guide":
+    is_valid_guide = bool(guide and (guide.get("role") == "guide" or user_has_active_role(guide_id, "guide")))
+    if not guide or not is_valid_guide:
         return False, "Selected mentor is not a valid Guide."
 
     aspirant = get_profile(aspirant_id)
@@ -287,6 +292,12 @@ def assign_guide(
         SET guide_id = ?, guide_ids = ?, assigned_by = ?, notes = ?, updated_at = ?
         WHERE aspirant_id = ?
         """, (primary_guide_id, json.dumps(new_guide_ids), admin_id, notes, now_iso, aspirant_id))
+        if cur.rowcount == 0:
+            import uuid
+            cur.execute("""
+            INSERT INTO relationships (id, aspirant_id, guide_id, guide_ids, assigned_by, notes, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            """, (str(uuid.uuid4()), aspirant_id, primary_guide_id, json.dumps(new_guide_ids), admin_id, notes, now_iso, now_iso))
         conn.commit()
         conn.close()
 
@@ -380,6 +391,13 @@ def assign_guide(
             metadata={"guide_id": guide_id, "guide_name": guide_name, "notes": notes}
         )
 
+    invalidate_memo(f"mentors:{aspirant_id}")
+    invalidate_memo(f"guide_aspirants:{guide_id}")
+    if primary_guide_id and primary_guide_id != guide_id:
+        invalidate_memo(f"guide_aspirants:{primary_guide_id}")
+    if old_guide_id:
+        invalidate_memo(f"guide_aspirants:{old_guide_id}")
+
     return True, None
 
 def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, notes: str = "", assigned_by: Optional[str] = None, mode: str = "add") -> Tuple[bool, Optional[str]]:
@@ -389,11 +407,16 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
     """
     admin_id = admin_id or assigned_by
     from services.profiles import get_profile
+    from services.roles import user_has_active_role
     from services.journey import log_meaningful_event
     from services.notifications import create_notification
 
+    if str(aspirant_id) == str(sme_id):
+        return False, "An entrepreneur cannot be assigned as their own SME."
+
     sme = get_profile(sme_id)
-    if not sme or sme.get("role") != "sme":
+    is_valid_sme = bool(sme and (sme.get("role") == "sme" or user_has_active_role(sme_id, "sme")))
+    if not sme or not is_valid_sme:
         return False, "Selected mentor is not a valid SME."
 
     aspirant = get_profile(aspirant_id)
@@ -543,6 +566,11 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
             description=f"{sme_name} assigned to your advisory panel for {sme_domain}.",
             metadata={"sme_id": sme_id, "sme_name": sme_name, "domain": sme_domain, "notes": notes}
         )
+
+    invalidate_memo(f"mentors:{aspirant_id}")
+    invalidate_memo(f"sme_aspirants:{sme_id}")
+    if old_sme_id:
+        invalidate_memo(f"sme_aspirants:{old_sme_id}")
 
     return True, None
 

@@ -516,11 +516,14 @@ def list_sme_requests(sme_id: str) -> List[Dict]:
 
     return get_local_db().list_help_requests(sme_id=sme_id)
 
-def sme_respond_request(request_id: str, sme_id: str, arg3: str, arg4: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None, arg4: Optional[str] = None, new_status: Optional[str] = None, response: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """SME responds to an assigned advisory ticket and updates status."""
-    if arg4 is None:
+    if new_status is not None or response is not None:
+        new_status = new_status or "IN_PROGRESS"
+        response = response or ""
+    elif arg4 is None:
         new_status = "IN_PROGRESS"
-        response = arg3
+        response = arg3 or ""
     elif arg3 in ("OPEN", "IN_PROGRESS", "RESOLVED", "ESCALATED"):
         new_status = arg3
         response = arg4
