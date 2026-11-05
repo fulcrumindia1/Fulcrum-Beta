@@ -168,18 +168,13 @@ def upsert_scheme(scheme: Dict, admin_id: str) -> Tuple[bool, Optional[str]]:
             return False, "Supabase client not available."
         try:
             client.table("schemes").upsert(scheme, on_conflict="id").execute()
-            # Invalidate caches
-    invalidate_memo(f"released_schemes:{aspirant_id}")
-
-    return True, None
+            return True, None
         except Exception as e:
             return False, f"Failed to save scheme to Supabase: {e}"
 
     # SQLite mode
     get_local_db().upsert_scheme(scheme)
     get_local_db().log_activity(admin_id, "upsert_scheme", "schemes", scheme["id"], {"name": scheme["name"]})
-    # Invalidate caches
-    invalidate_memo(f"released_schemes:{aspirant_id}")
 
     return True, None
 
@@ -204,10 +199,7 @@ def toggle_archive_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional
                 "status": new_status,
                 "updated_at": now_iso
             }).eq("id", scheme_id).execute()
-            # Invalidate caches
-    invalidate_memo(f"released_schemes:{aspirant_id}")
-
-    return True, None
+            return True, None
         except Exception as e:
             return False, f"Failed to toggle archive state in Supabase: {e}"
 
@@ -216,9 +208,6 @@ def toggle_archive_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional
     s["status"] = new_status
     get_local_db().upsert_scheme(s)
     get_local_db().log_activity(admin_id, f"set_{new_status}", "schemes", scheme_id)
-    # Invalidate caches
-    invalidate_memo(f"released_schemes:{aspirant_id}")
-
     return True, None
 
 def delete_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional[str]]:
@@ -231,19 +220,13 @@ def delete_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional[str]]:
             return False, "Supabase client not available."
         try:
             client.table("schemes").delete().eq("id", scheme_id).execute()
-            # Invalidate caches
-    invalidate_memo(f"released_schemes:{aspirant_id}")
-
-    return True, None
+            return True, None
         except Exception as e:
             return False, f"Failed to delete scheme in Supabase: {e}"
 
     # SQLite mode
     get_local_db().delete_scheme(scheme_id)
     get_local_db().log_activity(admin_id, "delete_scheme", "schemes", scheme_id)
-    # Invalidate caches
-    invalidate_memo(f"released_schemes:{aspirant_id}")
-
     return True, None
 
 def match_schemes_for_aspirant(
@@ -503,7 +486,6 @@ def release_scheme_to_aspirant(
     except Exception as e:
         print(f"[Schemes] Notification error: {e}")
 
-    invalidate_memo(f"released_schemes:{aspirant_id}")
     # Invalidate caches
     invalidate_memo(f"released_schemes:{aspirant_id}")
 
@@ -579,7 +561,6 @@ def withdraw_scheme_release(
         }
     )
 
-    invalidate_memo(f"released_schemes:{aspirant_id}")
     # Invalidate caches
     invalidate_memo(f"released_schemes:{aspirant_id}")
 
