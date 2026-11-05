@@ -495,6 +495,23 @@ class LocalDatabase:
             UNIQUE(guide_id, aspirant_id, escalation_stage)
         );
         """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS aspirant_photos (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL UNIQUE,
+            storage_bucket TEXT NOT NULL DEFAULT 'aspirant-profile-photos',
+            storage_path TEXT NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'image/webp',
+            file_size_bytes INTEGER NOT NULL,
+            width INTEGER,
+            height INTEGER,
+            data_blob BLOB,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_aspirant_photos_user ON aspirant_photos(user_id);")
         conn.commit()
 
         # Seed legal documents if empty or update if placeholder content
@@ -2126,6 +2143,44 @@ class LocalDatabase:
         rows = [dict(r) for r in cur.fetchall()]
         conn.close()
         return rows
+
+    # ── ASPIRANT PHOTOS ──
+    def get_aspirant_photo(self, user_id: str) -> Optional[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM aspirant_photos WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def upsert_aspirant_photo(self, photo_data: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        pid = photo_data.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT OR REPLACE INTO aspirant_photos (
+            id, user_id, storage_bucket, storage_path, content_type,
+            file_size_bytes, width, height, data_blob, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            pid, photo_data["user_id"], photo_data.get("storage_bucket", "aspirant-profile-photos"),
+            photo_data["storage_path"], photo_data.get("content_type", "image/webp"),
+            photo_data["file_size_bytes"], photo_data.get("width"), photo_data.get("height"),
+            photo_data.get("data_blob"), photo_data.get("created_at", now_iso), now_iso
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def delete_aspirant_photo(self, user_id: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM aspirant_photos WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        return True
 
 # Singleton accessor
 _LOCAL_DB_INSTANCE = None

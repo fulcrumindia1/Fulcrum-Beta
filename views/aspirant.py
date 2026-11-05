@@ -197,6 +197,55 @@ def render_aspirant_portal(user_profile: dict):
         st.markdown("### 📋 Entrepreneur Profile")
         st.markdown("<p style='color:#475569; font-size:0.9rem;'>Keep this profile updated. Changes automatically recalculate your recommended funding schemes and record journey updates.</p>", unsafe_allow_html=True)
 
+        # ── ASPIRANT PROFILE PHOTO MANAGEMENT (Isolated from Journey/Schemes) ──
+        from services.aspirant_photos import get_aspirant_photo, upload_aspirant_photo, delete_aspirant_photo
+        user_asp_id = profile["id"]
+        current_photo = get_aspirant_photo(user_asp_id)
+
+        with st.container(border=True):
+            col_ph1, col_ph2, col_ph3 = st.columns([1.2, 3.8, 2.5])
+            with col_ph1:
+                if current_photo and current_photo.get("url"):
+                    st.markdown(f'''
+                    <div style="display:flex; justify-content:center; align-items:center; height:100%;">
+                        <img src="{current_photo['url']}" alt="Founder Headshot" style="width:84px; height:84px; border-radius:50%; object-fit:cover; border:2.5px solid #2563EB; box-shadow:0 4px 12px rgba(37,99,235,0.18);" />
+                    </div>
+                    ''', unsafe_allow_html=True)
+                else:
+                    initials = "".join([part[0].upper() for part in profile.get("full_name", "A").split()[:2]]) or "A"
+                    st.markdown(f'''
+                    <div style="display:flex; justify-content:center; align-items:center; height:100%;">
+                        <div style="width:84px; height:84px; border-radius:50%; background:linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); color:#FFFFFF; display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:800; border:2.5px solid #DBEAFE; box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+                            {initials}
+                        </div>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+            with col_ph2:
+                st.markdown("<div style='font-size:1rem; font-weight:700; color:#0F172A; margin-top:2px;'>Founder Profile Photo</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size:0.8rem; color:#64748B;'>Upload an official founder headshot (JPG, PNG, WebP — max 5 MB). Compressed and stored securely for your assigned Guides, SMEs, and Program Administrators.</div>", unsafe_allow_html=True)
+                if current_photo:
+                    st.caption(f"✓ Photo active ({current_photo.get('width', 0)}x{current_photo.get('height', 0)}px · {current_photo.get('content_type', 'image/webp')})")
+
+            with col_ph3:
+                uploaded_photo_file = st.file_uploader("Upload Headshot", type=["jpg", "jpeg", "png", "webp"], key="aspirant_headshot_uploader", label_visibility="collapsed")
+                if uploaded_photo_file is not None:
+                    if st.button("Save Headshot", key="btn_save_headshot", type="primary", use_container_width=True):
+                        raw_bytes = uploaded_photo_file.read()
+                        ok_up, err_up = upload_aspirant_photo(user_asp_id, raw_bytes, uploaded_photo_file.name)
+                        if ok_up:
+                            st.success("Profile photo uploaded successfully!")
+                            st.rerun()
+                        else:
+                            st.error(err_up or "Failed to upload photo.")
+                elif current_photo:
+                    if st.button("Remove Photo", key="btn_del_headshot", use_container_width=True):
+                        delete_aspirant_photo(user_asp_id)
+                        st.info("Profile photo removed.")
+                        st.rerun()
+
+        st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
+
         p_data = profile.get("profile_data", {})
         cur_personal = p_data.get("personal", {})
         cur_prof = p_data.get("professional", {})
@@ -238,7 +287,7 @@ def render_aspirant_portal(user_profile: dict):
             st.markdown("#### 3. Business & Venture Details")
             col_b1, col_b2, col_b3 = st.columns(3)
             with col_b1:
-                b_name = st.text_input("Business Name *", value=cur_biz.get("business_name", "Madurai Millet Naturals"))
+                b_name = st.text_input("Business Name *", value=cur_biz.get("business_name", ""), placeholder="e.g. Aztra Tech Solutions")
                 cur_btype = cur_biz.get("business_type", "Manufacturing")
                 btype_idx, btype_custom = resolve_field_choice(cur_btype, MASTER_BUSINESS_TYPES, "Other / Hybrid (Specify)")
                 b_type_sel = st.selectbox("Business Type *", MASTER_BUSINESS_TYPES, index=btype_idx)
@@ -267,17 +316,17 @@ def render_aspirant_portal(user_profile: dict):
                     if b_stg_custom_in and b_stg_custom_in.strip():
                         b_stage = b_stg_custom_in.strip()
             with col_b3:
-                b_revenue = st.text_input("Annual Revenue / MRR", value=cur_biz.get("revenue", "₹12,00,000 / year"))
-                b_team = st.number_input("Employee Count", min_value=0, max_value=500, value=int(cur_biz.get("employee_count", 3)))
+                b_revenue = st.text_input("Annual Revenue / MRR", value=cur_biz.get("revenue", ""), placeholder="e.g. ₹10,00,000 / year")
+                b_team = st.number_input("Employee Count", min_value=0, max_value=500, value=int(cur_biz.get("employee_count", 1)))
 
-            b_desc = st.text_area("Business Description", value=cur_biz.get("description", "Manufacturing and direct packaging of traditional millet products, porridge mixes, and healthy snacks."))
+            b_desc = st.text_area("Business Description", value=cur_biz.get("description", ""), placeholder="Describe what products/services your enterprise manufactures or delivers...")
 
             # SECTION 4: DEMOGRAPHICS & SPECIAL ELIGIBILITY
             st.markdown("#### 4. Demographics & Scheme Eligibility")
             col_d1, col_d2, col_d3 = st.columns(3)
             with col_d1:
-                cur_dist = profile.get("district") or cur_demo.get("district") or "Madurai"
-                dist_idx, dist_custom = resolve_field_choice(cur_dist, MASTER_DISTRICTS_TN, "Other District / Non-TN (Specify)", default_index=13)
+                cur_dist = profile.get("district") or cur_demo.get("district") or "Chennai"
+                dist_idx, dist_custom = resolve_field_choice(cur_dist, MASTER_DISTRICTS_TN, "Other District / Non-TN (Specify)", default_index=1)
                 d_dist_sel = st.selectbox("District *", MASTER_DISTRICTS_TN, index=dist_idx)
                 d_final_district = d_dist_sel
                 if d_dist_sel == "Other District / Non-TN (Specify)":
@@ -287,8 +336,8 @@ def render_aspirant_portal(user_profile: dict):
                 is_tn = d_dist_sel != "Other District / Non-TN (Specify)"
                 d_state = st.text_input("State", value="Tamil Nadu" if is_tn else "Other State", disabled=True)
             with col_d2:
-                cur_cat = cur_demo.get("founder_category", "OBC")
-                cat_idx, cat_custom = resolve_field_choice(cur_cat, MASTER_SOCIAL_CATEGORIES, "Other / Prefer Not to Disclose", default_index=1)
+                cur_cat = cur_demo.get("founder_category", "General")
+                cat_idx, cat_custom = resolve_field_choice(cur_cat, MASTER_SOCIAL_CATEGORIES, "Other / Prefer Not to Disclose", default_index=0)
                 d_cat_sel = st.selectbox("Founder Category (for Subsidies)", MASTER_SOCIAL_CATEGORIES, index=cat_idx)
                 st.caption("ℹ️ Used for statutory affirmative quotas (e.g. Special capital subsidies for SC/ST/OBC).")
                 d_cat = d_cat_sel
@@ -298,12 +347,11 @@ def render_aspirant_portal(user_profile: dict):
                         d_cat = d_cat_custom_in.strip()
             with col_d3:
                 st.markdown("<p style='font-size:0.85rem; font-weight:600; margin-bottom:0.3rem;'>Special Registrations & Quotas</p>", unsafe_allow_html=True)
-                d_dpiit = st.checkbox("DPIIT Recognized Startup", value=bool(cur_demo.get("is_dpiit_recognized", True)))
-                d_startuptn = st.checkbox("StartupTN Registered", value=bool(cur_demo.get("is_startuptn_registered", True)))
-                is_female_founder = (f_gender == "Female")
-                d_women = st.checkbox("Women-Led Enterprise (Primary Founder is Female)", value=bool(cur_demo.get("is_women_led", is_female_founder)))
-                default_equity = int(cur_demo.get("women_equity_pct", 100 if d_women else 0))
-                d_women_equity = st.number_input("Women Co-Founder Equity %", min_value=0, max_value=100, value=default_equity, help="Total women shareholding % (Schemes like TWEES mandate ≥51% women ownership).")
+                d_dpiit = st.checkbox("DPIIT Recognized Startup", value=bool(cur_demo.get("is_dpiit_recognized", False)))
+                d_startuptn = st.checkbox("StartupTN Registered", value=bool(cur_demo.get("is_startuptn_registered", False)))
+                d_women = st.checkbox("Women-Led Enterprise (>=51% Women Equity)", value=bool(cur_demo.get("is_women_led", False)))
+                default_equity = int(cur_demo.get("women_equity_pct", 51 if d_women else 0))
+                d_women_equity = st.number_input("Women Co-Founder Equity %", min_value=0, max_value=100, value=default_equity, help="Total women shareholding % (Schemes like TWEES mandate >=51% women ownership).")
                 is_qualifies_women = bool(d_women or d_women_equity >= 51)
 
             btn_save = st.form_submit_button("SAVE PROFILE & UPDATE MATCHES", type="primary", use_container_width=True)
@@ -591,17 +639,78 @@ def render_aspirant_portal(user_profile: dict):
     # TAB 5: SCHEME MATCHES (Gatekeeper Governed)
     # ─────────────────────────────────────────────────────────────
     with tabs[4]:
-        st.markdown("### 🏦 Recommended Funding Schemes")
-        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Curated government schemes and venture capital opportunities reviewed and released to your venture by your dedicated Guide.</p>", unsafe_allow_html=True)
+        st.markdown("### 🏦 Funding Intelligence & Scheme Matches")
+        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Discover targeted schemes using the intelligent X + Y → Z matching engine, and review officially released dossiers curated by your Guide.</p>", unsafe_allow_html=True)
+
+        # ── DEPENDENT DROPDOWNS: FIND FUNDING & SUPPORT (X + Y -> Z) ──
+        from services.scheme_rules import ASSISTANCE_GOALS, SUPPORT_TYPES_BY_GOAL, FUNDING_QUANTUM_RANGES, TIMEFRAME_OPTIONS
+        from services.schemes import match_schemes_for_aspirant
+
+        st.markdown("""
+        <div style="background:linear-gradient(135deg, #1E1B4B 0%, #0F172A 100%); border:1px solid #6366F1; border-radius:14px; padding:1.25rem 1.5rem; margin-bottom:1.2rem; color:#FFFFFF; box-shadow:0 4px 16px rgba(99,102,241,0.15);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <h3 style="margin:0; font-size:1.15rem; color:#FFFFFF;">🎯 Find Funding & Support (X + Y → Z Explorer)</h3>
+                    <div style="font-size:0.84rem; color:#C7D2FE; margin-top:3px;">Select your specific assistance requirements to match against 170+ central and state government schemes.</div>
+                </div>
+                <span style="font-size:0.75rem; font-weight:700; background:rgba(99,102,241,0.3); border:1px solid #818CF8; color:#EEF2FF; padding:4px 10px; border-radius:8px;">X + Y → Z Engine</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.container(border=True):
+            st.markdown("<div style='font-size:0.82rem; font-weight:700; color:#334155; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:0.5rem;'>Define Your Assistance Need (Y)</div>", unsafe_allow_html=True)
+            col_y1, col_y2 = st.columns(2)
+            with col_y1:
+                sel_goal = st.selectbox("1. Primary Assistance Goal", ASSISTANCE_GOALS, key="asp_y_goal")
+            with col_y2:
+                sub_options = SUPPORT_TYPES_BY_GOAL.get(sel_goal, ["All Support Sub-Types"]) if sel_goal != "ALL" else ["All Support Sub-Types"]
+                sel_sub_type = st.selectbox("2. Specific Support Type", sub_options, key="asp_y_subtype")
+
+            col_y3, col_y4 = st.columns(2)
+            with col_y3:
+                sel_quantum = st.selectbox("3. Funding / Support Quantum", FUNDING_QUANTUM_RANGES, key="asp_y_quantum")
+            with col_y4:
+                sel_timeframe = st.selectbox("4. Deployment Timeframe", TIMEFRAME_OPTIONS, key="asp_y_timeframe")
+
+        user_need = {
+            "assistance_goal": sel_goal,
+            "support_type": sel_sub_type,
+            "quantum_range": sel_quantum,
+            "timeframe": sel_timeframe
+        }
+        live_matched = match_schemes_for_aspirant(user_id, profile=profile, assistance_need=user_need, min_score=50)
+
+        with st.expander(f"🔍 View Matched Schemes for this Need ({len(live_matched)} Qualifying Opportunities)", expanded=(sel_goal != "ALL")):
+            if not live_matched:
+                st.info("No schemes met the 50% threshold for this specific combination. Try broadening your criteria or selecting 'ALL'.")
+            else:
+                for idx, sm in enumerate(live_matched[:9]):
+                    sc = sm["match_score"]
+                    sc_color = "#10B981" if sc >= 80 else "#F59E0B" if sc >= 65 else "#3B82F6"
+                    c_m1, c_m2 = st.columns([5, 1.2])
+                    with c_m1:
+                        st.markdown(f"**{sm.get('name')}** · <span style='color:#64748B;'>{sm.get('agency')}</span> · <span style='color:#059669; font-weight:700;'>{sm.get('amount')}</span>", unsafe_allow_html=True)
+                        if sm.get("match_reasons"):
+                            st.caption("✓ " + " · ".join(sm["match_reasons"][:2]))
+                    with c_m2:
+                        st.markdown(f"<div style='text-align:right;'><span style='background:{sc_color}; color:#fff; font-weight:700; font-size:0.75rem; padding:3px 10px; border-radius:12px;'>{sc}% {sm.get('recommendation_status')}</span></div>", unsafe_allow_html=True)
+                    if sm.get("application_url"):
+                        st.markdown(f"<div style='margin-bottom:0.75rem;'><a href='{sm['application_url']}' target='_blank' style='font-size:0.78rem; color:#2563EB;'>Official Application Portal &nearr;</a></div>", unsafe_allow_html=True)
+                    st.divider()
+
+        st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
+        st.markdown("#### 🎯 Curated & Released Schemes (Approved by Your Guide)")
+        st.markdown("<p style='color:#64748B; font-size:0.85rem;'>These schemes have been officially verified and unlocked for your venture by your dedicated Guide.</p>", unsafe_allow_html=True)
 
         released_schemes = get_released_schemes_for_aspirant(user_id)
 
         if not released_schemes:
             st.markdown("""
-            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:2.5rem 1.5rem; text-align:center;">
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:2rem 1.5rem; text-align:center;">
                 <h3 style="color:#0F172A; margin:0 0 0.5rem 0;">No schemes have been released to you yet.</h3>
                 <p style="color:#64748B; font-size:0.95rem; max-width:540px; margin:0 auto; line-height:1.5;">
-                    Your Guide reviews relevant funding opportunities and will release appropriate schemes to your account when ready.
+                    Your Guide reviews relevant funding opportunities from the matching engine and will release curated schemes to your account with strategic notes.
                 </p>
             </div>
             """, unsafe_allow_html=True)

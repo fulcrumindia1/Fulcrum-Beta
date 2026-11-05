@@ -232,27 +232,27 @@ def match_schemes_for_aspirant(
     aspirant_id: str, 
     profile: Optional[Dict] = None, 
     limit: Optional[int] = None, 
-    min_score: int = 60
+    min_score: Optional[int] = 60,
+    assistance_need: Optional[Dict] = None
 ) -> List[Dict]:
     """
-    Explainable Deterministic Matching Engine:
+    Explainable Deterministic X + Y -> Z Matching Engine:
     Computes a contextual match score (0-100%) for each active scheme based on:
-    - Domain & Sector Alignment (Up to 40 pts) with negative penalty for incompatible high-tech/pharma verticals
-    - Venture Stage Alignment (Up to 25 pts)
-    - State / Geography Jurisdiction (Up to 20 pts)
-    - Affirmative Demographic / Quota Priority (Up to 15 pts)
+    - X = Founder Profile & Venture Reality (Domain, Stage, Geography, Demographics, Registrations)
+    - Y = Requested Assistance Goal & Support Quantum (Need, Type, Bracket, Timeline)
+    - Z = Rigorous 3-stage statutory & relevance evaluation
     
     Returns list of matched schemes scoring >= min_score ordered by match_score DESC.
     """
     if not aspirant_id:
         return []
 
-    cache_key = f"scheme_matches:{aspirant_id}:{min_score}:{limit}"
+    y_goal = (assistance_need or {}).get("assistance_goal", "ALL")
+    y_quantum = (assistance_need or {}).get("quantum_range", "ANY_AMOUNT")
+    cache_key = f"scheme_matches_xyz:{aspirant_id}:{min_score}:{limit}:{y_goal}:{y_quantum}"
     cached = get_memo(cache_key)
     if cached is not None:
         return cached
-
-    import re
 
     if profile is None:
         from services.profiles import get_profile
@@ -269,202 +269,24 @@ def match_schemes_for_aspirant(
     if not profile:
         return []
 
-    p_data = profile.get("profile_data") or {}
-    if isinstance(p_data, str):
-        try:
-            p_data = json.loads(p_data)
-        except Exception:
-            p_data = {}
-
-    biz = p_data.get("business") or {}
-    demo = p_data.get("demographics") or {}
-    pers = p_data.get("personal") or {}
-
-    asp_sector = (biz.get("sector") or "").lower()
-    asp_biz_type = (biz.get("business_type") or "").lower()
-    asp_stage = (biz.get("stage") or "idea").lower()
-    asp_state = (profile.get("state") or demo.get("state") or "Tamil Nadu").lower()
-    asp_district = (profile.get("district") or demo.get("district") or "").lower()
-    asp_category = (demo.get("category") or demo.get("founder_category") or demo.get("social_category") or "").lower()
-    asp_gender = (pers.get("gender") or demo.get("gender") or "").lower()
-    women_equity = demo.get("women_equity_pct") or (100 if demo.get("is_women_led") else 0)
-    try:
-        women_equity_num = float(women_equity)
-    except (ValueError, TypeError):
-        women_equity_num = 0.0
-    is_women_led = bool(demo.get("is_women_led") or "female" in asp_gender or "woman" in asp_gender or women_equity_num >= 51.0)
-    asp_desc = (biz.get("description") or "").lower()
-    asp_name = (biz.get("business_name") or "").lower()
-
-    # Domain keyword extraction
-    founder_keywords = set(re.findall(r'[a-zA-Z]{3,}', f"{asp_sector} {asp_biz_type} {asp_desc} {asp_name}"))
-
-    agri_food_kws = {"food", "millet", "agri", "agriculture", "farmer", "processing", "fmcg", "dairy", "nutrition", "harvest", "crop", "horticulture", "organic", "grain", "bakery"}
-    tech_exclusive_kws = {"semiconductor", "chip design", "deeptech", "ai/ml", "artificial intelligence", "gpu", "defence", "defense", "aerospace", "satellite", "space", "biotech", "clinical", "pharma", "medical devices", "quantum"}
-
-    is_founder_food_agri = bool(founder_keywords & agri_food_kws or "food" in asp_sector or "agri" in asp_sector)
-    is_founder_tech = bool(founder_keywords & {"tech", "software", "ai", "deeptech", "hardware", "saas", "electronics"})
-
+    from services.scheme_matching_engine import match_aspirant_schemes_intelligent
     all_schemes = list_schemes(active_only=True)
+    res_final = match_aspirant_schemes_intelligent(
+        profile=profile,
+        schemes=all_schemes,
+        assistance_need=assistance_need,
+        min_score=min_score if min_score is not None else 0,
+        limit=limit
+    )
 
-    results = []
-
-    for s in all_schemes:
-        score = 0
-        reasons = []
-        concerns = []
-
-        s_name = (s.get("name") or "").lower()
-        s_agency = (s.get("agency") or "").lower()
-        s_brief = (s.get("brief") or "").lower()
-        s_desc = (s.get("description") or "").lower()
-        s_sectors = s.get("sectors") or []
-        if isinstance(s_sectors, str):
-            try:
-                s_sectors = json.loads(s_sectors)
-            except Exception:
-                s_sectors = [s_sectors]
-        sec_lower = [str(x).lower() for x in s_sectors]
-        full_scheme_text = f"{s_name} {s_agency} {s_brief} {s_desc} {' '.join(sec_lower)}"
-
-        # ── 1. Sector & Domain Alignment (Up to 40 pts) ──
-        is_cross_sector_scheme = any("all sectors" in x or "cross-sector" in x or "any" in x for x in sec_lower)
-        has_direct_food_match = is_founder_food_agri and any(k in full_scheme_text for k in agri_food_kws)
-        has_keyword_match = bool(founder_keywords & set(sec_lower)) or (asp_sector and any(asp_sector in x or x in asp_sector for x in sec_lower if "all sectors" not in x))
-        is_broad_msme = any(x in s_name for x in ["pmegp", "mudra", "stand up india", "uyegp", "needs", "cgtmse", "startup india seed", "tanfund", "angelstn", "pmfme", "fme", "agri", "food"])
-        has_tech_conflict = not is_founder_tech and any(k in full_scheme_text for k in tech_exclusive_kws) and not has_direct_food_match
-
-        if has_direct_food_match or (has_keyword_match and not has_tech_conflict):
-            score += 40
-            match_label = asp_sector.title() if asp_sector else "Core Domain"
-            reasons.append(f"Direct sector alignment: {match_label}")
-        elif "manufacturing" in sec_lower and ("manufacturing" in asp_sector or "manufacturing" in asp_biz_type):
-            score += 25
-            reasons.append("Manufacturing enterprise funding quota")
-        elif is_broad_msme:
-            score += 25
-            reasons.append("Broad-based MSME enterprise scale fund")
-        elif has_tech_conflict:
-            score -= 20
-            concerns.append("Specialized tech/hardware/defence fund outside your core domain")
-        elif is_cross_sector_scheme:
-            score += 15
-            reasons.append("Cross-sector eligible fund")
-        else:
-            score += 5
-
-        # ── 2. Stage Alignment (Up to 25 pts) ──
-        s_stage = (s.get("stage") or "").lower()
-        is_stage_agnostic = not s_stage or any(x in s_stage for x in ["all", "agnostic", "multi-stage", "any"])
-        is_founder_early = any(x in asp_stage for x in ["ideation", "r&d", "pre-seed", "seed", "concept", "prototype"])
-        is_scheme_early = any(x in s_stage for x in ["ideation", "r&d", "pre-seed", "seed", "early", "mvp"])
-        is_founder_growth = any(x in asp_stage for x in ["growth", "series", "scale", "debt"])
-        is_scheme_growth = any(x in s_stage for x in ["growth", "series", "scale", "debt"])
-
-        if is_stage_agnostic:
-            score += 20
-            reasons.append("Open to all development stages")
-        elif (is_founder_early and is_scheme_early) or (is_founder_growth and is_scheme_growth) or (asp_stage in s_stage):
-            score += 25
-            reasons.append(f"Stage match: {s.get('stage', 'Development Phase')}")
-        elif is_founder_early and is_scheme_growth:
-            score += 0
-            concerns.append("Requires later-stage scaling metrics (Series A/Growth)")
-        else:
-            score += 12
-            reasons.append(f"Stage eligibility: {s.get('stage', 'Stage Flexible')}")
-
-        # ── 3. Geography & State Scope (Up to 20 pts) ──
-        scope = (s.get("state_scope") or s.get("geography") or "All India").lower()
-        is_tn_scheme = "tamil nadu" in scope or "tn" in scope or "startuptn" in s_agency or "tamil nadu" in s_agency
-        is_tn_founder = "tamil nadu" in asp_state or (asp_district and "other" not in asp_district and "non-tn" not in asp_district)
-        dist_display = asp_district.title() if (asp_district and "other" not in asp_district) else "Tamil Nadu"
-
-        if is_tn_scheme:
-            if is_tn_founder:
-                score += 20
-                reasons.append(f"Tamil Nadu state jurisdiction ({dist_display} eligible)")
-            else:
-                score += 0
-                concerns.append("Restricted to Tamil Nadu registered enterprises")
-        elif "all india" in scope or "central" in scope or "national" in scope:
-            score += 15
-            reasons.append("National Central Government initiative (All states eligible)")
-        else:
-            score += 5
-            concerns.append(f"Regional scope: {s.get('state_scope', 'Specific Region')}")
-
-        # ── 4. Demographics & Affirmative Priority (Up to 15 pts) ──
-        elig = s.get("eligibility") or []
-        if isinstance(elig, str):
-            try:
-                elig = json.loads(elig)
-            except Exception:
-                elig = [elig]
-        elig_text = " ".join([str(x) for x in elig]).lower()
-
-        # Check for gender-exclusive schemes (e.g. TWEES, TREAD, Women Entrepreneurship funds)
-        is_women_scheme = (
-            any(w in s_name or w in s_brief for w in ["women", "mahila", "nari", "twees", "tread"]) or
-            any("women" in str(x).lower() and ("51%" in str(x).lower() or "ownership" in str(x).lower() or "exclusive" in str(x).lower() or "only" in str(x).lower()) for x in elig)
-        )
-
-        is_disqualified = False
-
-        if is_women_scheme:
-            if is_women_led:
-                score += 20
-                reasons.append("Eligible for affirmative Women Entrepreneur quota (>=51% women ownership)")
-            else:
-                score = 0
-                is_disqualified = True
-                concerns.append("Disqualified: Scheme is strictly reserved for women entrepreneurs (>=51% women equity). Male founders cannot be primary applicants.")
-        elif is_women_led and ("women" in elig_text or "women" in full_scheme_text):
-            score += 15
-            reasons.append("Women-led enterprise preference benefit")
-
-        if not is_disqualified:
-            if asp_category and asp_category in elig_text:
-                score += 15
-                reasons.append(f"Target affirmative quota ({asp_category.upper()})")
-            elif "obc" in elig_text or "backward" in full_scheme_text:
-                score += 15
-                reasons.append("Affirmative funding preference for backward classes")
-            elif "dpiit" in elig_text:
-                score += 8
-                reasons.append("DPIIT recognized startup benefit")
-            else:
-                score += 3
-
-        final_score = max(0, min(score, 100))
-        if is_disqualified:
-            status = "DISQUALIFIED"
-        else:
-            status = "HIGHLY RECOMMENDED" if final_score >= 80 else "RECOMMENDED" if final_score >= 65 else "QUALIFIED" if final_score >= 50 else "LOW FIT"
-
-        s_copy = dict(s)
-        s_copy["match_score"] = final_score
-        s_copy["score"] = final_score
-        s_copy["recommendation_status"] = status
-        s_copy["match_reasons"] = reasons
-        s_copy["reasons"] = reasons
-        s_copy["potential_concerns"] = concerns
-        s_copy["scheme"] = s
-
-        # Filter by min_score
-        if min_score is None or final_score >= min_score:
-            results.append(s_copy)
-
-    results.sort(key=lambda x: x["match_score"], reverse=True)
-    res_final = results[:limit] if limit is not None else results
     set_memo(cache_key, res_final, ttl_seconds=60)
     return res_final
 
-def evaluate_scheme_for_aspirant(aspirant_id: str, scheme_or_id: Any, profile: Optional[Dict] = None) -> Dict[str, Any]:
+def evaluate_scheme_for_aspirant(aspirant_id: str, scheme_or_id: Any, profile: Optional[Dict] = None, assistance_need: Optional[Dict] = None) -> Dict[str, Any]:
     """
     Evaluates a specific scheme against an Aspirant's profile for the Guide's evaluation panel.
     Accepts either a scheme dict or a scheme_id string.
-    Returns calculated score, match reasons, eligibility checklist, red flags, and hidden agenda.
+    Returns calculated score, match reasons, itemized evidence checklist, red flags, and hidden agenda.
     """
     if isinstance(scheme_or_id, str):
         scheme = get_scheme(scheme_or_id)
@@ -484,24 +306,24 @@ def evaluate_scheme_for_aspirant(aspirant_id: str, scheme_or_id: Any, profile: O
         return {}
 
     # Run matching for this scheme
-    matches = match_schemes_for_aspirant(aspirant_id, profile=profile, limit=None, min_score=0)
-    match_record = next((m for m in matches if str(m.get("id")) == str(scheme.get("id"))), None)
+    matches = match_schemes_for_aspirant(aspirant_id, profile=profile, limit=None, min_score=None, assistance_need=assistance_need)
+    s_id = str(scheme.get("id") or scheme.get("source_id") or "")
+    match_record = next((m for m in matches if str(m.get("id")) == s_id or str(m.get("source_id")) == s_id), None)
 
-    score = match_record["match_score"] if match_record else 50
-    reasons = match_record.get("match_reasons", []) if match_record else ["General scheme eligibility review."]
-    concerns = match_record.get("potential_concerns", []) if match_record else []
-    status = match_record.get("recommendation_status", "RECOMMENDED") if match_record else "RECOMMENDED"
-
-    elig = scheme.get("eligibility") or []
-    if isinstance(elig, str):
-        try:
-            elig = json.loads(elig)
-        except Exception:
-            elig = [elig]
-
-    checklist = []
-    for item in elig:
-        checklist.append({"item": str(item), "status": "Verified Eligible"})
+    if match_record:
+        score = match_record["match_score"]
+        reasons = match_record.get("match_reasons", [])
+        concerns = match_record.get("potential_concerns", [])
+        status = match_record.get("recommendation_status", "POTENTIALLY ELIGIBLE")
+        checklist = match_record.get("checklist", [])
+        is_disqualified = match_record.get("is_disqualified", False)
+    else:
+        score = 0
+        reasons = []
+        concerns = ["Scheme record could not be evaluated against profile."]
+        status = "LOW FIT"
+        checklist = []
+        is_disqualified = False
 
     hidden_agenda = scheme.get("hidden_agenda") or []
     if isinstance(hidden_agenda, str):
@@ -526,6 +348,7 @@ def evaluate_scheme_for_aspirant(aspirant_id: str, scheme_or_id: Any, profile: O
         "potential_concerns": concerns,
         "scheme": scheme,
         "checklist": checklist,
+        "is_disqualified": is_disqualified,
         "eligibility_summary": f"Score: {score}% Match ({status}) | {len(reasons)} criteria met",
         "red_flags": red_flags,
         "hidden_agenda": hidden_agenda,
@@ -537,7 +360,8 @@ def release_scheme_to_aspirant(
     aspirant_id: str,
     scheme_id: str,
     guide_recommendation: str = "",
-    guide_note: str = ""
+    guide_note: str = "",
+    allow_disqualified_override: bool = False
 ) -> Tuple[bool, Optional[str]]:
     """
     Guide Gatekeeper action: Releases a scheme to an assigned Aspirant.
@@ -558,6 +382,9 @@ def release_scheme_to_aspirant(
 
     # Evaluate summary
     eval_res = evaluate_scheme_for_aspirant(aspirant_id, scheme)
+    if eval_res.get("is_disqualified") and not allow_disqualified_override:
+        disq_reasons = "; ".join(eval_res.get("potential_concerns", [])) or "Statutory eligibility criteria not met"
+        return False, f"Gatekeeper Restriction: Scheme does not meet mandatory criteria for this founder ({disq_reasons}). Please confirm verification override to proceed." 
     eligibility_summary = eval_res.get("eligibility_summary", "Potentially Eligible") if eval_res else "Potentially Eligible"
 
     now_iso = datetime.now(timezone.utc).isoformat()
