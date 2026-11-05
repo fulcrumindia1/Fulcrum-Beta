@@ -497,21 +497,29 @@ class LocalDatabase:
         """)
         conn.commit()
 
-        # Seed legal documents if empty
+        # Seed legal documents if empty or update if placeholder content
+        from services.legal import DEFAULT_TERMS_DOC, DEFAULT_NDA_DOC
         cur.execute("SELECT COUNT(*) FROM legal_documents")
         if cur.fetchone()[0] == 0:
             now_iso = datetime.now(timezone.utc).isoformat()
-            terms_hash = hashlib.sha256("FULCRUM_TERMS_V1".encode("utf-8")).hexdigest()
-            nda_hash = hashlib.sha256("FULCRUM_NDA_V1".encode("utf-8")).hexdigest()
             cur.execute("""
             INSERT OR REPLACE INTO legal_documents (id, doc_type, version, title, content, content_hash, roles_covered, effective_date, is_mandatory, is_active, created_at)
-            VALUES (?, 'terms_and_conditions', '1.0.0', 'Fulcrum Platform Terms & Conditions', 'FULCRUM-INDIA TERMS AND CONDITIONS\\nVersion 1.0.0\\nBy accessing Fulcrum, you agree to comply with platform guidelines, data privacy standards, and entrepreneurial integrity.', ?, '["aspirant", "guide", "sme", "admin"]', '2026-09-01', 1, 1, ?)
-            """, ("terms_v1_0", terms_hash, now_iso))
+            VALUES (?, 'terms_and_conditions', '1.0.0', ?, ?, ?, ?, '2026-11-01', 1, 1, ?)
+            """, ("terms_v1_0", DEFAULT_TERMS_DOC["title"], DEFAULT_TERMS_DOC["content"], DEFAULT_TERMS_DOC["content_hash"], json.dumps(DEFAULT_TERMS_DOC["roles_covered"]), now_iso))
             cur.execute("""
             INSERT OR REPLACE INTO legal_documents (id, doc_type, version, title, content, content_hash, roles_covered, effective_date, is_mandatory, is_active, created_at)
-            VALUES (?, 'nda_dual', '1.0.0', 'Fulcrum Confidentiality & Non-Disclosure Agreement (Guide & SME)', 'FULCRUM-INDIA CONFIDENTIALITY & NON-DISCLOSURE AGREEMENT (NDA)\\nVersion 1.0.0\\nGuides and Subject Matter Experts agree to maintain strict confidentiality of entrepreneur venture secrets, financial details, and proprietary business documents.', ?, '["guide", "sme"]', '2026-09-01', 1, 1, ?)
-            """, ("nda_dual_v1_0", nda_hash, now_iso))
+            VALUES (?, 'nda_dual', '1.0.0', ?, ?, ?, ?, '2026-11-01', 1, 1, ?)
+            """, ("nda_dual_v1_0", DEFAULT_NDA_DOC["title"], DEFAULT_NDA_DOC["content"], DEFAULT_NDA_DOC["content_hash"], json.dumps(DEFAULT_NDA_DOC["roles_covered"]), now_iso))
             conn.commit()
+        else:
+            cur.execute("SELECT content FROM legal_documents WHERE doc_type = 'terms_and_conditions' LIMIT 1")
+            row = cur.fetchone()
+            if row and len(row[0] or "") < 500:
+                cur.execute("UPDATE legal_documents SET title = ?, content = ?, content_hash = ? WHERE doc_type = 'terms_and_conditions'",
+                            (DEFAULT_TERMS_DOC["title"], DEFAULT_TERMS_DOC["content"], DEFAULT_TERMS_DOC["content_hash"]))
+                cur.execute("UPDATE legal_documents SET title = ?, content = ?, content_hash = ? WHERE doc_type = 'nda_dual'",
+                            (DEFAULT_NDA_DOC["title"], DEFAULT_NDA_DOC["content"], DEFAULT_NDA_DOC["content_hash"]))
+                conn.commit()
 
         # Backfill user_roles from profiles if empty
         cur.execute("SELECT COUNT(*) FROM user_roles")
@@ -525,11 +533,6 @@ class LocalDatabase:
                 INSERT OR IGNORE INTO user_roles (id, user_id, role, status, granted_at, activated_at, created_at, updated_at)
                 VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
                 """, (f"ur_{p_id}_{p_role}", p_id, p_role, p_created, p_created, p_created, p_created))
-                if p_role != "aspirant":
-                    cur.execute("""
-                    INSERT OR IGNORE INTO user_roles (id, user_id, role, status, granted_at, activated_at, created_at, updated_at)
-                    VALUES (?, ?, 'aspirant', 'active', ?, ?, ?, ?)
-                    """, (f"ur_{p_id}_aspirant", p_id, p_created, p_created, p_created, p_created))
             conn.commit()
 
         conn.close()

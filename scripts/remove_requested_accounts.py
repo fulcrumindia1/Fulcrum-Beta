@@ -196,3 +196,4 @@ if __name__ == "__main__":
     remove_from_supabase()
     remove_from_sqlite()
     print_remaining_users()
+

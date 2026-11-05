@@ -273,12 +273,12 @@ def get_active_legal_document(doc_type: str = "terms_and_conditions") -> Optiona
             except Exception:
                 pass
 
-    if not doc:
+    if not doc or len(doc.get("content", "")) < 500:
         db = get_local_db()
         if hasattr(db, "get_legal_document"):
             doc = db.get_legal_document(doc_type)
 
-    if not doc:
+    if not doc or len(doc.get("content", "")) < 500:
         # Fallback to in-memory default
         if doc_type == "terms_and_conditions":
             doc = DEFAULT_TERMS_DOC

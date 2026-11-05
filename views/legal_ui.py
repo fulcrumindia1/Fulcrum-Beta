@@ -30,6 +30,9 @@ def render_terms_and_conditions_gate(user: dict) -> bool:
         return True
 
     doc = get_active_legal_document("terms_and_conditions")
+    if not doc or len(doc.get("content", "")) < 500:
+        from services.legal import DEFAULT_TERMS_DOC
+        doc = DEFAULT_TERMS_DOC
     doc_title = doc.get("title", "Fulcrum-India Platform Terms & Conditions")
     doc_content = doc.get("content", "")
     doc_version = doc.get("version", "1.0.0")
@@ -101,6 +104,9 @@ def render_nda_gate(user: dict, role: str) -> bool:
         return True
 
     doc = get_active_legal_document("nda_dual")
+    if not doc or len(doc.get("content", "")) < 500:
+        from services.legal import DEFAULT_NDA_DOC
+        doc = DEFAULT_NDA_DOC
     doc_title = doc.get("title", "Fulcrum-India Confidentiality & Non-Disclosure Agreement")
     doc_content = doc.get("content", "")
     doc_version = doc.get("version", "1.0.0")
