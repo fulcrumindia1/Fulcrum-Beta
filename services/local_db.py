@@ -333,7 +333,7 @@ class LocalDatabase:
         conn.commit()
 
         # Seed default super admin (fulcrumindia1@gmail.com) if missing
-        cur.execute("SELECT id FROM profiles WHERE role = 'admin' LIMIT 1")
+        cur.execute("SELECT id FROM profiles WHERE email = 'fulcrumindia1@gmail.com' LIMIT 1")
         if not cur.fetchone():
             now_iso = datetime.now(timezone.utc).isoformat()
             admin_id = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"

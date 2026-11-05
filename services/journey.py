@@ -349,6 +349,8 @@ def toggle_event_roadmap_inclusion(
                     updated = True
 
             if updated:
+                if ev and ev.get("aspirant_id"):
+                    invalidate_memo(f"journey:{ev['aspirant_id']}")
                 return True, None
             return False, "Failed to update journey event in Supabase."
         except Exception as e:
@@ -714,6 +716,7 @@ def log_meaningful_event(
             event_data=payload,
             event_date=date_str
         )
+    invalidate_memo(f"journey:{aspirant_id}")
 
 def soft_delete_event(event_id: str, user_id: str, user_role: str) -> Tuple[bool, Optional[str]]:
     """Enforces soft deletion permissions in active backend."""
@@ -779,6 +782,8 @@ def soft_delete_event(event_id: str, user_id: str, user_role: str) -> Tuple[bool
                     print(f"[Journey] soft_delete_event admin update error: {ex}")
 
             if updated:
+                if ev and ev.get("aspirant_id"):
+                    invalidate_memo(f"journey:{ev['aspirant_id']}")
                 return True, None
             return False, "Failed to update deletion status in database."
         except Exception as e:
@@ -800,6 +805,8 @@ def soft_delete_event(event_id: str, user_id: str, user_role: str) -> Tuple[bool
         return False, "Permission denied: You can only delete your own journey contributions."
 
     success = local_db.soft_delete_journey_event(event_id, user_id)
+    if event.get("aspirant_id"):
+        invalidate_memo(f"journey:{event['aspirant_id']}")
     return success, None
 
 

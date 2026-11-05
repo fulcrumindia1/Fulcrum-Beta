@@ -137,6 +137,8 @@ def grant_role(
         db.upsert_user_role(record)
 
     invalidate_memo(f"user_roles:{user_id}")
+    invalidate_memo(f"guide_aspirants:{user_id}")
+    invalidate_memo(f"sme_aspirants:{user_id}")
     return True, None
 
 
@@ -162,6 +164,8 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
         db.update_role_status(user_id, role, "active", activated_at=now_iso)
 
     invalidate_memo(f"user_roles:{user_id}")
+    invalidate_memo(f"guide_aspirants:{user_id}")
+    invalidate_memo(f"sme_aspirants:{user_id}")
     return True, None
 
 
@@ -191,6 +195,8 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
         db.update_role_status(user_id, role, "revoked", revocation_reason=reason)
 
     invalidate_memo(f"user_roles:{user_id}")
+    invalidate_memo(f"guide_aspirants:{user_id}")
+    invalidate_memo(f"sme_aspirants:{user_id}")
     return True, None
 
 
@@ -217,6 +223,8 @@ def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optio
         db.update_role_status(user_id, role, "suspended", revocation_reason=reason)
 
     invalidate_memo(f"user_roles:{user_id}")
+    invalidate_memo(f"guide_aspirants:{user_id}")
+    invalidate_memo(f"sme_aspirants:{user_id}")
     return True, None
 
 

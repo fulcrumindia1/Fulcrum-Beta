@@ -574,6 +574,288 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
 
     return True, None
 
+def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = None, reason: str = "") -> Tuple[bool, Optional[str]]:
+    """Admin unassigns a dedicated Guide or Co-Guide from an Aspirant's caseload.
+    Preserves historical journey events, scheme releases, and audit logs.
+    Handles case handover and cache invalidation.
+    """
+    from services.profiles import get_profile
+    from services.journey import log_meaningful_event
+    from services.notifications import create_notification
+
+    curr = get_aspirant_mentors(aspirant_id)
+    guides = curr.get("guides", [])
+    current_guide_ids = [g["id"] for g in guides]
+    primary_guide_id = curr.get("guide", {}).get("id") if curr.get("guide") else None
+
+    if guide_id not in current_guide_ids and guide_id != primary_guide_id:
+        return False, "This Guide is not currently assigned to this entrepreneur."
+
+    new_guide_ids = [gid for gid in current_guide_ids if gid != guide_id]
+    if primary_guide_id == guide_id:
+        new_primary_guide_id = new_guide_ids[0] if new_guide_ids else None
+    else:
+        new_primary_guide_id = primary_guide_id
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        client = _get_admin_client()
+        if not client:
+            return False, "Supabase client not available."
+        try:
+            client.table("relationships").update({
+                "guide_id": new_primary_guide_id,
+                "guide_ids": new_guide_ids,
+                "updated_at": now_iso
+            }).eq("aspirant_id", aspirant_id).execute()
+
+            import uuid
+            hist_id = str(uuid.uuid4())
+            client.table("assignment_history").insert({
+                "id": hist_id,
+                "aspirant_id": aspirant_id,
+                "mentor_id": guide_id,
+                "mentor_role": "guide",
+                "assigned_by": admin_id,
+                "action": "UNASSIGNED",
+                "previous_mentor_id": None,
+                "notes": f"Unassigned by Admin. Reason: {reason or 'Administrative rebalance'}",
+                "created_at": now_iso
+            }).execute()
+
+            try:
+                if new_primary_guide_id:
+                    client.table("help_requests").update({
+                        "assigned_guide_id": new_primary_guide_id,
+                        "updated_at": now_iso
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                else:
+                    client.table("help_requests").update({
+                        "assigned_guide_id": None,
+                        "updated_at": now_iso
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+            except Exception:
+                pass
+        except Exception as e:
+            return False, f"Failed to unassign Guide in Supabase: {e}"
+    else:
+        # SQLite mode
+        conn = get_local_db()._get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+        UPDATE relationships
+        SET guide_id = ?, guide_ids = ?, updated_at = ?
+        WHERE aspirant_id = ?
+        """, (new_primary_guide_id, json.dumps(new_guide_ids), now_iso, aspirant_id))
+        conn.commit()
+
+        try:
+            if new_primary_guide_id:
+                cur.execute("""
+                UPDATE help_requests
+                SET assigned_guide_id = ?, updated_at = ?
+                WHERE aspirant_id = ? AND assigned_guide_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                """, (new_primary_guide_id, now_iso, aspirant_id, guide_id))
+            else:
+                cur.execute("""
+                UPDATE help_requests
+                SET assigned_guide_id = NULL, updated_at = ?
+                WHERE aspirant_id = ? AND assigned_guide_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                """, (now_iso, aspirant_id, guide_id))
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+
+        get_local_db().record_assignment_history(
+            aspirant_id=aspirant_id,
+            mentor_id=guide_id,
+            mentor_role="guide",
+            assigned_by=admin_id,
+            action="UNASSIGNED",
+            previous_mentor_id=None,
+            notes=f"Unassigned by Admin. Reason: {reason or 'Administrative rebalance'}"
+        )
+
+    invalidate_memo(f"mentors:{aspirant_id}")
+    invalidate_memo(f"guide_aspirants:{guide_id}")
+    if new_primary_guide_id:
+        invalidate_memo(f"guide_aspirants:{new_primary_guide_id}")
+
+    guide_prof = get_profile(guide_id)
+    asp_prof = get_profile(aspirant_id)
+    guide_name = guide_prof.get("full_name") if guide_prof else "Guide"
+    asp_name = asp_prof.get("full_name") if asp_prof else "Entrepreneur"
+
+    create_notification(
+        user_id=guide_id,
+        title="Caseload Unassigned",
+        message=f"You have been unassigned as Guide for {asp_name}. Reason: {reason or 'Administrative rebalance'}.",
+        notification_type="guide_unassigned",
+        actor_id=admin_id
+    )
+    create_notification(
+        user_id=aspirant_id,
+        title="Mentorship Update",
+        message=f"{guide_name} has concluded their dedicated mentorship role. Reason: {reason or 'Administrative rebalance'}.",
+        notification_type="guide_unassigned",
+        actor_id=admin_id
+    )
+    log_meaningful_event(
+        aspirant_id=aspirant_id,
+        actor_id=admin_id or "system",
+        actor_role="admin",
+        event_type="guide_unassigned",
+        title="Guide Assignment Concluded",
+        description=f"{guide_name} concluded their mentorship assignment. Reason: {reason or 'Administrative rebalance'}.",
+        metadata={"guide_id": guide_id, "reason": reason}
+    )
+
+    return True, None
+
+def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, reason: str = "") -> Tuple[bool, Optional[str]]:
+    """Admin unassigns a domain specialist (SME) from an Aspirant's advisory panel.
+    Preserves historical technical advisory records, schemes, and journey events.
+    Handles case handover and cache invalidation.
+    """
+    from services.profiles import get_profile
+    from services.journey import log_meaningful_event
+    from services.notifications import create_notification
+
+    curr = get_aspirant_mentors(aspirant_id)
+    smes = curr.get("smes", [])
+    current_sme_ids = [s["id"] for s in smes]
+    primary_sme_id = curr.get("sme", {}).get("id") if curr.get("sme") else None
+
+    if sme_id not in current_sme_ids and sme_id != primary_sme_id:
+        return False, "This SME is not currently assigned to this entrepreneur."
+
+    new_sme_ids = [sid for sid in current_sme_ids if sid != sme_id]
+    if primary_sme_id == sme_id:
+        new_primary_sme_id = new_sme_ids[0] if new_sme_ids else None
+    else:
+        new_primary_sme_id = primary_sme_id
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        client = _get_admin_client()
+        if not client:
+            return False, "Supabase client not available."
+        try:
+            client.table("relationships").update({
+                "sme_id": new_primary_sme_id,
+                "sme_ids": new_sme_ids,
+                "updated_at": now_iso
+            }).eq("aspirant_id", aspirant_id).execute()
+
+            import uuid
+            hist_id = str(uuid.uuid4())
+            client.table("assignment_history").insert({
+                "id": hist_id,
+                "aspirant_id": aspirant_id,
+                "mentor_id": sme_id,
+                "mentor_role": "sme",
+                "assigned_by": admin_id,
+                "action": "UNASSIGNED",
+                "previous_mentor_id": None,
+                "notes": f"Specialist unassigned by Admin. Reason: {reason or 'Advisory concluded'}",
+                "created_at": now_iso
+            }).execute()
+
+            try:
+                if new_primary_sme_id:
+                    client.table("help_requests").update({
+                        "assigned_sme_id": new_primary_sme_id,
+                        "updated_at": now_iso
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                else:
+                    client.table("help_requests").update({
+                        "assigned_sme_id": None,
+                        "updated_at": now_iso
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+            except Exception:
+                pass
+        except Exception as e:
+            return False, f"Failed to unassign SME in Supabase: {e}"
+    else:
+        # SQLite mode
+        conn = get_local_db()._get_conn()
+        cur = conn.cursor()
+        cur.execute("""
+        UPDATE relationships
+        SET sme_id = ?, sme_ids = ?, updated_at = ?
+        WHERE aspirant_id = ?
+        """, (new_primary_sme_id, json.dumps(new_sme_ids), now_iso, aspirant_id))
+        conn.commit()
+
+        try:
+            if new_primary_sme_id:
+                cur.execute("""
+                UPDATE help_requests
+                SET assigned_sme_id = ?, updated_at = ?
+                WHERE aspirant_id = ? AND assigned_sme_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                """, (new_primary_sme_id, now_iso, aspirant_id, sme_id))
+            else:
+                cur.execute("""
+                UPDATE help_requests
+                SET assigned_sme_id = NULL, updated_at = ?
+                WHERE aspirant_id = ? AND assigned_sme_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                """, (now_iso, aspirant_id, sme_id))
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+
+        get_local_db().record_assignment_history(
+            aspirant_id=aspirant_id,
+            mentor_id=sme_id,
+            mentor_role="sme",
+            assigned_by=admin_id,
+            action="UNASSIGNED",
+            previous_mentor_id=None,
+            notes=f"Specialist unassigned by Admin. Reason: {reason or 'Advisory concluded'}"
+        )
+
+    invalidate_memo(f"mentors:{aspirant_id}")
+    invalidate_memo(f"sme_aspirants:{sme_id}")
+    if new_primary_sme_id:
+        invalidate_memo(f"sme_aspirants:{new_primary_sme_id}")
+
+    sme_prof = get_profile(sme_id)
+    asp_prof = get_profile(aspirant_id)
+    sme_name = sme_prof.get("full_name") if sme_prof else "Specialist"
+    asp_name = asp_prof.get("full_name") if asp_prof else "Entrepreneur"
+
+    create_notification(
+        user_id=sme_id,
+        title="Advisory Case Unassigned",
+        message=f"You have been unassigned as SME for {asp_name}. Reason: {reason or 'Advisory concluded'}.",
+        notification_type="sme_unassigned",
+        actor_id=admin_id
+    )
+    create_notification(
+        user_id=aspirant_id,
+        title="Advisory Team Update",
+        message=f"{sme_name} has concluded their advisory term. Reason: {reason or 'Advisory concluded'}.",
+        notification_type="sme_unassigned",
+        actor_id=admin_id
+    )
+    log_meaningful_event(
+        aspirant_id=aspirant_id,
+        actor_id=admin_id or "system",
+        actor_role="admin",
+        event_type="sme_unassigned",
+        title="Specialist Term Concluded",
+        description=f"{sme_name} concluded their advisory assignment. Reason: {reason or 'Advisory concluded'}.",
+        metadata={"sme_id": sme_id, "reason": reason}
+    )
+
+    return True, None
+
 def get_assignment_history(aspirant_id: Optional[str] = None, mentor_id: Optional[str] = None) -> List[Dict]:
     """Admin audit log query for mentor reassignments and handovers."""
     backend = get_data_backend()
@@ -607,7 +889,11 @@ def get_assigned_aspirants_for_guide(guide_id: str) -> List[Dict]:
     if not guide_id:
         return []
 
-    # Strict Server-Side NDA Authorization Gate
+    # Strict Server-Side Role and NDA Authorization Gate
+    from services.roles import user_has_active_role
+    if not user_has_active_role(guide_id, "guide"):
+        return []
+
     from services.legal import check_user_nda_accepted
     if not check_user_nda_accepted(guide_id, "guide"):
         return []
@@ -663,7 +949,11 @@ def get_assigned_aspirants_for_sme(sme_id: str) -> List[Dict]:
     if not sme_id:
         return []
 
-    # Strict Server-Side NDA Authorization Gate
+    # Strict Server-Side Role and NDA Authorization Gate
+    from services.roles import user_has_active_role
+    if not user_has_active_role(sme_id, "sme"):
+        return []
+
     from services.legal import check_user_nda_accepted
     if not check_user_nda_accepted(sme_id, "sme"):
         return []

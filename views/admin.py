@@ -23,7 +23,7 @@ def _safe_esc(val, default=""):
     return html.escape(str(val))
 from services.auth import admin_create_mentor, backfill_auth_users, get_data_backend
 from services.profiles import get_profile, list_profiles_by_role
-from services.relationships import get_aspirant_mentors, assign_guide, assign_sme
+from services.relationships import get_aspirant_mentors, assign_guide, assign_sme, unassign_guide, unassign_sme
 from services.journey import get_journey_timeline, soft_delete_event, log_meaningful_event, add_admin_journey_entry, get_standard_role_label, count_active_journeys
 from views.journey_edit_dialog import render_edit_journey_dialog
 from services.roles import get_active_roles
@@ -185,24 +185,24 @@ def render_admin_portal(admin_profile: dict):
                 with col_sel2:
                     try:
                         cached_bytes = st.session_state.get("cached_dossier_pdf")
-                        if (
-                            st.session_state.get("cached_dossier_asp_id") != selected_asp_id 
-                            or not cached_bytes 
-                            or len(cached_bytes) < 1000
-                        ):
-                            with st.spinner("Compiling Dossier PDF..."):
-                                st.session_state["cached_dossier_pdf"] = generate_aspirant_dossier_pdf(selected_asp_id)
-                                st.session_state["cached_dossier_asp_id"] = selected_asp_id
-                        pdf_data = st.session_state["cached_dossier_pdf"]
-                        clean_name = "".join(c for c in curr_asp.get("full_name", "Aspirant") if c.isalnum() or c == "_")
-                        st.download_button(
-                            label="📥 Download Founder Dossier (PDF)",
-                            data=pdf_data,
-                            file_name=f"FULCRUM_Dossier_{clean_name}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                            key=f"dl_pdf_dossier_{selected_asp_id}"
-                        )
+                        has_pdf = (st.session_state.get("cached_dossier_asp_id") == selected_asp_id and cached_bytes and len(cached_bytes) >= 1000)
+                        if has_pdf:
+                            clean_name = "".join(c for c in curr_asp.get("full_name", "Aspirant") if c.isalnum() or c == "_")
+                            st.download_button(
+                                label="📥 Download Founder Dossier (PDF)",
+                                data=cached_bytes,
+                                file_name=f"FULCRUM_Dossier_{clean_name}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                                key=f"dl_pdf_dossier_{selected_asp_id}"
+                            )
+                        else:
+                            if st.button("📄 Generate Founder Dossier (PDF)", use_container_width=True, key=f"btn_gen_pdf_{selected_asp_id}"):
+                                with st.spinner("Compiling Dossier PDF..."):
+                                    pdf_data = generate_aspirant_dossier_pdf(selected_asp_id)
+                                    st.session_state["cached_dossier_pdf"] = pdf_data
+                                    st.session_state["cached_dossier_asp_id"] = selected_asp_id
+                                    st.rerun()
                     except Exception as e:
                         st.error(f"PDF generation error: {e}")
                 mentors_info = get_aspirant_mentors(selected_asp_id)
@@ -579,6 +579,131 @@ def render_admin_portal(admin_profile: dict):
                                 st.rerun()
                             else:
                                 st.error(err or "Assignment failed.")
+
+            st.markdown("---")
+            st.markdown("#### 📋 Active Mentorship Allocations & Quick Handover")
+            st.markdown("<p style='color:#64748B; font-size:0.85rem;'>Review current Guide and SME allocations. Remove or replace mentors with full audit trail capture, open consultation handover, and immediate cache synchronization.</p>", unsafe_allow_html=True)
+
+            if "unassign_mentor_msg" in st.session_state:
+                _u_msg = st.session_state.pop("unassign_mentor_msg")
+                st.success(_u_msg)
+
+            active_allocations = []
+            seen_alloc_aids = set()
+            for a in aspirants:
+                aid_curr = a.get("id")
+                if not aid_curr or aid_curr in seen_alloc_aids:
+                    continue
+                seen_alloc_aids.add(aid_curr)
+                m = get_aspirant_mentors(aid_curr)
+                if m.get("guide") or m.get("sme") or m.get("guides") or m.get("smes"):
+                    active_allocations.append((a, m))
+
+            if not active_allocations:
+                st.info("No active mentor allocations yet. Pair an entrepreneur using the forms above.")
+            else:
+                for a_idx, (asp, m) in enumerate(active_allocations):
+                    aid = asp["id"]
+                    aname = asp.get("full_name", "Entrepreneur")
+                    adist = asp.get("district", "Tamil Nadu")
+
+                    with st.expander(f"👤 {aname} ({adist}) — Active Mentors", expanded=False):
+                        c_g, c_s = st.columns(2)
+                        with c_g:
+                            st.markdown("**Dedicated Guide(s)**")
+                            guides_raw = m.get("guides", [])
+                            if not guides_raw and m.get("guide"):
+                                guides_raw = [m["guide"]]
+
+                            # Deduplicate guides by id
+                            seen_g_ids = set()
+                            guides_list = []
+                            for g in guides_raw:
+                                if g and g.get("id") and g["id"] not in seen_g_ids:
+                                    seen_g_ids.add(g["id"])
+                                    guides_list.append(g)
+
+                            if not guides_list:
+                                st.caption("No dedicated Guide assigned.")
+                            else:
+                                for idx, g in enumerate(guides_list):
+                                    gid = g.get("id")
+                                    gname = g.get("full_name", "Guide")
+                                    is_pri = (idx == 0)
+                                    tag = "Primary" if is_pri else f"Co-Guide #{idx+1}"
+                                    st.markdown(f"• **{gname}** `[{tag}]`")
+
+                                    with st.popover(f"Actions: {gname}", use_container_width=True):
+                                        st.markdown(f"**Manage Guide: {gname}**")
+                                        reason_g = st.text_input(f"Reason for Removal / Replacement", placeholder="e.g. Founder requested agri-specialist", key=f"r_g_{a_idx}_{aid}_{gid}_{idx}")
+                                        
+                                        col_b1, col_b2 = st.columns(2)
+                                        with col_b1:
+                                            if st.button("Unassign Guide", key=f"btn_unassign_g_{a_idx}_{aid}_{gid}_{idx}", type="secondary", use_container_width=True):
+                                                ok_u, err_u = unassign_guide(aid, gid, admin_id=admin_id, reason=reason_g)
+                                                if ok_u:
+                                                    st.session_state["unassign_mentor_msg"] = f"✅ Guide {gname} unassigned from {aname}."
+                                                    st.rerun()
+                                                else:
+                                                    st.error(err_u or "Failed to unassign Guide.")
+                                        with col_b2:
+                                            replacement_guides = [g_opt for g_opt in list(guide_dict.keys()) if g_opt != gid]
+                                            if replacement_guides:
+                                                rep_g = st.selectbox("Replace with", replacement_guides, format_func=lambda x: guide_dict[x], key=f"rep_g_sel_{a_idx}_{aid}_{gid}_{idx}")
+                                                if st.button("Confirm Replace", key=f"btn_rep_g_{a_idx}_{aid}_{gid}_{idx}", type="primary", use_container_width=True):
+                                                    ok_r, err_r = assign_guide(aid, rep_g, admin_id=admin_id, notes=f"Replacement for {gname}. {reason_g}")
+                                                    if ok_r:
+                                                        st.session_state["unassign_mentor_msg"] = f"✅ Guide {gname} replaced with {guide_dict[rep_g]} for {aname}."
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(err_r or "Replacement failed.")
+
+                        with c_s:
+                            st.markdown("**Domain SME(s)**")
+                            smes_raw = m.get("smes", [])
+                            if not smes_raw and m.get("sme"):
+                                smes_raw = [m["sme"]]
+
+                            # Deduplicate SMEs by id
+                            seen_s_ids = set()
+                            smes_list = []
+                            for s in smes_raw:
+                                if s and s.get("id") and s["id"] not in seen_s_ids:
+                                    seen_s_ids.add(s["id"])
+                                    smes_list.append(s)
+
+                            if not smes_list:
+                                st.caption("No domain SME assigned.")
+                            else:
+                                for idx, s in enumerate(smes_list):
+                                    sid = s.get("id")
+                                    sname = s.get("full_name", "Specialist")
+                                    st.markdown(f"• **{sname}** `[Specialist #{idx+1}]`")
+
+                                    with st.popover(f"Actions: {sname}", use_container_width=True):
+                                        st.markdown(f"**Manage SME: {sname}**")
+                                        reason_s = st.text_input(f"Reason for Removal / Replacement", placeholder="e.g. Advisory milestone completed", key=f"r_s_{a_idx}_{aid}_{sid}_{idx}")
+
+                                        col_sb1, col_sb2 = st.columns(2)
+                                        with col_sb1:
+                                            if st.button("Unassign SME", key=f"btn_unassign_s_{a_idx}_{aid}_{sid}_{idx}", type="secondary", use_container_width=True):
+                                                ok_su, err_su = unassign_sme(aid, sid, admin_id=admin_id, reason=reason_s)
+                                                if ok_su:
+                                                    st.session_state["unassign_mentor_msg"] = f"✅ Specialist {sname} unassigned from {aname}."
+                                                    st.rerun()
+                                                else:
+                                                    st.error(err_su or "Failed to unassign SME.")
+                                        with col_sb2:
+                                            replacement_smes = [s_opt for s_opt in list(sme_dict.keys()) if s_opt != sid]
+                                            if replacement_smes:
+                                                rep_s = st.selectbox("Replace with", replacement_smes, format_func=lambda x: sme_dict[x], key=f"rep_s_sel_{a_idx}_{aid}_{sid}_{idx}")
+                                                if st.button("Confirm Replace", key=f"btn_rep_s_{a_idx}_{aid}_{sid}_{idx}", type="primary", use_container_width=True):
+                                                    ok_sr, err_sr = assign_sme(aid, rep_s, admin_id=admin_id, notes=f"Replacement for {sname}. {reason_s}", mode="replace")
+                                                    if ok_sr:
+                                                        st.session_state["unassign_mentor_msg"] = f"✅ Specialist {sname} replaced with {sme_dict[rep_s]} for {aname}."
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(err_sr or "Replacement failed.")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 5: MENTOR INQUIRIES & ADMINISTRATIVE DIRECTIVES

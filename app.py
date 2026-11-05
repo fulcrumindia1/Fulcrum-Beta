@@ -333,66 +333,112 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
 
         /* Workspace Selector & Sidebar Selectbox — Dark Navy Theme Alignment */
         [data-testid="stSidebar"] div[data-testid="stSelectbox"],
-        [data-testid="stSidebar"] .stSelectbox {
+        [data-testid="stSidebar"] .stSelectbox,
+        section[data-testid="stSidebar"] div.st-key-sb_current_workspace {
             margin-bottom: 0.6rem !important;
         }
 
-        [data-testid="stSidebar"] [data-baseweb="select"],
-        [data-testid="stSidebar"] [data-baseweb="select"] > div,
-        [data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
-        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
+        section[data-testid="stSidebar"] [data-baseweb="select"],
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
+        section[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
+        section[data-testid="stSidebar"] [data-baseweb="select"] div,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
+        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
         div.st-key-sb_current_workspace [data-baseweb="select"],
         div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child {
+        div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child,
+        div.st-key-sb_current_workspace [data-baseweb="select"] [role="combobox"],
+        div.st-key-sb_current_workspace [data-baseweb="select"] div {
             background-color: #162032 !important;
             background: #162032 !important;
-            border: 1px solid rgba(255, 255, 255, 0.18) !important;
+            border-color: rgba(255, 255, 255, 0.22) !important;
+            color: #F8FAFC !important;
+        }
+
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+        div.st-key-sb_current_workspace [data-baseweb="select"] > div {
+            border: 1.5px solid rgba(255, 255, 255, 0.22) !important;
             border-radius: 10px !important;
             min-height: 42px !important;
-            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
             transition: all 0.2s ease-in-out !important;
         }
 
-        [data-testid="stSidebar"] [data-baseweb="select"] > div:hover,
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
-        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div:hover,
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div:hover,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
+        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div:hover,
         div.st-key-sb_current_workspace [data-baseweb="select"] > div:hover {
             background-color: #1e293b !important;
-            border-color: rgba(96, 165, 250, 0.45) !important;
+            border-color: #60a5fa !important;
         }
 
-        [data-testid="stSidebar"] [data-baseweb="select"]:focus-within > div,
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div,
-        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"]:focus-within > div,
+        section[data-testid="stSidebar"] [data-baseweb="select"]:focus-within > div,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div,
+        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"]:focus-within > div,
         div.st-key-sb_current_workspace [data-baseweb="select"]:focus-within > div {
             border-color: #3b82f6 !important;
-            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35) !important;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.4) !important;
         }
 
         /* High-contrast crisp typography for sidebar selectbox text and chevron */
-        [data-testid="stSidebar"] [data-baseweb="select"] *,
-        [data-testid="stSidebar"] [data-baseweb="select"] div,
-        [data-testid="stSidebar"] [data-baseweb="select"] span,
-        [data-testid="stSidebar"] [data-baseweb="select"] input,
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
+        section[data-testid="stSidebar"] [data-baseweb="select"] *,
+        section[data-testid="stSidebar"] [data-baseweb="select"] div,
+        section[data-testid="stSidebar"] [data-baseweb="select"] span,
+        section[data-testid="stSidebar"] [data-baseweb="select"] p,
+        section[data-testid="stSidebar"] [data-baseweb="select"] input,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
         div.st-key-sb_current_workspace [data-baseweb="select"] *,
         div.st-key-sb_current_workspace [data-baseweb="select"] span,
         div.st-key-sb_current_workspace [data-baseweb="select"] div,
+        div.st-key-sb_current_workspace [data-baseweb="select"] p,
         div.st-key-sb_current_workspace [data-baseweb="select"] input {
             color: #F8FAFC !important;
             font-weight: 600 !important;
             font-size: 0.92rem !important;
         }
 
-        [data-testid="stSidebar"] [data-baseweb="select"] svg,
-        [data-testid="stSidebar"] [data-baseweb="select"] svg path,
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] svg,
-        [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
-        div.st-key-sb_current_workspace [data-baseweb="select"] svg {
+        section[data-testid="stSidebar"] [data-baseweb="select"] svg,
+        section[data-testid="stSidebar"] [data-baseweb="select"] svg path,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] svg,
+        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
+        div.st-key-sb_current_workspace [data-baseweb="select"] svg,
+        div.st-key-sb_current_workspace [data-baseweb="select"] svg path {
+            fill: #CBD5E1 !important;
+            color: #CBD5E1 !important;
+        }
+
+        /* BaseWeb Dropdown Popover Listbox */
+        div[data-baseweb="popover"],
+        div[data-baseweb="popover"] > div,
+        div[data-baseweb="popover"] ul,
+        div[data-baseweb="menu"],
+        ul[role="listbox"] {
+            background-color: #162032 !important;
+            background: #162032 !important;
+            border: 1px solid rgba(255, 255, 255, 0.15) !important;
+            border-radius: 10px !important;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5) !important;
+        }
+        div[data-baseweb="popover"] li,
+        ul[role="listbox"] li {
+            background-color: transparent !important;
+            color: #F8FAFC !important;
+        }
+        div[data-baseweb="popover"] li *,
+        ul[role="listbox"] li * {
+            color: #F8FAFC !important;
+        }
+        div[data-baseweb="popover"] li:hover,
+        div[data-baseweb="popover"] li[aria-selected="true"],
+        ul[role="listbox"] li:hover,
+        ul[role="listbox"] li[aria-selected="true"] {
+            background-color: #2563EB !important;
+            color: #FFFFFF !important;
+        }
             fill: #94A3B8 !important;
             color: #94A3B8 !important;
         }
@@ -856,43 +902,55 @@ def main():
                 st.markdown("""
                 <style>
                 /* Direct In-Sidebar Scoped Current Workspace Dropdown Styles */
-                [data-testid="stSidebar"] [data-baseweb="select"],
-                [data-testid="stSidebar"] [data-baseweb="select"] > div,
-                [data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
-                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"],
-                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
-                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
-                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
+                section[data-testid="stSidebar"] [data-baseweb="select"],
+                section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+                section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
+                section[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
+                section[data-testid="stSidebar"] [data-baseweb="select"] div,
+                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
+                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
+                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
                 div.st-key-sb_current_workspace [data-baseweb="select"],
                 div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child {
+                div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child,
+                div.st-key-sb_current_workspace [data-baseweb="select"] [role="combobox"],
+                div.st-key-sb_current_workspace [data-baseweb="select"] div {
                     background-color: #162032 !important;
                     background: #162032 !important;
-                    border: 1px solid rgba(255, 255, 255, 0.20) !important;
+                    border-color: rgba(255, 255, 255, 0.22) !important;
+                    color: #F8FAFC !important;
+                }
+
+                section[data-testid="stSidebar"] [data-baseweb="select"] > div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] > div {
+                    border: 1.5px solid rgba(255, 255, 255, 0.22) !important;
                     border-radius: 10px !important;
                     min-height: 42px !important;
-                    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25) !important;
+                    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
                 }
-                [data-testid="stSidebar"] [data-baseweb="select"] *,
-                [data-testid="stSidebar"] [data-baseweb="select"] div,
-                [data-testid="stSidebar"] [data-baseweb="select"] span,
-                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] *,
-                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
-                div.st-key-sb_current_workspace [data-baseweb="select"] *,
-                div.st-key-sb_current_workspace [data-baseweb="select"] span,
-                div.st-key-sb_current_workspace [data-baseweb="select"] div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] input {
+
+                section[data-testid="stSidebar"] [data-baseweb="select"] *,
+                section[data-testid="stSidebar"] [data-baseweb="select"] div,
+                section[data-testid="stSidebar"] [data-baseweb="select"] span,
+                section[data-testid="stSidebar"] [data-baseweb="select"] p,
+                section[data-testid="stSidebar"] [data-baseweb="select"] input,
+                div.st-key-sb_current_workspace *,
+                div.st-key-sb_current_workspace span,
+                div.st-key-sb_current_workspace div,
+                div.st-key-sb_current_workspace p,
+                div.st-key-sb_current_workspace input {
                     color: #F8FAFC !important;
                     font-weight: 600 !important;
                     font-size: 0.92rem !important;
                 }
-                [data-testid="stSidebar"] [data-baseweb="select"] svg,
-                [data-testid="stSidebar"] [data-baseweb="select"] svg path,
-                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] svg,
-                [data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
-                div.st-key-sb_current_workspace [data-baseweb="select"] svg {
-                    fill: #94A3B8 !important;
-                    color: #94A3B8 !important;
+
+                section[data-testid="stSidebar"] [data-baseweb="select"] svg,
+                section[data-testid="stSidebar"] [data-baseweb="select"] svg path,
+                div.st-key-sb_current_workspace svg,
+                div.st-key-sb_current_workspace svg path {
+                    fill: #CBD5E1 !important;
+                    color: #CBD5E1 !important;
                 }
                 </style>
                 """, unsafe_allow_html=True)

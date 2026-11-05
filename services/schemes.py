@@ -485,6 +485,7 @@ def release_scheme_to_aspirant(
     except Exception as e:
         print(f"[Schemes] Notification error: {e}")
 
+    invalidate_memo(f"released_schemes:{aspirant_id}")
     return True, None
 
 def withdraw_scheme_release(
@@ -557,6 +558,7 @@ def withdraw_scheme_release(
         }
     )
 
+    invalidate_memo(f"released_schemes:{aspirant_id}")
     return True, None
 
 def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
@@ -631,6 +633,8 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
                     if not s:
                         continue
                     s_clean = dict(s)
+                    s_clean["id"] = sid
+                    s_clean["scheme_id"] = sid
                     s_clean["release_id"] = r.get("id")
                     s_clean["guide_id"] = r.get("guide_id")
                     s_clean["guide_recommendation"] = r.get("guide_recommendation")
