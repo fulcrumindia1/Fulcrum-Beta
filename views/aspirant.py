@@ -39,6 +39,12 @@ from services.constants import (
     MASTER_GENDERS,
     resolve_field_choice
 )
+from services.scheme_rules import (
+    ASSISTANCE_GOALS,
+    SUPPORT_TYPES_BY_GOAL,
+    FUNDING_QUANTUM_RANGES,
+    TIMEFRAME_OPTIONS
+)
 
 def render_aspirant_portal(user_profile: dict):
     user_id = user_profile["id"]
