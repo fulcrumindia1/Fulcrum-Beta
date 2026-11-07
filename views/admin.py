@@ -36,6 +36,7 @@ from views.admin_governance import (
     render_admin_legal_records_tab,
     render_admin_complaints_tab,
     render_admin_inactivity_tab,
+    render_admin_contact_aspirants_tab,
     render_admin_sme_conflicts_tab
 )
 from services.help_requests import list_mentor_admin_queries, admin_respond_to_mentor
@@ -155,6 +156,7 @@ def render_admin_portal(admin_profile: dict):
         "📜 Legal & NDA Records",
         "🛡️ Confidential Complaints",
         "⏱️ Inactivity Monitor",
+        "💬 Contact Aspirants",
         "⚖️ SME Conflict Governance"
     ], on_change="rerun", key="admin_main_tabs")
 
@@ -1111,11 +1113,18 @@ def render_admin_portal(admin_profile: dict):
     # ─────────────────────────────────────────────────────────────
     with tabs[9]:
         if is_tab_active(tabs[9]):
-            render_admin_inactivity_tab()
+            render_admin_inactivity_tab(admin_id)
 
     # ─────────────────────────────────────────────────────────────
-    # TAB 11: SME CONFLICT GOVERNANCE
+    # TAB 11: CONTACT ASPIRANTS (WHATSAPP & GMAIL ENGAGEMENT)
     # ─────────────────────────────────────────────────────────────
     with tabs[10]:
         if is_tab_active(tabs[10]):
+            render_admin_contact_aspirants_tab(admin_id, aspirants)
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 12: SME CONFLICT GOVERNANCE
+    # ─────────────────────────────────────────────────────────────
+    with tabs[11]:
+        if is_tab_active(tabs[11]):
             render_admin_sme_conflicts_tab(admin_id)

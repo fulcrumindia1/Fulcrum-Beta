@@ -492,9 +492,114 @@ class LocalDatabase:
             escalation_stage TEXT NOT NULL CHECK (escalation_stage IN ('DAY_7_REMINDER', 'DAY_10_ADMIN_ALERT', 'DAY_14_ADMIN_REVIEW')),
             notification_sent_at TEXT,
             created_at TEXT,
-            UNIQUE(guide_id, aspirant_id, escalation_stage)
+            mentor_id TEXT REFERENCES profiles(id),
+            mentor_role TEXT DEFAULT 'guide',
+            inactivity_episode TEXT,
+            status TEXT DEFAULT 'ACTIVE',
+            follow_up_channel TEXT,
+            follow_up_sent_at TEXT,
+            follow_up_notes TEXT
         );
         """)
+
+        # Dynamic schema migration for inactivity_logs
+        cur.execute("PRAGMA table_info(inactivity_logs)")
+        inact_cols = [r[1] for r in cur.fetchall()]
+        if "mentor_id" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN mentor_id TEXT REFERENCES profiles(id)")
+            except Exception: pass
+        if "mentor_role" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN mentor_role TEXT DEFAULT 'guide'")
+            except Exception: pass
+        if "inactivity_episode" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN inactivity_episode TEXT")
+            except Exception: pass
+        if "status" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN status TEXT DEFAULT 'ACTIVE'")
+            except Exception: pass
+        if "follow_up_channel" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN follow_up_channel TEXT")
+            except Exception: pass
+        if "follow_up_sent_at" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN follow_up_sent_at TEXT")
+            except Exception: pass
+        if "follow_up_notes" not in inact_cols:
+            try: cur.execute("ALTER TABLE inactivity_logs ADD COLUMN follow_up_notes TEXT")
+            except Exception: pass
+
+        # Upgrade table if it contains the legacy episode-suppressing UNIQUE constraint
+        cur.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='inactivity_logs'")
+        tbl_row = cur.fetchone()
+        if tbl_row and "UNIQUE(guide_id, aspirant_id, escalation_stage)" in tbl_row[0]:
+            try:
+                cur.execute("""
+                CREATE TABLE IF NOT EXISTS inactivity_logs_migration (
+                    id TEXT PRIMARY KEY,
+                    relationship_id TEXT,
+                    guide_id TEXT NOT NULL REFERENCES profiles(id),
+                    aspirant_id TEXT NOT NULL REFERENCES profiles(id),
+                    days_inactive INTEGER NOT NULL,
+                    escalation_stage TEXT NOT NULL CHECK (escalation_stage IN ('DAY_7_REMINDER', 'DAY_10_ADMIN_ALERT', 'DAY_14_ADMIN_REVIEW')),
+                    notification_sent_at TEXT,
+                    created_at TEXT,
+                    mentor_id TEXT REFERENCES profiles(id),
+                    mentor_role TEXT DEFAULT 'guide',
+                    inactivity_episode TEXT,
+                    status TEXT DEFAULT 'ACTIVE',
+                    follow_up_channel TEXT,
+                    follow_up_sent_at TEXT,
+                    follow_up_notes TEXT
+                );
+                """)
+                cur.execute("""
+                INSERT INTO inactivity_logs_migration (
+                    id, relationship_id, guide_id, aspirant_id, days_inactive,
+                    escalation_stage, notification_sent_at, created_at, mentor_id,
+                    mentor_role, inactivity_episode, status, follow_up_channel,
+                    follow_up_sent_at, follow_up_notes
+                )
+                SELECT
+                    id, relationship_id, guide_id, aspirant_id, days_inactive,
+                    escalation_stage, notification_sent_at, created_at,
+                    COALESCE(mentor_id, guide_id), COALESCE(mentor_role, 'guide'),
+                    inactivity_episode, COALESCE(status, 'ACTIVE'),
+                    follow_up_channel, follow_up_sent_at, follow_up_notes
+                FROM inactivity_logs;
+                """)
+                cur.execute("DROP TABLE inactivity_logs;")
+                cur.execute("ALTER TABLE inactivity_logs_migration RENAME TO inactivity_logs;")
+                conn.commit()
+            except Exception as e:
+                print(f"[LocalDB] Inactivity migration note: {e}")
+
+        cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_inact_ep_stage
+        ON inactivity_logs(mentor_id, aspirant_id, mentor_role, inactivity_episode, escalation_stage)
+        WHERE inactivity_episode IS NOT NULL;
+        """)
+        cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_inact_legacy
+        ON inactivity_logs(guide_id, aspirant_id, escalation_stage)
+        WHERE inactivity_episode IS NULL;
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS external_contact_logs (
+            id TEXT PRIMARY KEY,
+            admin_id TEXT NOT NULL REFERENCES profiles(id),
+            recipient_id TEXT NOT NULL REFERENCES profiles(id),
+            recipient_role TEXT NOT NULL CHECK(recipient_role IN ('guide', 'sme', 'aspirant')),
+            aspirant_id TEXT NOT NULL REFERENCES profiles(id),
+            inactivity_record_id TEXT,
+            channel TEXT NOT NULL CHECK(channel IN ('whatsapp', 'email')),
+            purpose TEXT,
+            status TEXT NOT NULL DEFAULT 'SENT_CONFIRMED',
+            notes TEXT,
+            created_at TEXT
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_extcontact_rec ON external_contact_logs(recipient_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_extcontact_asp ON external_contact_logs(aspirant_id);")
 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS aspirant_photos (
@@ -2241,14 +2346,50 @@ class LocalDatabase:
         import uuid
         lid = l.get("id") or str(uuid.uuid4())
         now_iso = datetime.now(timezone.utc).isoformat()
+        mentor_id = l.get("mentor_id") or l.get("guide_id")
+        mentor_role = l.get("mentor_role", "guide")
+        episode = l.get("inactivity_episode")
+        stage = l["escalation_stage"]
+        asp_id = l["aspirant_id"]
+
         try:
+            # Episode-aware deduplication check
+            if episode:
+                cur.execute("""
+                SELECT id FROM inactivity_logs
+                WHERE (mentor_id = ? OR guide_id = ?)
+                  AND aspirant_id = ?
+                  AND escalation_stage = ?
+                  AND inactivity_episode = ?
+                """, (mentor_id, mentor_id, asp_id, stage, episode))
+                if cur.fetchone():
+                    conn.close()
+                    return False
+            else:
+                cur.execute("""
+                SELECT id FROM inactivity_logs
+                WHERE (mentor_id = ? OR guide_id = ?)
+                  AND aspirant_id = ?
+                  AND escalation_stage = ?
+                """, (mentor_id, mentor_id, asp_id, stage))
+                if cur.fetchone():
+                    conn.close()
+                    return False
+
             cur.execute("""
-            INSERT INTO inactivity_logs (id, relationship_id, guide_id, aspirant_id, days_inactive, escalation_stage, notification_sent_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO inactivity_logs (
+                id, relationship_id, guide_id, aspirant_id, days_inactive,
+                escalation_stage, notification_sent_at, created_at,
+                mentor_id, mentor_role, inactivity_episode, status,
+                follow_up_channel, follow_up_sent_at, follow_up_notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                lid, l.get("relationship_id"), l["guide_id"], l["aspirant_id"],
-                l["days_inactive"], l["escalation_stage"], l.get("notification_sent_at", now_iso),
-                l.get("created_at", now_iso)
+                lid, l.get("relationship_id"), l.get("guide_id") or mentor_id, asp_id,
+                l["days_inactive"], stage, l.get("notification_sent_at", now_iso),
+                l.get("created_at", now_iso), mentor_id, mentor_role, episode,
+                l.get("status", "ACTIVE"), l.get("follow_up_channel"),
+                l.get("follow_up_sent_at"), l.get("follow_up_notes")
             ))
             conn.commit()
             conn.close()
@@ -2256,19 +2397,118 @@ class LocalDatabase:
         except sqlite3.IntegrityError:
             conn.close()
             return False
+        except Exception as e:
+            print(f"[LocalDB] insert_inactivity_log error: {e}")
+            conn.close()
+            return False
 
-    def list_inactivity_logs(self, guide_id: Optional[str] = None, aspirant_id: Optional[str] = None) -> List[Dict]:
+    def update_inactivity_log_followup(
+        self,
+        log_id: str,
+        channel: str,
+        notes: Optional[str] = None
+    ) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            cur.execute("""
+            UPDATE inactivity_logs
+            SET status = 'FOLLOW_UP_INITIATED',
+                follow_up_channel = ?,
+                follow_up_sent_at = ?,
+                follow_up_notes = ?
+            WHERE id = ?
+            """, (channel, now_iso, notes or "", log_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[LocalDB] update_inactivity_log_followup error: {e}")
+            conn.close()
+            return False
+
+    def list_inactivity_logs(
+        self,
+        guide_id: Optional[str] = None,
+        aspirant_id: Optional[str] = None,
+        mentor_id: Optional[str] = None,
+        mentor_role: Optional[str] = None
+    ) -> List[Dict]:
         conn = self._get_conn()
         cur = conn.cursor()
         sql = "SELECT * FROM inactivity_logs WHERE 1=1"
         params = []
-        if guide_id:
-            sql += " AND guide_id = ?"
-            params.append(guide_id)
+        if mentor_id:
+            sql += " AND (mentor_id = ? OR guide_id = ?)"
+            params.extend([mentor_id, mentor_id])
+        elif guide_id:
+            sql += " AND (guide_id = ? OR mentor_id = ?)"
+            params.extend([guide_id, guide_id])
+
         if aspirant_id:
             sql += " AND aspirant_id = ?"
             params.append(aspirant_id)
+        if mentor_role:
+            sql += " AND mentor_role = ?"
+            params.append(mentor_role)
+
         sql += " ORDER BY created_at DESC"
+        cur.execute(sql, tuple(params))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
+
+    # ── EXTERNAL CONTACT LOGS ──
+    def insert_external_contact_log(self, record: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        cid = record.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            cur.execute("""
+            INSERT INTO external_contact_logs (
+                id, admin_id, recipient_id, recipient_role, aspirant_id,
+                inactivity_record_id, channel, purpose, status, notes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                cid, record["admin_id"], record["recipient_id"], record["recipient_role"],
+                record["aspirant_id"], record.get("inactivity_record_id"),
+                record["channel"], record.get("purpose", "General check-in"),
+                record.get("status", "SENT_CONFIRMED"), record.get("notes"),
+                record.get("created_at", now_iso)
+            ))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"[LocalDB] insert_external_contact_log error: {e}")
+            conn.close()
+            return False
+
+    def list_external_contact_logs(
+        self,
+        recipient_id: Optional[str] = None,
+        aspirant_id: Optional[str] = None,
+        inactivity_record_id: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        sql = "SELECT * FROM external_contact_logs WHERE 1=1"
+        params = []
+        if recipient_id:
+            sql += " AND recipient_id = ?"
+            params.append(recipient_id)
+        if aspirant_id:
+            sql += " AND aspirant_id = ?"
+            params.append(aspirant_id)
+        if inactivity_record_id:
+            sql += " AND inactivity_record_id = ?"
+            params.append(inactivity_record_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
         cur.execute(sql, tuple(params))
         rows = [dict(r) for r in cur.fetchall()]
         conn.close()

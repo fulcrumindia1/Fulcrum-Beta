@@ -318,11 +318,30 @@ def render_admin_complaints_tab(admin_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. CASELOAD INACTIVITY MONITOR (DAY 7, 10, 14 ALERTS)
+# 4. CASELOAD INACTIVITY MONITOR (GUIDE & SME ENGAGEMENT TRACKING)
 # ─────────────────────────────────────────────────────────────────────────────
-def render_admin_inactivity_tab():
+def render_admin_inactivity_tab(admin_id: str = None):
+    from services.inactivity import (
+        list_inactivity_records,
+        check_and_process_caseload_inactivity,
+        compute_alert_live_status
+    )
+    from services.external_contact import (
+        normalize_phone_number,
+        validate_email_address,
+        generate_whatsapp_url,
+        generate_gmail_compose_url,
+        generate_mailto_url,
+        get_guide_inactivity_template,
+        get_sme_inactivity_template,
+        record_external_contact
+    )
+    from services.governance import get_primary_admin_id
+
+    effective_admin_id = admin_id or get_primary_admin_id()
+
     st.subheader("⏱️ Mentor Caseload Inactivity Monitor")
-    st.caption("Automated tracking of mentor engagement. Scans elapsed time since last interaction and logs idempotent alerts.")
+    st.caption("Automated tracking of Guide and Domain SME caseload engagement. Monitors elapsed time since last verified interaction and generates idempotent alerts.")
 
     c_btn1, c_btn2 = st.columns([1, 2])
     with c_btn1:
@@ -332,35 +351,146 @@ def render_admin_inactivity_tab():
             st.rerun()
 
     records = list_inactivity_records()
+
+    # ── FILTERS ──
+    f_col1, f_col2 = st.columns([1.5, 1.5])
+    with f_col1:
+        status_filter = st.selectbox(
+            "Filter by Live Status",
+            ["ALL", "Needs Attention", "Follow-up Initiated", "Mentor Active Again", "Historical Record"],
+            key="adm_inact_status_filter"
+        )
+    with f_col2:
+        role_filter = st.selectbox(
+            "Filter by Mentor Role",
+            ["ALL", "guide", "sme"],
+            format_func=lambda x: "All Mentor Types" if x == "ALL" else ("Guides Only" if x == "guide" else "Domain SMEs Only"),
+            key="adm_inact_role_filter"
+        )
+
     st.markdown(f"**Inactivity Escalation Log Records:** {len(records)}")
 
     if not records:
         st.info("No inactivity escalation records logged yet. Run a scan to check all active caseloads.")
-    else:
-        for r in records:
-            guide = get_profile(r.get("guide_id", "")) or {}
-            asp = get_profile(r.get("aspirant_id", "")) or {}
-            stage = r.get("escalation_stage", "")
-            days = r.get("days_inactive", 0)
+        return
 
-            badge_color = "#F59E0B" if "DAY_7" in stage else ("#DC2626" if "DAY_14" in stage else "#E11D48")
+    # Pre-fetch current relationships for live status evaluation
+    from services.relationships import get_all_relationships
+    active_rels = get_all_relationships()
 
-            st.markdown(textwrap.dedent(f"""
-            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {badge_color}; border-radius:10px; padding:0.9rem; margin-bottom:0.6rem;">
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <span style="font-weight:700; color:#0F172A;">{guide.get('full_name', 'Guide')}</span>
-                        <span style="color:#64748B;"> ➔ </span>
-                        <span style="font-weight:700; color:#0F172A;">{asp.get('full_name', 'Entrepreneur')}</span>
-                        <div style="font-size:0.8rem; color:#64748B; margin-top:2px;">Inactive for <strong>{days} days</strong> · Stage: <code>{stage}</code></div>
+    rendered_count = 0
+    for r in records:
+        r_id = r.get("id")
+        mentor_id = r.get("mentor_id") or r.get("guide_id", "")
+        asp_id = r.get("aspirant_id", "")
+        mentor_role = r.get("mentor_role", "guide")
+
+        if role_filter != "ALL" and mentor_role != role_filter:
+            continue
+
+        live_status, status_badge_color, live_days, last_eng_str = compute_alert_live_status(r, active_rels)
+
+        if status_filter != "ALL":
+            if status_filter == "Needs Attention" and "Needs Attention" not in live_status:
+                continue
+            elif status_filter == "Follow-up Initiated" and "Follow-up Initiated" not in live_status:
+                continue
+            elif status_filter == "Mentor Active Again" and live_status != "Mentor Active Again":
+                continue
+            elif status_filter == "Historical Record" and live_status != "Historical Record":
+                continue
+
+        rendered_count += 1
+        mentor = get_profile(mentor_id) or {}
+        asp = get_profile(asp_id) or {}
+        stage = r.get("escalation_stage", "")
+        stage_color = "#DC2626" if "DAY_14" in stage else ("#F59E0B" if "DAY_7" in stage else "#E11D48")
+
+        mentor_name = html.escape(mentor.get("full_name") or ("Dedicated Guide" if mentor_role == "guide" else "Domain SME"))
+        asp_name = html.escape(asp.get("full_name", "Entrepreneur"))
+        asp_bname = html.escape(asp.get("profile_data", {}).get("business", {}).get("business_name", "Enterprise"))
+        role_label = "Dedicated Guide" if mentor_role == "guide" else "Domain Specialist (SME)"
+        case_type = "Caseload mentorship" if mentor_role == "guide" else "Technical advisory case"
+
+        mentor_phone = mentor.get("phone") or mentor.get("profile_data", {}).get("personal", {}).get("phone")
+        mentor_email = mentor.get("email")
+
+        # Resolve templates
+        if mentor_role == "guide":
+            subj, body = get_guide_inactivity_template(mentor.get("full_name", ""), asp.get("full_name", ""))
+        else:
+            subj, body = get_sme_inactivity_template(mentor.get("full_name", ""), asp.get("full_name", ""))
+
+        wa_url = generate_whatsapp_url(mentor_phone, body) if mentor_phone else None
+        gmail_url = generate_gmail_compose_url(mentor_email, subj, body) if mentor_email else None
+        mailto_url = generate_mailto_url(mentor_email, subj, body) if mentor_email else None
+
+        st.markdown(textwrap.dedent(f"""
+        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {stage_color}; border-radius:10px; padding:0.95rem; margin-bottom:0.5rem; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.5rem;">
+                <div>
+                    <div style="font-size:0.95rem;">
+                        <span style="font-weight:700; color:#0F172A;">{mentor_name}</span>
+                        <span style="font-size:0.75rem; font-weight:600; color:#475569; background:#F1F5F9; padding:2px 6px; border-radius:6px; margin-left:4px;">{mentor_role.upper()}</span>
+                        <span style="color:#64748B; margin:0 4px;">➔</span>
+                        <span style="font-weight:700; color:#0F172A;">{asp_name}</span>
+                        <span style="font-size:0.8rem; color:#64748B;">({asp_bname})</span>
                     </div>
-                    <div style="text-align:right;">
-                        <span style="background:{badge_color}; color:#fff; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:8px;">{stage.replace('_', ' ')}</span>
-                        <div style="font-size:0.7rem; color:#94A3B8; margin-top:4px;">Notified: {r.get('notification_sent_at', '')[:16].replace('T', ' ')}</div>
+                    <div style="font-size:0.82rem; color:#475569; margin-top:3px;">
+                        <strong>{role_label}</strong> · {case_type} · Inactive for <strong>{live_days} days</strong>
+                    </div>
+                    <div style="font-size:0.75rem; color:#64748B; margin-top:2px;">
+                        {last_eng_str}
                     </div>
                 </div>
+                <div style="text-align:right;">
+                    <span style="background:{stage_color}; color:#fff; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:8px;">{stage.replace('_', ' ')}</span>
+                    <span style="background:{status_badge_color}; color:#fff; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:8px; margin-left:4px;">{live_status}</span>
+                    <div style="font-size:0.68rem; color:#94A3B8; margin-top:4px;">Notified: {r.get('notification_sent_at', '')[:16].replace('T', ' ')}</div>
+                </div>
             </div>
-            """).strip(), unsafe_allow_html=True)
+        </div>
+        """).strip(), unsafe_allow_html=True)
+
+        # Compact follow-up actions
+        col_act1, col_act2, col_act3, col_act4 = st.columns([1.2, 1.2, 1.3, 1.8])
+        with col_act1:
+            if wa_url:
+                st.link_button("💬 WhatsApp", url=wa_url, use_container_width=True, help=f"Open prefilled WhatsApp chat with {mentor_name}")
+            else:
+                st.button("💬 WhatsApp", disabled=True, key=f"btn_wa_dis_{r_id}", use_container_width=True, help="WhatsApp phone number not on mentor profile")
+        with col_act2:
+            if gmail_url:
+                st.link_button("✉️ Gmail", url=gmail_url, use_container_width=True, help=f"Open pre-addressed Gmail compose draft to {mentor_name}")
+            elif mailto_url:
+                st.link_button("✉️ Email", url=mailto_url, use_container_width=True, help=f"Open mail client addressed to {mentor_name}")
+            else:
+                st.button("✉️ Gmail", disabled=True, key=f"btn_gm_dis_{r_id}", use_container_width=True, help="Verified email address not on mentor profile")
+        with col_act3:
+            if live_status not in ("Mentor Active Again", "Historical Record") and "Follow-up Initiated" not in live_status:
+                if st.button("✅ Mark as Sent", key=f"mark_fu_btn_{r_id}", use_container_width=True):
+                    record_external_contact(
+                        admin_id=effective_admin_id,
+                        recipient_id=mentor_id,
+                        recipient_role=mentor_role,
+                        aspirant_id=asp_id,
+                        channel="whatsapp" if wa_url else "email",
+                        purpose="Caseload Inactivity Reminder",
+                        inactivity_record_id=r_id,
+                        notes="Admin marked follow-up reminder sent."
+                    )
+                    st.success("Follow-up logged!")
+                    st.rerun()
+            else:
+                st.caption(f"Status: {live_status}")
+        with col_act4:
+            with st.expander("Preview prefilled message", expanded=False):
+                st.code(body, language="text")
+
+        st.markdown("<div style='height:0.3rem;'></div>", unsafe_allow_html=True)
+
+    if rendered_count == 0:
+        st.info(f"No records match filter: {status_filter} / {role_filter}.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,4 +542,195 @@ def render_admin_sme_conflicts_tab(admin_id: str):
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. CONTACT ASPIRANTS CONSOLE (WHATSAPP & GMAIL ENGAGEMENT)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_admin_contact_aspirants_tab(admin_id: str, aspirants: list):
+    from services.external_contact import (
+        normalize_phone_number,
+        validate_email_address,
+        generate_whatsapp_url,
+        generate_gmail_compose_url,
+        generate_mailto_url,
+        get_aspirant_contact_template,
+        ASPIRANT_PURPOSE_TEMPLATES,
+        record_external_contact,
+        list_external_contacts
+    )
+    from services.aspirant_photos import get_aspirant_photo
+    from services.roles import get_active_roles
+    from services.relationships import get_aspirant_mentors
+
+    st.subheader("💬 Contact Aspirants")
+    st.caption("Direct, authorized communication with entrepreneurs from Fulcrum Support via WhatsApp and Gmail. Manual dispatch required.")
+
+    if not aspirants:
+        st.info("No entrepreneurs registered on Fulcrum yet.")
+        return
+
+    # 1. Search Bar & Filter
+    c_s1, c_s2 = st.columns([2.5, 1])
+    with c_s1:
+        search_query = st.text_input(
+            "🔍 Search Aspirants",
+            placeholder="Search by founder name, business name, sector, or district...",
+            key="adm_contact_asp_search"
+        ).strip().lower()
+
+    filtered_asp = []
+    for a in aspirants:
+        name = str(a.get("full_name", "")).lower()
+        b_name = str(a.get("profile_data", {}).get("business", {}).get("business_name", "")).lower()
+        sector = str(a.get("profile_data", {}).get("business", {}).get("sector", "")).lower()
+        district = str(a.get("district", "")).lower()
+        if not search_query or (search_query in name or search_query in b_name or search_query in sector or search_query in district):
+            filtered_asp.append(a)
+
+    with c_s2:
+        st.markdown(f"<div style='margin-top:1.8rem; font-size:0.85rem; color:#64748B; font-weight:600;'>Found {len(filtered_asp)} entrepreneurs</div>", unsafe_allow_html=True)
+
+    if not filtered_asp:
+        st.warning("No entrepreneurs match your search filter.")
+        return
+
+    # 2. Dropdown Selector
+    def _format_contact_asp(a):
+        bname = a.get("profile_data", {}).get("business", {}).get("business_name") or "Enterprise"
+        dist = a.get("district") or "TN"
+        roles = get_active_roles(a["id"])
+        extra = [r.title() for r in roles if r != "aspirant"]
+        extra_str = f" [{', '.join(extra)}]" if extra else ""
+        return f"{a.get('full_name', 'Founder')} — {bname} ({dist}){extra_str}"
+
+    asp_dict = {a["id"]: _format_contact_asp(a) for a in filtered_asp}
+    selected_id = st.selectbox(
+        "Select Entrepreneur to Contact",
+        list(asp_dict.keys()),
+        format_func=lambda x: asp_dict[x],
+        key="adm_contact_selected_asp"
+    )
+
+    selected_asp = next((a for a in filtered_asp if a["id"] == selected_id), None)
+    if not selected_asp:
+        return
+
+    # 3. Entrepreneur Profile & Contact Card
+    b_data = selected_asp.get("profile_data", {}).get("business", {})
+    p_data = selected_asp.get("profile_data", {}).get("personal", {})
+    phone_val = selected_asp.get("phone") or p_data.get("phone") or ""
+    email_val = selected_asp.get("email") or ""
+    asp_name = selected_asp.get("full_name") or "Entrepreneur"
+    business_name = b_data.get("business_name") or "Enterprise"
+    sector_val = b_data.get("sector") or "General"
+    stage_val = b_data.get("stage") or "Early Stage"
+    district_val = selected_asp.get("district") or "Tamil Nadu"
+
+    norm_phone, phone_err = normalize_phone_number(phone_val)
+    clean_email, email_err = validate_email_address(email_val)
+
+    # Photo retrieval
+    asp_photo = get_aspirant_photo(selected_id)
+    photo_html = ""
+    if asp_photo and asp_photo.get("url"):
+        photo_html = f'<img src="{asp_photo["url"]}" alt="Aspirant Headshot" style="width:68px; height:68px; border-radius:50%; object-fit:cover; border:2px solid #2563EB; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-right:1rem;" />'
+    else:
+        photo_html = '<div style="width:68px; height:68px; border-radius:50%; background:#EFF6FF; border:2px solid #CBD5E1; display:flex; align-items:center; justify-content:center; font-size:1.6rem; color:#3B82F6; margin-right:1rem;">👤</div>'
+
+    # Assigned Mentors
+    mentors_info = get_aspirant_mentors(selected_id)
+    g_info = mentors_info.get("guide")
+    s_info = mentors_info.get("sme")
+    g_name = g_info.get("full_name") if g_info else "Unassigned"
+    s_name = s_info.get("full_name") if s_info else "Unassigned"
+
+    phone_badge = f'<span style="color:#059669; font-weight:700;">✓ +{norm_phone}</span>' if norm_phone else '<span style="color:#DC2626; font-weight:600;">✗ Unavailable</span>'
+    email_badge = f'<span style="color:#059669; font-weight:700;">✓ {clean_email}</span>' if clean_email else '<span style="color:#DC2626; font-weight:600;">✗ Unavailable</span>'
+
+    st.markdown(textwrap.dedent(f"""
+    <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #2563EB; border-radius:12px; padding:1.1rem; margin-top:0.75rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+        <div style="display:flex; align-items:center; flex-wrap:wrap;">
+            {photo_html}
+            <div style="flex:1; min-width:240px;">
+                <div style="font-size:1.15rem; font-weight:800; color:#0F172A;">{html.escape(asp_name)}</div>
+                <div style="font-size:0.88rem; color:#475569; margin-top:2px;">
+                    <strong>{html.escape(business_name)}</strong> · {html.escape(sector_val)} · {html.escape(stage_val)} · {html.escape(district_val)}
+                </div>
+                <div style="font-size:0.82rem; color:#64748B; margin-top:4px;">
+                    <strong>Guide:</strong> {html.escape(g_name)} | <strong>Domain SME:</strong> {html.escape(s_name)}
+                </div>
+            </div>
+            <div style="text-align:right; min-width:200px; font-size:0.8rem; line-height:1.6; margin-top:0.5rem;">
+                <div>📱 <strong>Mobile:</strong> {phone_badge}</div>
+                <div>✉️ <strong>Email:</strong> {email_badge}</div>
+            </div>
+        </div>
+    </div>
+    """).strip(), unsafe_allow_html=True)
+
+    # 4. Purpose Selection & Editable Message Preview
+    st.markdown("#### 📝 Compose Courteous Outreach")
+    purposes = list(ASPIRANT_PURPOSE_TEMPLATES.keys())
+    sel_purpose = st.selectbox(
+        "Communication Purpose",
+        purposes,
+        key=f"adm_asp_purpose_{selected_id}"
+    )
+
+    default_subject, default_body = get_aspirant_contact_template(asp_name, sel_purpose)
+
+    edited_subject = st.text_input("Email Subject Line", value=default_subject, key=f"adm_asp_subj_{selected_id}")
+    edited_body = st.text_area("Message Body (Editable before opening draft)", value=default_body, height=180, key=f"adm_asp_body_{selected_id}")
+
+    # Generate links from edited content
+    wa_url = generate_whatsapp_url(phone_val, edited_body) if norm_phone else None
+    gmail_url = generate_gmail_compose_url(email_val, edited_subject, edited_body) if clean_email else None
+    mailto_url = generate_mailto_url(email_val, edited_subject, edited_body) if clean_email else None
+
+    # 5. Compact Action Buttons
+    c_btn_wa, c_btn_gm, c_btn_mark = st.columns([1.2, 1.2, 1.4])
+    with c_btn_wa:
+        if wa_url:
+            st.link_button("💬 Open WhatsApp Chat", url=wa_url, use_container_width=True, help="Open WhatsApp with prefilled message to founder")
+        else:
+            st.button("💬 WhatsApp Unavailable", disabled=True, key=f"btn_asp_wa_dis_{selected_id}", use_container_width=True, help="No valid phone number on founder profile")
+    with c_btn_gm:
+        if gmail_url:
+            st.link_button("✉️ Open Gmail Compose", url=gmail_url, use_container_width=True, help="Open Gmail draft addressed to founder")
+        elif mailto_url:
+            st.link_button("✉️ Open Email Draft", url=mailto_url, use_container_width=True, help="Open default mail client addressed to founder")
+        else:
+            st.button("✉️ Email Unavailable", disabled=True, key=f"btn_asp_gm_dis_{selected_id}", use_container_width=True, help="No valid email address on founder profile")
+    with c_btn_mark:
+        if st.button("✅ Mark as Sent", key=f"btn_mark_asp_sent_{selected_id}", use_container_width=True, help="Record that reminder/check-in was manually dispatched"):
+            channel_used = "whatsapp" if wa_url else "email"
+            ok, err = record_external_contact(
+                admin_id=admin_id,
+                recipient_id=selected_id,
+                recipient_role="aspirant",
+                aspirant_id=selected_id,
+                channel=channel_used,
+                purpose=sel_purpose,
+                notes=f"Admin confirmed message sent for purpose: {sel_purpose}"
+            )
+            if ok:
+                st.success("Outreach recorded for institutional audit trail.")
+                st.rerun()
+            else:
+                st.error(err or "Failed to record communication.")
+
+    st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
+
+    # 6. Communication History
+    comm_history = list_external_contacts(recipient_id=selected_id, limit=5)
+    with st.expander(f"📜 Recent Communication Log with {asp_name} ({len(comm_history)})", expanded=False):
+        if not comm_history:
+            st.caption("No previous external communication logged for this founder.")
+        else:
+            for ch in comm_history:
+                ch_icon = "💬 WhatsApp" if ch.get("channel") == "whatsapp" else "✉️ Email"
+                sent_at = ch.get("created_at", "")[:16].replace("T", " ")
+                st.markdown(f"• **{sent_at}** · {ch_icon} · *{ch.get('purpose', 'General check-in')}* · Status: `{ch.get('status', 'SENT_CONFIRMED')}`")
+
 
