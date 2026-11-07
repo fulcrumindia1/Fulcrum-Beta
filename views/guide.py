@@ -178,7 +178,7 @@ def render_guide_portal(user_profile: dict):
                     from services.aspirant_photos import render_aspirant_photo_header
                     render_aspirant_photo_header(
                         aspirant_profile=asp_full,
-                        viewer_id=user["id"],
+                        viewer_id=user_profile["id"],
                         viewer_role="guide",
                         accent_color="#2563EB"
                     )
