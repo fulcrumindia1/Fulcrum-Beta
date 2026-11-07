@@ -17,7 +17,7 @@ Terminology:
 - Assistance/Support types and funding quantum brackets
 """
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import re
 
 # ── MASTER TAXONOMY FOR ASSISTANCE NEED (Y) ──

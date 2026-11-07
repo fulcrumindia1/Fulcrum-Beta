@@ -20,7 +20,8 @@ from services.roles import (
     suspend_role,
     reinstate_role,
     cancel_grant,
-    activate_role
+    activate_role,
+    get_active_roles
 )
 from services.legal import (
     list_legal_acceptances,

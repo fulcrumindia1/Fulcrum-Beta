@@ -9,6 +9,7 @@ with Supabase cloud tables.
 import sqlite3
 import json
 import os
+import uuid
 import hashlib
 from pathlib import Path
 from datetime import datetime, timezone

@@ -218,7 +218,7 @@ def render_aspirant_portal(user_profile: dict):
                     </div>
                     ''', unsafe_allow_html=True)
                 else:
-                    initials = "".join([part[0].upper() for part in profile.get("full_name", "A").split()[:2]]) or "A"
+                    initials = "".join([part[0].upper() for part in (profile.get("full_name") or "A").split()[:2]]) or "A"
                     st.markdown(f'''
                     <div style="display:flex; justify-content:center; align-items:center; height:100%;">
                         <div style="width:84px; height:84px; border-radius:50%; background:linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); color:#FFFFFF; display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:800; border:2.5px solid #DBEAFE; box-shadow:0 4px 12px rgba(0,0,0,0.08);">

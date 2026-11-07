@@ -223,7 +223,7 @@ def render_admin_portal(admin_profile: dict):
                         '</div>'
                     )
                 else:
-                    ini = "".join([part[0].upper() for part in curr_asp.get("full_name", "A").split()[:2]]) or "A"
+                    ini = "".join([part[0].upper() for part in (curr_asp.get("full_name") or "A").split()[:2]]) or "A"
                     photo_html = (
                         '<div style="text-align:center; padding:0 1.5rem;">'
                         f'<div style="width:68px; height:68px; border-radius:50%; background:linear-gradient(135deg, #E2E8F0 0%, #CBD5E1 100%); color:#475569; display:flex; align-items:center; justify-content:center; font-size:1.3rem; font-weight:800; border:2px solid #E2E8F0; margin:0 auto; box-shadow:0 2px 6px rgba(0,0,0,0.04);">{ini}</div>'

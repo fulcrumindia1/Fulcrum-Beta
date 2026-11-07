@@ -326,7 +326,7 @@ def render_aspirant_photo_header(
         return
 
     asp_id = aspirant_profile.get("id")
-    full_name = aspirant_profile.get("full_name", "Entrepreneur")
+    full_name = aspirant_profile.get("full_name") or "Entrepreneur"
     p_data = aspirant_profile.get("profile_data", {})
     biz = p_data.get("business", {})
     biz_name = biz.get("business_name") or f"{full_name}'s Enterprise"
