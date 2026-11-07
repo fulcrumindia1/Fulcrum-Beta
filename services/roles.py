@@ -53,29 +53,44 @@ def get_user_roles(user_id: str) -> List[Dict]:
         db = get_local_db()
         roles = db.get_user_roles(user_id) if hasattr(db, "get_user_roles") else []
 
-    # Always ensure base aspirant role is included as an active role for all founders
+    # Ensure the user's primary/registered role is included if no explicit multi-role grants exist
     from services.profiles import get_profile
+    from services.governance import get_primary_admin_id
     p = get_profile(user_id)
     if p:
         base_role = p.get("role", "aspirant")
-        if not any(r.get("role") == "aspirant" for r in roles):
-            roles.append({
-                "id": f"role_{user_id}_aspirant",
-                "user_id": user_id,
-                "role": "aspirant",
-                "status": "active",
-                "granted_at": p.get("created_at"),
-                "activated_at": p.get("created_at")
-            })
-        if base_role not in ("aspirant",) and not any(r.get("role") == base_role for r in roles):
-            roles.append({
-                "id": f"role_{user_id}_{base_role}",
-                "user_id": user_id,
-                "role": base_role,
-                "status": "active",
-                "granted_at": p.get("created_at"),
-                "activated_at": p.get("created_at")
-            })
+        user_email = str(p.get("email", "")).strip().lower()
+        primary_admin_id = str(get_primary_admin_id() or "")
+
+        is_platform_admin = (
+            base_role in ("admin", "district_admin", "operational_admin")
+            or user_email == "fulcrumindia1@gmail.com"
+            or (primary_admin_id and str(user_id) == primary_admin_id)
+        )
+
+        if is_platform_admin:
+            # Single Platform Admin is strictly an Admin, NEVER an Aspirant
+            roles = [r for r in roles if r.get("role") != "aspirant"]
+            if not any(r.get("role") == "admin" for r in roles):
+                roles.append({
+                    "id": f"role_{user_id}_admin",
+                    "user_id": user_id,
+                    "role": "admin",
+                    "status": "active",
+                    "granted_at": p.get("created_at"),
+                    "activated_at": p.get("created_at")
+                })
+        else:
+            # For entrepreneurs and mentors, ensure base registered role is present
+            if not any(r.get("role") == base_role for r in roles):
+                roles.append({
+                    "id": f"role_{user_id}_{base_role}",
+                    "user_id": user_id,
+                    "role": base_role,
+                    "status": "active",
+                    "granted_at": p.get("created_at"),
+                    "activated_at": p.get("created_at")
+                })
 
     set_memo(cache_key, roles, ttl_seconds=60)
     return roles

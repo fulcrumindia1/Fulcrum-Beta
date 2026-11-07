@@ -512,6 +512,29 @@ class LocalDatabase:
         );
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_aspirant_photos_user ON aspirant_photos(user_id);")
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS scheme_support_reviews (
+            id TEXT PRIMARY KEY,
+            aspirant_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            scheme_id TEXT NOT NULL REFERENCES schemes(id) ON DELETE CASCADE,
+            guide_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+            match_score INTEGER NOT NULL,
+            guide_justification TEXT NOT NULL,
+            failed_criteria TEXT DEFAULT '[]',
+            missing_criteria TEXT DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+            admin_decision_notes TEXT,
+            reviewed_by TEXT REFERENCES profiles(id),
+            reviewed_at TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE(aspirant_id, scheme_id, guide_id)
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status ON scheme_support_reviews(status);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ssr_aspirant ON scheme_support_reviews(aspirant_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ssr_guide ON scheme_support_reviews(guide_id);")
         conn.commit()
 
         # Seed legal documents if empty or update if placeholder content
@@ -1402,32 +1425,47 @@ class LocalDatabase:
     ) -> List[Dict]:
         conn = self._get_conn()
         cur = conn.cursor()
-        where_clauses = []
-        params = []
-        if status:
-            where_clauses.append("ssr.status = ?")
-            params.append(status)
-        if guide_id:
-            where_clauses.append("ssr.guide_id = ?")
-            params.append(guide_id)
-        if aspirant_id:
-            where_clauses.append("ssr.aspirant_id = ?")
-            params.append(aspirant_id)
-        where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        cur.execute(f"""
-        SELECT ssr.*, s.name as scheme_name, s.agency as scheme_agency, s.amount as scheme_amount,
-               p.full_name as aspirant_name, p.email as aspirant_email,
-               g.full_name as guide_name, g.email as guide_email
-        FROM scheme_support_reviews ssr
-        LEFT JOIN schemes s ON ssr.scheme_id = s.id
-        LEFT JOIN profiles p ON ssr.aspirant_id = p.id
-        LEFT JOIN profiles g ON ssr.guide_id = g.id
-        {where_str}
-        ORDER BY ssr.created_at DESC
-        """, tuple(params))
-        rows = cur.fetchall()
-        conn.close()
-        return [dict(r) for r in rows]
+        try:
+            where_clauses = []
+            params = []
+            if status:
+                where_clauses.append("ssr.status = ?")
+                params.append(status)
+            if guide_id:
+                where_clauses.append("ssr.guide_id = ?")
+                params.append(guide_id)
+            if aspirant_id:
+                where_clauses.append("ssr.aspirant_id = ?")
+                params.append(aspirant_id)
+            where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+            cur.execute(f"""
+            SELECT ssr.*, s.name as scheme_name, s.agency as scheme_agency, s.amount as scheme_amount,
+                   p.full_name as aspirant_name, p.email as aspirant_email,
+                   g.full_name as guide_name, g.email as guide_email
+            FROM scheme_support_reviews ssr
+            LEFT JOIN schemes s ON ssr.scheme_id = s.id
+            LEFT JOIN profiles p ON ssr.aspirant_id = p.id
+            LEFT JOIN profiles g ON ssr.guide_id = g.id
+            {where_str}
+            ORDER BY ssr.created_at DESC
+            """, tuple(params))
+            rows = cur.fetchall()
+            results = []
+            for r in rows:
+                row_dict = dict(r)
+                if isinstance(row_dict.get("failed_criteria"), str):
+                    try: row_dict["failed_criteria"] = json.loads(row_dict["failed_criteria"])
+                    except Exception: row_dict["failed_criteria"] = []
+                if isinstance(row_dict.get("missing_criteria"), str):
+                    try: row_dict["missing_criteria"] = json.loads(row_dict["missing_criteria"])
+                    except Exception: row_dict["missing_criteria"] = []
+                results.append(row_dict)
+            return results
+        except Exception as e:
+            print(f"[LocalDB] list_scheme_support_reviews error: {e}")
+            return []
+        finally:
+            conn.close()
 
     def update_scheme_support_review(
         self,

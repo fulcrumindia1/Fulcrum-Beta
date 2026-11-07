@@ -865,29 +865,46 @@ def main():
             # MULTI-ROLE: CURRENT WORKSPACE SELECTOR
             # ─────────────────────────────────────────────────────────────────
             from services.roles import get_active_roles, get_pending_nda_roles
+            from services.governance import get_primary_admin_id
             user_id = user.get("id")
+            user_email = str(user.get("email", "")).strip().lower()
             base_p_role = user.get("role", "aspirant")
-            active_r = get_active_roles(user_id) if user_id else []
-            pending_r = get_pending_nda_roles(user_id) if user_id else []
+            primary_admin_id = str(get_primary_admin_id() or "")
 
-            # If user has no explicit multi-role grants in user_roles, use base profile role
-            if not active_r and not pending_r:
-                active_r = [base_p_role]
+            is_single_admin = (
+                base_p_role in ("admin", "district_admin", "operational_admin")
+                or user_email == "fulcrumindia1@gmail.com"
+                or (primary_admin_id and str(user_id) == primary_admin_id)
+            )
 
-            ws_options = []
-            if "aspirant" in active_r:
-                ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
-            if "guide" in active_r or "guide" in pending_r:
-                g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
-                ws_options.append(("guide", g_lbl))
-            if "sme" in active_r or "sme" in pending_r:
-                s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
-                ws_options.append(("sme", s_lbl))
-            if any(r in active_r for r in ("admin", "district_admin", "operational_admin")):
-                ws_options.append(("admin", "🏛️ Admin Dashboard"))
+            if is_single_admin:
+                # Single Platform Admin is strictly an Admin, never an Aspirant or Mentor
+                active_r = ["admin"]
+                pending_r = []
+                ws_options = [("admin", "🏛️ Admin Dashboard")]
+                st.session_state["active_workspace"] = "admin"
+            else:
+                active_r = get_active_roles(user_id) if user_id else []
+                pending_r = get_pending_nda_roles(user_id) if user_id else []
 
-            if not ws_options:
-                ws_options.append((base_p_role, f"{base_p_role.title()} Dashboard"))
+                # If user has no explicit multi-role grants in user_roles, use base profile role
+                if not active_r and not pending_r:
+                    active_r = [base_p_role]
+
+                ws_options = []
+                if "aspirant" in active_r:
+                    ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
+                if "guide" in active_r or "guide" in pending_r:
+                    g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
+                    ws_options.append(("guide", g_lbl))
+                if "sme" in active_r or "sme" in pending_r:
+                    s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
+                    ws_options.append(("sme", s_lbl))
+                if any(r in active_r for r in ("admin", "district_admin", "operational_admin")):
+                    ws_options.append(("admin", "🏛️ Admin Dashboard"))
+
+                if not ws_options:
+                    ws_options.append((base_p_role, f"{base_p_role.title()} Dashboard"))
 
             if "active_workspace" not in st.session_state:
                 st.session_state["active_workspace"] = base_p_role

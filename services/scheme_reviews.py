@@ -136,13 +136,17 @@ def list_scheme_support_reviews(
                 print(f"[SchemeReviews] Supabase query note: {e}")
 
     if not records:
-        db = get_local_db()
-        if hasattr(db, "list_scheme_support_reviews"):
-            records = db.list_scheme_support_reviews(
-                status=status,
-                guide_id=guide_id,
-                aspirant_id=aspirant_id
-            )
+        try:
+            db = get_local_db()
+            if hasattr(db, "list_scheme_support_reviews"):
+                records = db.list_scheme_support_reviews(
+                    status=status,
+                    guide_id=guide_id,
+                    aspirant_id=aspirant_id
+                )
+        except Exception as e:
+            print(f"[SchemeReviews] Local DB fallback note: {e}")
+            records = []
 
     return records
 
