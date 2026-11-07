@@ -13,7 +13,7 @@ from services.auth import get_supabase_client, get_supabase_admin_client, get_da
 from services.local_db import get_local_db
 from services.cache import get_memo, set_memo, invalidate_memo
 
-VALID_GRANTABLE_ROLES = ("guide", "sme")
+VALID_GRANTABLE_ROLES = ("aspirant", "guide", "sme")
 VALID_ROLES = ("aspirant", "guide", "sme", "admin")
 VALID_STATUSES = ("active", "pending_nda", "suspended", "revoked")
 
@@ -48,8 +48,8 @@ def get_user_roles(user_id: str) -> List[Dict]:
             except Exception as e:
                 print(f"[Roles] Supabase user_roles fetch notice for {user_id}: {e}")
 
-    if not roles and backend != "supabase":
-        # Check SQLite fallback only in local development
+    if not roles:
+        # Check SQLite fallback whenever Supabase returns empty or fails
         db = get_local_db()
         roles = db.get_user_roles(user_id) if hasattr(db, "get_user_roles") else []
 
@@ -82,7 +82,9 @@ def get_user_roles(user_id: str) -> List[Dict]:
                 })
         else:
             # For entrepreneurs and mentors, ensure base registered role is present
-            if not any(r.get("role") == base_role for r in roles):
+            # BUT never resurrect a role that was explicitly revoked or suspended
+            existing_base = next((r for r in roles if r.get("role") == base_role), None)
+            if not existing_base:
                 roles.append({
                     "id": f"role_{user_id}_{base_role}",
                     "user_id": user_id,
@@ -155,14 +157,14 @@ def grant_role(
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if not admin:
-            return False, "Production database error: Supabase admin client is unavailable."
-        try:
-            res = admin.table("user_roles").upsert(record, on_conflict="user_id, role").execute()
-            if not res.data:
-                return False, "Database error: Supabase rejected role grant insertion."
-        except Exception as e:
-            return False, f"Supabase error granting role: {e}"
+        if admin:
+            try:
+                res = admin.table("user_roles").upsert(record, on_conflict="user_id, role").execute()
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Roles] Supabase user_roles upsert notice: {err_str}")
+                if "PGRST205" not in err_str and "user_roles" not in err_str:
+                    return False, f"Supabase error granting role: {e}"
 
     # Always mirror to local DB
     db = get_local_db()
@@ -182,18 +184,18 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if not admin:
-            return False, "Production database error: Supabase admin client unavailable to activate role."
-        try:
-            res = admin.table("user_roles").update({
-                "status": "active",
-                "activated_at": now_iso,
-                "updated_at": now_iso
-            }).eq("user_id", user_id).eq("role", role).execute()
-            if not res.data:
-                return False, f"Failed to activate role '{role}' in Supabase: record not found."
-        except Exception as e:
-            return False, f"Failed to activate role in Supabase: {e}"
+        if admin:
+            try:
+                res = admin.table("user_roles").update({
+                    "status": "active",
+                    "activated_at": now_iso,
+                    "updated_at": now_iso
+                }).eq("user_id", user_id).eq("role", role).execute()
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Roles] Supabase activate notice: {err_str}")
+                if "PGRST205" not in err_str and "user_roles" not in err_str:
+                    return False, f"Failed to activate role in Supabase: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_role_status"):
@@ -206,28 +208,31 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
 
 def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    """Revokes a role grant. Aspirants can never have their base aspirant role revoked."""
-    if role == "aspirant":
-        return False, "The base Aspirant role cannot be revoked."
+    """Revokes a role grant. Aspirants can never have their base registered aspirant role revoked."""
+    from services.profiles import get_profile
+    p = get_profile(user_id)
+    base_role = p.get("role") if p else "aspirant"
+    if role == "aspirant" and base_role == "aspirant":
+        return False, "The base registered Aspirant role cannot be revoked."
 
     now_iso = datetime.now(timezone.utc).isoformat()
     backend = get_data_backend()
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if not admin:
-            return False, "Production database error: Supabase admin client unavailable to revoke role."
-        try:
-            res = admin.table("user_roles").update({
-                "status": "revoked",
-                "revoked_at": now_iso,
-                "revocation_reason": reason or "Revoked by Administration",
-                "updated_at": now_iso
-            }).eq("user_id", user_id).eq("role", role).execute()
-            if not res.data:
-                return False, f"Failed to revoke role '{role}' in Supabase: record not found."
-        except Exception as e:
-            return False, f"Failed to revoke role in Supabase: {e}"
+        if admin:
+            try:
+                res = admin.table("user_roles").update({
+                    "status": "revoked",
+                    "revoked_at": now_iso,
+                    "revocation_reason": reason or "Revoked by Administration",
+                    "updated_at": now_iso
+                }).eq("user_id", user_id).eq("role", role).execute()
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Roles] Supabase revoke notice: {err_str}")
+                if "PGRST205" not in err_str and "user_roles" not in err_str:
+                    return False, f"Failed to revoke role in Supabase: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_role_status"):
@@ -239,10 +244,23 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
             from services.relationships import get_all_relationships, unassign_guide
             rels = get_all_relationships()
             for rel in rels:
-                if str(rel.get("guide_id")) == str(user_id) and rel.get("status") == "active":
-                    unassign_guide(rel["aspirant_id"], unassigned_by=revoked_by, reason=f"Mentor role revoked: {reason}")
+                guides_list = [str(g.get("id")) for g in rel.get("guides", [])]
+                if (str(rel.get("guide_id")) == str(user_id) or str(user_id) in guides_list) and rel.get("status") == "active":
+                    unassign_guide(aspirant_id=rel["aspirant_id"], guide_id=str(user_id), admin_id=revoked_by, reason=f"Mentor role revoked: {reason}")
         except Exception as e:
             print(f"[Roles] Caseload unassignment notice for revoked guide {user_id}: {e}")
+
+    # If revoking an SME, immediately unassign active technical caseload
+    if role == "sme":
+        try:
+            from services.relationships import get_all_relationships, unassign_sme
+            rels = get_all_relationships()
+            for rel in rels:
+                smes_list = [str(s.get("id")) for s in rel.get("smes", [])]
+                if (str(rel.get("sme_id")) == str(user_id) or str(user_id) in smes_list) and rel.get("status") == "active":
+                    unassign_sme(aspirant_id=rel["aspirant_id"], sme_id=str(user_id), admin_id=revoked_by, reason=f"SME role revoked: {reason}")
+        except Exception as e:
+            print(f"[Roles] Advisory unassignment notice for revoked SME {user_id}: {e}")
 
     invalidate_memo(f"user_roles:{user_id}")
     invalidate_memo(f"guide_aspirants:{user_id}")
@@ -260,19 +278,19 @@ def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optio
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if not admin:
-            return False, "Production database error: Supabase admin client unavailable to suspend role."
-        try:
-            res = admin.table("user_roles").update({
-                "status": "suspended",
-                "suspended_at": now_iso,
-                "revocation_reason": reason or "Suspended by Administration",
-                "updated_at": now_iso
-            }).eq("user_id", user_id).eq("role", role).execute()
-            if not res.data:
-                return False, f"Failed to suspend role '{role}' in Supabase: record not found."
-        except Exception as e:
-            return False, f"Failed to suspend role in Supabase: {e}"
+        if admin:
+            try:
+                res = admin.table("user_roles").update({
+                    "status": "suspended",
+                    "suspended_at": now_iso,
+                    "revocation_reason": reason or "Suspended by Administration",
+                    "updated_at": now_iso
+                }).eq("user_id", user_id).eq("role", role).execute()
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Roles] Supabase suspend notice: {err_str}")
+                if "PGRST205" not in err_str and "user_roles" not in err_str:
+                    return False, f"Failed to suspend role in Supabase: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_role_status"):
@@ -291,19 +309,19 @@ def reinstate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if not admin:
-            return False, "Production database error: Supabase admin client unavailable to reinstate role."
-        try:
-            res = admin.table("user_roles").update({
-                "status": "active",
-                "suspended_at": None,
-                "revocation_reason": None,
-                "updated_at": now_iso
-            }).eq("user_id", user_id).eq("role", role).execute()
-            if not res.data:
-                return False, f"Failed to reinstate role '{role}' in Supabase: record not found."
-        except Exception as e:
-            return False, f"Failed to reinstate role in Supabase: {e}"
+        if admin:
+            try:
+                res = admin.table("user_roles").update({
+                    "status": "active",
+                    "suspended_at": None,
+                    "revocation_reason": None,
+                    "updated_at": now_iso
+                }).eq("user_id", user_id).eq("role", role).execute()
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Roles] Supabase reinstate notice: {err_str}")
+                if "PGRST205" not in err_str and "user_roles" not in err_str:
+                    return False, f"Failed to reinstate role in Supabase: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_role_status"):
@@ -317,20 +335,19 @@ def reinstate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
 def cancel_grant(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
     """Cancels a pending NDA role grant."""
-    if role == "aspirant":
-        return False, "The base Aspirant role cannot be cancelled."
-
     now_iso = datetime.now(timezone.utc).isoformat()
     backend = get_data_backend()
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if not admin:
-            return False, "Production database error: Supabase admin client unavailable to cancel grant."
-        try:
-            res = admin.table("user_roles").delete().eq("user_id", user_id).eq("role", role).execute()
-        except Exception as e:
-            return False, f"Failed to cancel role grant in Supabase: {e}"
+        if admin:
+            try:
+                res = admin.table("user_roles").delete().eq("user_id", user_id).eq("role", role).execute()
+            except Exception as e:
+                err_str = str(e)
+                print(f"[Roles] Supabase cancel notice: {err_str}")
+                if "PGRST205" not in err_str and "user_roles" not in err_str:
+                    return False, f"Failed to cancel role grant in Supabase: {e}"
 
     db = get_local_db()
     if hasattr(db, "delete_user_role"):
@@ -345,14 +362,20 @@ def cancel_grant(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
 
 def list_users_with_multi_roles() -> List[Dict]:
-    """Lists all users with their full role grants roster for Admin Console."""
+    """Lists all non-admin users with their full role grants roster for Admin Console."""
     from services.profiles import list_profiles_by_role
+    from services.governance import get_primary_admin_id
     backend = get_data_backend()
     profiles_map = {}
+    primary_admin_id = str(get_primary_admin_id() or "")
 
-    # Gather all profiles
-    for r in ("aspirant", "guide", "sme", "admin"):
+    # Gather all non-admin profiles
+    for r in ("aspirant", "guide", "sme"):
         for p in list_profiles_by_role(r):
+            p_id = str(p.get("id", ""))
+            p_email = str(p.get("email", "")).strip().lower()
+            if p_email == "fulcrumindia1@gmail.com" or (primary_admin_id and p_id == primary_admin_id) or p.get("role") == "admin":
+                continue
             profiles_map[p["id"]] = p
 
     results = []

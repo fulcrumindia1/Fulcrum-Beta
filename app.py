@@ -439,9 +439,6 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             background-color: #2563EB !important;
             color: #FFFFFF !important;
         }
-            fill: #94A3B8 !important;
-            color: #94A3B8 !important;
-        }
 
         /* Popover dropdown menu (dark-themed list) */
         div[data-baseweb="popover"] > div,
@@ -864,7 +861,7 @@ def main():
             # ─────────────────────────────────────────────────────────────────
             # MULTI-ROLE: CURRENT WORKSPACE SELECTOR
             # ─────────────────────────────────────────────────────────────────
-            from services.roles import get_active_roles, get_pending_nda_roles
+            from services.roles import get_active_roles, get_pending_nda_roles, get_user_roles
             from services.governance import get_primary_admin_id
             user_id = user.get("id")
             user_email = str(user.get("email", "")).strip().lower()
@@ -888,8 +885,14 @@ def main():
                 pending_r = get_pending_nda_roles(user_id) if user_id else []
 
                 # If user has no explicit multi-role grants in user_roles, use base profile role
+                # BUT only if there are no revoked/suspended grants (don't resurrect revoked access)
                 if not active_r and not pending_r:
-                    active_r = [base_p_role]
+                    all_grants = get_user_roles(user_id) if user_id else []
+                    has_revoked_or_suspended = any(
+                        g.get("status") in ("revoked", "suspended") for g in all_grants
+                    )
+                    if not has_revoked_or_suspended:
+                        active_r = [base_p_role]
 
                 ws_options = []
                 if "aspirant" in active_r:

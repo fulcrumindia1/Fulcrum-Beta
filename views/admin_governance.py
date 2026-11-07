@@ -85,28 +85,46 @@ def render_admin_role_grants_tab(admin_id: str):
         st.markdown("#### Grant Additional Role")
         user_options = {u["id"]: f"{u['full_name']} ({u['email']})" for u in users}
         if not user_options:
-            st.info("No users found.")
+            st.info("No non-admin users found.")
             return
 
-        with st.form("form_grant_additional_role"):
-            sel_user_id = st.selectbox("Select User", list(user_options.keys()), format_func=lambda x: user_options[x], key="sel_user_grant")
-            new_role = st.selectbox(
-                "Role to Grant",
-                ["guide", "sme"],
-                format_func=lambda x: f"{x.upper()} (Domain Mentor / Caseload Guide)" if x == "guide" else f"{x.upper()} (Subject Matter Expert)",
-                key="sel_new_role"
-            )
-            
-            st.info("ℹ️ Promoting to Guide or SME sets status to **PENDING NDA**. The user will be required to sign the binding NDA before accessing protected caseloads.")
-            
-            submit_grant = st.form_submit_button("Grant Role", type="primary")
-            if submit_grant:
-                ok, err = grant_role(sel_user_id, new_role, granted_by=admin_id)
-                if ok:
-                    st.success(f"Role '{new_role.upper()}' granted! Status set to PENDING NDA.")
-                    st.rerun()
+        sel_user_id = st.selectbox("Select User", list(user_options.keys()), format_func=lambda x: user_options[x], key="sel_user_grant")
+        target_u = next((u for u in users if u["id"] == sel_user_id), None)
+        curr_active = target_u.get("active_roles", []) if target_u else []
+        curr_pending = target_u.get("pending_nda_roles", []) if target_u else []
+        curr_all = set(curr_active + curr_pending)
+
+        available_roles = [r for r in ["aspirant", "guide", "sme"] if r not in curr_all]
+        role_labels = {
+            "aspirant": "🌱 ASPIRANT (Entrepreneur / Venture Founder)",
+            "guide": "🧭 GUIDE (Domain Mentor / Caseload Guide)",
+            "sme": "🔬 SME (Domain Subject Matter Expert)"
+        }
+
+        if available_roles:
+            with st.form(f"form_grant_role_{sel_user_id}"):
+                new_role = st.selectbox(
+                    "Role to Grant",
+                    available_roles,
+                    format_func=lambda x: role_labels.get(x, x.upper()),
+                    key=f"sel_new_role_{sel_user_id}"
+                )
+                
+                if new_role in ("guide", "sme"):
+                    st.info("ℹ️ Promoting to Guide or SME sets status to **PENDING NDA**. The user will be required to sign the binding NDA before accessing protected caseloads.")
                 else:
-                    st.error(err or "Failed to grant role.")
+                    st.info("ℹ️ Granting the Aspirant role enables the user to build their own entrepreneurial venture and apply for grant schemes.")
+                
+                submit_grant = st.form_submit_button("Grant Role", type="primary")
+                if submit_grant:
+                    ok, err = grant_role(sel_user_id, new_role, granted_by=admin_id)
+                    if ok:
+                        st.success(f"Role '{new_role.upper()}' granted! {'Status set to PENDING NDA.' if new_role in ('guide', 'sme') else 'Active immediately.'}")
+                        st.rerun()
+                    else:
+                        st.error(err or "Failed to grant role.")
+        else:
+            st.success(f"✅ {target_u.get('full_name', 'User')} already holds all available roles (Aspirant, Guide, SME).")
 
         st.markdown("<div style='height:1.25rem;'></div>", unsafe_allow_html=True)
         st.markdown("#### Manage Existing Role Grants")
@@ -115,21 +133,23 @@ def render_admin_role_grants_tab(admin_id: str):
 
         grants = []
         if sel_target_user:
+            primary_r = sel_target_user.get("primary_role", "aspirant")
             for r in sel_target_user.get("active_roles", []):
-                if r != "aspirant":
+                if r != primary_r:
                     grants.append((r, "ACTIVE"))
             for r in sel_target_user.get("pending_nda_roles", []):
-                if r != "aspirant":
+                if r != primary_r:
                     grants.append((r, "PENDING NDA"))
             for r in sel_target_user.get("suspended_roles", []):
-                if r != "aspirant":
+                if r != primary_r:
                     grants.append((r, "SUSPENDED"))
             for r in sel_target_user.get("revoked_roles", []):
-                if r != "aspirant":
+                if r != primary_r:
                     grants.append((r, "REVOKED"))
 
         if not grants:
-            st.caption("ℹ️ This user holds only the base Aspirant role (cannot be revoked or suspended).")
+            p_label = sel_target_user.get('primary_role', 'user').title() if sel_target_user else "registered"
+            st.caption(f"ℹ️ This user holds only their registered primary role ({p_label}). No secondary role grants to manage.")
         else:
             sel_grant_idx = st.selectbox(
                 "Select Role Grant to Manage",
