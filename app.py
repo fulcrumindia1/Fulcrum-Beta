@@ -331,63 +331,74 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             color: #cbd5e1;
         }
 
-        /* Workspace Selector & Sidebar Selectbox — Pink Theme Alignment */
+        /* Workspace Selector & Sidebar Selectbox — Solid Rose-Pink Theme Alignment */
         [data-testid="stSidebar"] div[data-testid="stSelectbox"],
         [data-testid="stSidebar"] .stSelectbox,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace,
         section[data-testid="stSidebar"] div.st-key-sb_current_workspace {
             margin-bottom: 0.6rem !important;
         }
 
+        /* Selectbox control outer & immediate container */
+        [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"],
+        [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"],
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] > div,
         section[data-testid="stSidebar"] [data-baseweb="select"],
         section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
-        section[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
-        section[data-testid="stSidebar"] [data-baseweb="select"] div,
         section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
         section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
         section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
         section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div,
         div.st-key-sb_current_workspace [data-baseweb="select"],
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child,
-        div.st-key-sb_current_workspace [data-baseweb="select"] [role="combobox"],
-        div.st-key-sb_current_workspace [data-baseweb="select"] div {
-            background-color: #241424 !important;
-            background: #241424 !important;
-            border-color: #EC4899 !important;
-            color: #FFFFFF !important;
-        }
-
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
         div.st-key-sb_current_workspace [data-baseweb="select"] > div {
-            border: 1.5px solid #EC4899 !important;
+            background-color: #BE185D !important;
+            background: #BE185D !important;
+            border: 2px solid #F472B6 !important;
             border-radius: 10px !important;
             min-height: 42px !important;
-            box-shadow: 0 0 10px rgba(236, 72, 153, 0.25) !important;
+            box-shadow: 0 2px 10px rgba(190, 24, 93, 0.4) !important;
             transition: all 0.2s ease-in-out !important;
         }
 
+        /* Keep inner value container and svg wrapper transparent so solid pink shines through */
+        [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] > div > div,
+        section[data-testid="stSidebar"] [data-baseweb="select"] > div > div,
+        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+        div.st-key-sb_current_workspace [data-baseweb="select"] > div > div {
+            background-color: transparent !important;
+            background: transparent !important;
+        }
+
+        /* Hover and focus states */
+        [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] > div:hover,
         section[data-testid="stSidebar"] [data-baseweb="select"] > div:hover,
         section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
         section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div:hover,
         div.st-key-sb_current_workspace [data-baseweb="select"] > div:hover {
-            background-color: #381232 !important;
-            border-color: #F472B6 !important;
-            box-shadow: 0 0 14px rgba(236, 72, 153, 0.45) !important;
+            background-color: #9D174D !important;
+            background: #9D174D !important;
+            border-color: #FBCFE8 !important;
+            box-shadow: 0 0 14px rgba(244, 114, 182, 0.5) !important;
         }
 
         section[data-testid="stSidebar"] [data-baseweb="select"]:focus-within > div,
         section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div,
         section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"]:focus-within > div,
         div.st-key-sb_current_workspace [data-baseweb="select"]:focus-within > div {
-            border-color: #F472B6 !important;
-            box-shadow: 0 0 0 2px rgba(236, 72, 153, 0.5) !important;
+            border-color: #FBCFE8 !important;
+            box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.6) !important;
         }
 
         /* High-contrast crisp typography for sidebar selectbox text and chevron */
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] *,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] span,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] div,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] p,
+        [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] input,
+        [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
         section[data-testid="stSidebar"] [data-baseweb="select"] *,
         section[data-testid="stSidebar"] [data-baseweb="select"] div,
         section[data-testid="stSidebar"] [data-baseweb="select"] span,
@@ -401,8 +412,9 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         div.st-key-sb_current_workspace [data-baseweb="select"] p,
         div.st-key-sb_current_workspace [data-baseweb="select"] input {
             color: #FFFFFF !important;
-            font-weight: 700 !important;
-            font-size: 0.92rem !important;
+            font-weight: 800 !important;
+            font-size: 0.95rem !important;
+            letter-spacing: 0.2px !important;
         }
 
         section[data-testid="stSidebar"] [data-baseweb="select"] svg,
@@ -411,8 +423,8 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
         div.st-key-sb_current_workspace [data-baseweb="select"] svg,
         div.st-key-sb_current_workspace [data-baseweb="select"] svg path {
-            fill: #F472B6 !important;
-            color: #F472B6 !important;
+            fill: #FFFFFF !important;
+            color: #FFFFFF !important;
         }
 
         /* BaseWeb Dropdown Popover Listbox */
@@ -421,18 +433,31 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         div[data-baseweb="popover"] ul,
         div[data-baseweb="menu"],
         ul[role="listbox"] {
-            background-color: #1E1124 !important;
-            background: #1E1124 !important;
-            border: 1.5px solid #EC4899 !important;
+            background-color: #831843 !important;
+            background: #831843 !important;
+            border: 1.5px solid #F472B6 !important;
             border-radius: 10px !important;
-            box-shadow: 0 10px 25px rgba(236, 72, 153, 0.4) !important;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5) !important;
         }
         div[data-baseweb="popover"] li,
         ul[role="listbox"] li {
             background-color: transparent !important;
             color: #FFFFFF !important;
+            font-weight: 700 !important;
         }
         div[data-baseweb="popover"] li *,
+        ul[role="listbox"] li * {
+            color: #FFFFFF !important;
+            font-weight: 700 !important;
+        }
+        div[data-baseweb="popover"] li:hover,
+        div[data-baseweb="popover"] li[aria-selected="true"],
+        ul[role="listbox"] li:hover,
+        ul[role="listbox"] li[aria-selected="true"] {
+            background-color: #BE185D !important;
+            background: #BE185D !important;
+            color: #FFFFFF !important;
+        }
         ul[role="listbox"] li * {
             color: #FFFFFF !important;
         }
@@ -542,59 +567,65 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             color: #94A3B8 !important;
         }
 
-        /* Notification Action Buttons inside Expander (Mark All / Dismiss) — Pink / Rose Theme */
+        /* Notification Action Buttons inside Expander (Mark All / Dismiss) — Solid Rose-Pink Theme */
+        div[class*="st-key-btn_dismiss"] button,
+        div.st-key-btn_notif_mark_all button,
         section[data-testid="stSidebar"] [data-testid="stExpander"] button,
         section[data-testid="stSidebar"] details button,
-        section[data-testid="stSidebar"] div[data-testid="stButton"] button,
         section[data-testid="stSidebar"] [data-testid="stExpander"] div.stButton > button,
         section[data-testid="stSidebar"] details div.stButton > button {
-            background: rgba(236, 72, 153, 0.22) !important;
-            background-color: rgba(236, 72, 153, 0.22) !important;
-            border: 1.5px solid #EC4899 !important;
+            background: #BE185D !important;
+            background-color: #BE185D !important;
+            border: 1.5px solid #F472B6 !important;
             border-radius: 8px !important;
-            padding: 0.4rem 0.75rem !important;
+            padding: 0.45rem 0.85rem !important;
             font-weight: 700 !important;
-            font-size: 0.82rem !important;
+            font-size: 0.84rem !important;
             letter-spacing: 0.2px !important;
-            color: #FDF2F8 !important;
-            margin: 0.25rem 0 0.45rem 0 !important;
+            color: #FFFFFF !important;
+            margin: 0.35rem 0 !important;
             width: 100% !important;
-            box-shadow: 0 1px 4px rgba(236, 72, 153, 0.2) !important;
+            box-shadow: 0 2px 8px rgba(190, 24, 93, 0.35) !important;
             transform: none !important;
             transition: all 0.2s ease !important;
         }
 
+        div[class*="st-key-btn_dismiss"] button *,
+        div.st-key-btn_notif_mark_all button *,
         section[data-testid="stSidebar"] [data-testid="stExpander"] button *,
         section[data-testid="stSidebar"] details button *,
-        section[data-testid="stSidebar"] div[data-testid="stButton"] button *,
         section[data-testid="stSidebar"] [data-testid="stExpander"] div.stButton > button *,
         section[data-testid="stSidebar"] details div.stButton > button * {
-            color: #FDF2F8 !important;
+            color: #FFFFFF !important;
             font-weight: 700 !important;
         }
 
+        div[class*="st-key-btn_dismiss"] button:hover,
+        div.st-key-btn_notif_mark_all button:hover,
         section[data-testid="stSidebar"] [data-testid="stExpander"] button:hover,
         section[data-testid="stSidebar"] details button:hover,
-        section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover,
         section[data-testid="stSidebar"] [data-testid="stExpander"] div.stButton > button:hover,
         section[data-testid="stSidebar"] details div.stButton > button:hover {
-            background: #BE185D !important;
-            background-color: #BE185D !important;
-            border-color: #F472B6 !important;
+            background: #9D174D !important;
+            background-color: #9D174D !important;
+            border-color: #FBCFE8 !important;
             color: #FFFFFF !important;
-            box-shadow: 0 2px 12px rgba(236, 72, 153, 0.5) !important;
+            box-shadow: 0 4px 14px rgba(190, 24, 93, 0.55) !important;
         }
 
+        div[class*="st-key-btn_dismiss"] button:hover *,
+        div.st-key-btn_notif_mark_all button:hover *,
         section[data-testid="stSidebar"] [data-testid="stExpander"] button:hover *,
         section[data-testid="stSidebar"] details button:hover *,
-        section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover *,
         section[data-testid="stSidebar"] [data-testid="stExpander"] div.stButton > button:hover *,
         section[data-testid="stSidebar"] details div.stButton > button:hover * {
             color: #FFFFFF !important;
         }
 
-        /* Sidebar Logout Button — Dark Danger Style */
-        section[data-testid="stSidebar"] div.stButton > button {
+        /* Sidebar Logout Button — Specifically Targeted Dark Danger Style */
+        div.st-key-btn_sidebar_logout button,
+        [data-testid="stSidebar"] div.st-key-btn_sidebar_logout > button,
+        section[data-testid="stSidebar"] div.st-key-btn_sidebar_logout button {
             background: rgba(239, 68, 68, 0.08) !important;
             border: 1px solid rgba(239, 68, 68, 0.28) !important;
             border-radius: 8px !important;
@@ -940,71 +971,83 @@ def main():
             if not is_single_admin and len(ws_options) > 1:
                 st.markdown("""
                 <style>
-                /* Direct In-Sidebar Scoped Current Workspace Dropdown Styles — Pink Theme */
+                /* Direct In-Sidebar Scoped Current Workspace Dropdown Styles — Solid Rose-Pink Theme */
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"],
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"],
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] > div,
                 section[data-testid="stSidebar"] [data-baseweb="select"],
                 section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
-                section[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
-                section[data-testid="stSidebar"] [data-baseweb="select"] div,
                 section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
                 section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
                 section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
                 section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div,
                 div.st-key-sb_current_workspace [data-baseweb="select"],
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child,
-                div.st-key-sb_current_workspace [data-baseweb="select"] [role="combobox"],
-                div.st-key-sb_current_workspace [data-baseweb="select"] div {
-                    background-color: #241424 !important;
-                    background: #241424 !important;
-                    border-color: #EC4899 !important;
-                    color: #FFFFFF !important;
-                }
-
-                section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
                 div.st-key-sb_current_workspace [data-baseweb="select"] > div {
-                    border: 1.5px solid #EC4899 !important;
+                    background-color: #BE185D !important;
+                    background: #BE185D !important;
+                    border: 2px solid #F472B6 !important;
                     border-radius: 10px !important;
                     min-height: 42px !important;
-                    box-shadow: 0 0 10px rgba(236, 72, 153, 0.25) !important;
+                    box-shadow: 0 2px 10px rgba(190, 24, 93, 0.4) !important;
+                    transition: all 0.2s ease-in-out !important;
                 }
 
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] > div > div,
+                section[data-testid="stSidebar"] [data-baseweb="select"] > div > div,
+                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div > div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] > div > div {
+                    background-color: transparent !important;
+                    background: transparent !important;
+                }
+
+                [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] > div:hover,
                 section[data-testid="stSidebar"] [data-baseweb="select"] > div:hover,
                 section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
+                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div:hover,
                 div.st-key-sb_current_workspace [data-baseweb="select"] > div:hover {
-                    background-color: #381232 !important;
-                    border-color: #F472B6 !important;
-                    box-shadow: 0 0 14px rgba(236, 72, 153, 0.45) !important;
+                    background-color: #9D174D !important;
+                    background: #9D174D !important;
+                    border-color: #FBCFE8 !important;
+                    box-shadow: 0 0 14px rgba(244, 114, 182, 0.5) !important;
                 }
 
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] *,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] span,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] div,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] p,
+                [data-testid="stSidebar"] .st-key-sb_current_workspace [data-baseweb="select"] input,
+                [data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
                 section[data-testid="stSidebar"] [data-baseweb="select"] *,
                 section[data-testid="stSidebar"] [data-baseweb="select"] div,
                 section[data-testid="stSidebar"] [data-baseweb="select"] span,
                 section[data-testid="stSidebar"] [data-baseweb="select"] p,
                 section[data-testid="stSidebar"] [data-baseweb="select"] input,
-                div.st-key-sb_current_workspace *,
-                div.st-key-sb_current_workspace span,
-                div.st-key-sb_current_workspace div,
-                div.st-key-sb_current_workspace p,
-                div.st-key-sb_current_workspace input {
+                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
+                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
+                div.st-key-sb_current_workspace [data-baseweb="select"] *,
+                div.st-key-sb_current_workspace [data-baseweb="select"] span,
+                div.st-key-sb_current_workspace [data-baseweb="select"] div,
+                div.st-key-sb_current_workspace [data-baseweb="select"] p,
+                div.st-key-sb_current_workspace [data-baseweb="select"] input {
                     color: #FFFFFF !important;
-                    font-weight: 700 !important;
-                    font-size: 0.92rem !important;
+                    font-weight: 800 !important;
+                    font-size: 0.95rem !important;
+                    letter-spacing: 0.2px !important;
                 }
 
                 section[data-testid="stSidebar"] [data-baseweb="select"] svg,
                 section[data-testid="stSidebar"] [data-baseweb="select"] svg path,
                 div.st-key-sb_current_workspace svg,
                 div.st-key-sb_current_workspace svg path {
-                    fill: #F472B6 !important;
-                    color: #F472B6 !important;
+                    fill: #FFFFFF !important;
+                    color: #FFFFFF !important;
                 }
                 </style>
                 """, unsafe_allow_html=True)
-                st.markdown("<div style='font-size: 0.68rem; font-weight: 700; color: #f472b6; text-transform: uppercase; letter-spacing: 0.5px; margin-top:0.6rem; margin-bottom:0.2rem;'>Current Workspace</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size: 0.72rem; font-weight: 800; color: #F472B6; text-transform: uppercase; letter-spacing: 0.5px; margin-top:0.6rem; margin-bottom:0.2rem;'>Current Workspace</div>", unsafe_allow_html=True)
                 sel_idx = ws_keys.index(curr_ws)
                 selected_ws = st.selectbox(
                     "Current Workspace",
