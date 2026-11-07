@@ -302,6 +302,19 @@ def render_aspirant_portal(user_profile: dict):
                     b_type_custom_in = st.text_input("Specify Business Type *", value=btype_custom, placeholder="e.g. Contract R&D / Hybrid Studio", key="prof_custom_btype")
                     if b_type_custom_in and b_type_custom_in.strip():
                         b_type = b_type_custom_in.strip()
+
+                activity_options = [
+                    "Manufacturing / Production",
+                    "Services / Software",
+                    "Trading / Retail / Distribution",
+                    "R&D / DeepTech",
+                    "Agriculture / Farming",
+                    "Other / Hybrid"
+                ]
+                cur_act = cur_biz.get("activity", "Manufacturing / Production")
+                act_idx = activity_options.index(cur_act) if cur_act in activity_options else 0
+                b_activity = st.selectbox("Primary Commercial Activity *", activity_options, index=act_idx)
+
             with col_b2:
                 cur_sec = cur_biz.get("sector", "Food Processing & Agribusiness")
                 sec_idx, sec_custom = resolve_field_choice(cur_sec, MASTER_SECTORS, "Other / Not Listed (Specify)")
@@ -311,6 +324,13 @@ def render_aspirant_portal(user_profile: dict):
                     b_sec_custom_in = st.text_input("Specify Custom Industry Sector *", value=sec_custom, placeholder="e.g. SpaceTech, Marine Biotechnology", key="prof_custom_sec")
                     if b_sec_custom_in and b_sec_custom_in.strip():
                         b_sector = b_sec_custom_in.strip()
+
+                b_subsector = st.text_input(
+                    "Subsector / Specific Activity (optional)",
+                    value=cur_biz.get("subsector", ""),
+                    placeholder="e.g. Cotton Knitwear, Retail Pharmacy, SaaS, Cold Storage",
+                    help="Specifying your exact subsector enables precision scheme matching and prevents irrelevant tech/pharma R&D mismatch."
+                )
 
                 cur_stg = cur_biz.get("stage", "Pre-Seed / Seed")
                 stg_idx, stg_custom = resolve_field_choice(cur_stg, MASTER_STAGES, "Other / Multi-Stage (Specify)", default_index=1)
@@ -352,7 +372,11 @@ def render_aspirant_portal(user_profile: dict):
                     if d_cat_custom_in and d_cat_custom_in.strip():
                         d_cat = d_cat_custom_in.strip()
             with col_d3:
-                st.markdown("<p style='font-size:0.85rem; font-weight:600; margin-bottom:0.3rem;'>Special Registrations & Quotas</p>", unsafe_allow_html=True)
+                st.markdown("<p style='font-size:0.85rem; font-weight:600; margin-bottom:0.3rem;'>Statutory Registrations & Quotas</p>", unsafe_allow_html=True)
+                d_udyam = st.checkbox("Udyam (MSME) Registered", value=bool(cur_demo.get("is_udyam_registered", False)))
+                d_gst = st.checkbox("GST Registered", value=bool(cur_demo.get("is_gst_registered", False)))
+                d_fssai = st.checkbox("FSSAI Food License", value=bool(cur_demo.get("is_fssai_registered", False)))
+                d_drug_lic = st.checkbox("Drug License (Retail / Form 20/21)", value=bool(cur_demo.get("is_drug_license", False)))
                 d_dpiit = st.checkbox("DPIIT Recognized Startup", value=bool(cur_demo.get("is_dpiit_recognized", False)))
                 d_startuptn = st.checkbox("StartupTN Registered", value=bool(cur_demo.get("is_startuptn_registered", False)))
                 d_women = st.checkbox("Women-Led Enterprise (>=51% Women Equity)", value=bool(cur_demo.get("is_women_led", False)))
@@ -415,8 +439,8 @@ def render_aspirant_portal(user_profile: dict):
                     state=d_state,
                     personal_data={"gender": f_gender, "dob": f_dob, "address": f_address},
                     professional_data={"education": f_edu, "skills": f_skills, "experience": f_exp, "certifications": f_certs},
-                    business_data={"business_name": b_name, "business_type": b_type, "sector": b_sector, "stage": b_stage, "revenue": b_revenue, "employee_count": b_team, "description": b_desc},
-                    demographics_data={"district": d_final_district, "state": d_state, "founder_category": d_cat, "gender": f_gender, "is_dpiit_recognized": d_dpiit, "is_startuptn_registered": d_startuptn, "is_women_led": is_qualifies_women, "women_equity_pct": d_women_equity},
+                    business_data={"business_name": b_name, "business_type": b_type, "sector": b_sector, "subsector": b_subsector, "activity": b_activity, "stage": b_stage, "revenue": b_revenue, "employee_count": b_team, "description": b_desc},
+                    demographics_data={"district": d_final_district, "state": d_state, "founder_category": d_cat, "gender": f_gender, "is_udyam_registered": d_udyam, "is_gst_registered": d_gst, "is_fssai_registered": d_fssai, "is_drug_license": d_drug_lic, "is_dpiit_recognized": d_dpiit, "is_startuptn_registered": d_startuptn, "is_women_led": is_qualifies_women, "women_equity_pct": d_women_equity},
                     assistance_need_data={"assistance_goal": sel_goal, "support_type": sel_sub_type, "quantum_range": sel_quantum, "timeframe": sel_timeframe}
                 )
                 if updated:
@@ -660,31 +684,33 @@ def render_aspirant_portal(user_profile: dict):
                 st.info("🔬 No Domain SME assigned yet. If you need specialized help in GST, FSSAI, or Patents, submit a request under 'Consult a Guide or SME'.")
 
 
-        if guide:
-            st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
-            with st.expander("🛡️ Request Guide Change / Report Confidential Concern"):
-                st.caption("This report is submitted directly and confidentially to Fulcrum Administration. Your assigned Guide will not see this notice.")
-                with st.form("confidential_complaint_form"):
-                    complaint_reason = st.selectbox(
-                        "Reason for Request",
-                        [
-                            ("inactivity", "Guide is inactive / unresponsive"),
-                            ("poor_communication", "Communication difficulties"),
-                            ("conflict_of_interest", "Potential conflict of interest"),
-                            ("professional_conduct", "Professional conduct / ethics"),
-                            ("other", "Other reason")
-                        ],
-                        format_func=lambda x: x[1]
-                    )
-                    complaint_details = st.text_area("Detailed context / explanation (Minimum 10 characters)*", placeholder="Please share details regarding this request...")
-                    submit_comp = st.form_submit_button("Submit Confidential Request")
-                    if submit_comp:
-                        from services.governance import submit_guide_complaint
-                        ok, err = submit_guide_complaint(user_id, guide["id"], complaint_reason[0], complaint_details)
-                        if ok:
-                            st.success("Your request has been submitted confidentially to Fulcrum Administration for review.")
-                        else:
-                            st.error(err or "Failed to submit request.")
+        st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
+        with st.expander("🛡️ Contact Fulcrum Support / Report Confidential Concern"):
+            st.caption("This report is submitted directly and confidentially to **Fulcrum Support**. Your assigned mentors will not see this communication.")
+            if not guide:
+                st.info("ℹ️ You currently do not have an active Guide assigned. Your message will be routed directly to the Fulcrum Support administration team.")
+            with st.form("confidential_complaint_form"):
+                complaint_reason = st.selectbox(
+                    "Reason for Request / Concern",
+                    [
+                        ("inactivity", "Guide is inactive / unresponsive"),
+                        ("poor_communication", "Communication difficulties"),
+                        ("conflict_of_interest", "Potential conflict of interest"),
+                        ("professional_conduct", "Professional conduct / ethics"),
+                        ("other", "General administrative / support assistance")
+                    ],
+                    format_func=lambda x: x[1]
+                )
+                complaint_details = st.text_area("Detailed context / explanation (Minimum 10 characters)*", placeholder="Please describe the issue or support needed in detail...")
+                submit_comp = st.form_submit_button("Submit Confidentially to Fulcrum Support", type="primary")
+                if submit_comp:
+                    from services.governance import submit_guide_complaint
+                    target_guide_id = guide["id"] if guide else None
+                    ok, res = submit_guide_complaint(user_id, target_guide_id, complaint_reason[0], complaint_details)
+                    if ok:
+                        st.success("Your request has been submitted confidentially to Fulcrum Support for immediate review.")
+                    else:
+                        st.error(res or "Failed to submit request.")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 5: SCHEME MATCHES (Curated & Released by Guide)
@@ -713,7 +739,7 @@ def render_aspirant_portal(user_profile: dict):
                 cols = st.columns(3)
                 for j, s in enumerate(row_schemes):
                     with cols[j]:
-                        render_fund_explorer_card(s, user_id=user_id, is_aspirant=True)
+                        render_fund_explorer_card(s, user_id=user_id, is_aspirant=True, key_prefix=f"asp_rel_{i}_{j}")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 6: CONSULT A GUIDE OR SME (Strictly Guides and SMEs)

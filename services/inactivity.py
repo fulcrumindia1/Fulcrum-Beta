@@ -46,16 +46,23 @@ def get_last_interaction_date(guide_id: str, aspirant_id: str) -> Optional[datet
     except Exception:
         pass
 
-    # 3. Check help requests / consultations
+    # 3. Check help requests / consultations (Mentor responses ONLY)
     try:
         from services.help_requests import list_requests
         reqs = list_requests(aspirant_id=aspirant_id)
         for req in reqs:
-            if req.get("assigned_guide_id") == guide_id or req.get("resolved_by") == guide_id:
-                if req.get("last_handled_at"):
+            if req.get("assigned_guide_id") == guide_id or req.get("resolved_by") == guide_id or str(req.get("last_interaction_actor_id")) == str(guide_id):
+                # 3a. Prioritize explicit mentor response timestamp
+                if req.get("last_mentor_response_at"):
+                    timestamps.append(datetime.fromisoformat(req["last_mentor_response_at"].replace("Z", "+00:00")))
+                # 3b. If last interaction was by guide/sme, use last_handled_at
+                elif req.get("last_interaction_actor_role") in ("guide", "sme") and str(req.get("last_interaction_actor_id")) == str(guide_id) and req.get("last_handled_at"):
                     timestamps.append(datetime.fromisoformat(req["last_handled_at"].replace("Z", "+00:00")))
-                elif req.get("updated_at"):
-                    timestamps.append(datetime.fromisoformat(req["updated_at"].replace("Z", "+00:00")))
+                # 3c. Fallback for legacy records: only if guide provided response and actor was not aspirant
+                elif req.get("guide_response") and str(req.get("resolved_by")) == str(guide_id) and req.get("last_interaction_actor_role") != "aspirant":
+                    t_str = req.get("resolved_at") or req.get("last_handled_at")
+                    if t_str:
+                        timestamps.append(datetime.fromisoformat(t_str.replace("Z", "+00:00")))
     except Exception:
         pass
 
@@ -73,10 +80,12 @@ def check_and_process_caseload_inactivity() -> List[Dict]:
     from services.relationships import get_all_relationships
     from services.notifications import create_notification
     from services.profiles import get_profile
+    from services.governance import get_primary_admin_id
 
     relationships = get_all_relationships()
     now = datetime.now(timezone.utc)
     results = []
+    admin_id = get_primary_admin_id()
 
     for rel in relationships:
         if rel.get("status") != "active":
@@ -105,7 +114,7 @@ def check_and_process_caseload_inactivity() -> List[Dict]:
             stage = "DAY_14_ADMIN_REVIEW"
             if _record_inactivity_log(rel.get("id"), guide_id, aspirant_id, days_inactive, stage):
                 create_notification(
-                    user_id="72655c43-9f13-4309-a8a0-194570a6c2aa",  # Platform Admin
+                    user_id=admin_id,  # Platform Admin
                     title="Critical Inactivity Escalation (14 Days)",
                     message=f"Guide has not interacted with {asp_name} for {days_inactive} days. Urgent caseload review or reassignment recommended.",
                     notification_type="INACTIVITY_CRITICAL",
@@ -117,7 +126,7 @@ def check_and_process_caseload_inactivity() -> List[Dict]:
             stage = "DAY_10_ADMIN_ALERT"
             if _record_inactivity_log(rel.get("id"), guide_id, aspirant_id, days_inactive, stage):
                 create_notification(
-                    user_id="72655c43-9f13-4309-a8a0-194570a6c2aa",
+                    user_id=admin_id,
                     title="Mentor Inactivity Alert (10 Days)",
                     message=f"Guide has not interacted with {asp_name} for {days_inactive} days. Automated monitoring notification dispatched.",
                     notification_type="INACTIVITY_WARNING",
@@ -133,7 +142,7 @@ def check_and_process_caseload_inactivity() -> List[Dict]:
                     title="Friendly Reminder: Entrepreneur Check-in",
                     message=f"It has been {days_inactive} days since your last update with {asp_name}. Please review their journey or recommend schemes.",
                     notification_type="INACTIVITY_REMINDER",
-                    actor_id="72655c43-9f13-4309-a8a0-194570a6c2aa"
+                    actor_id=admin_id
                 )
                 results.append({"guide_id": guide_id, "aspirant_id": aspirant_id, "stage": stage, "days": days_inactive})
 

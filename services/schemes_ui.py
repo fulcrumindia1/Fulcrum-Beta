@@ -359,7 +359,22 @@ def open_delete_scheme_dialog(s: dict, admin_id: str = None):
         if st.button("Cancel", use_container_width=True):
             st.rerun()
 
-def render_fund_explorer_card(s: dict, is_admin: bool = False, admin_id: str = None, key_prefix: str = "fe", show_private_intelligence: bool = True, guide_recommendation: str = None):
+def render_fund_explorer_card(
+    s: dict,
+    is_admin: bool = False,
+    admin_id: str = None,
+    key_prefix: str = "fe",
+    show_private_intelligence: bool = True,
+    guide_recommendation: str = None,
+    user_id: str = None,
+    is_aspirant: bool = False,
+    **kwargs
+):
+    if is_aspirant:
+        is_admin = False
+        show_private_intelligence = False
+        guide_recommendation = guide_recommendation or s.get("guide_recommendation") or s.get("guide_note") or ""
+
     sid = s.get("id") or s.get("source_id", "SCH-GEN")
     name = s.get("name", "Untitled Scheme")
     agency = s.get("agency", "Government / Syndicate")

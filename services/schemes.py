@@ -86,10 +86,14 @@ def list_schemes(
                     schemes_data = []
         else:
             schemes_data = []
+
+        if not schemes_data:
+            schemes_data = get_local_db().list_schemes(active_only=active_only)
     else:
         schemes_data = get_local_db().list_schemes(active_only=active_only)
-        if active_only and schemes_data:
-            set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
+
+    if active_only and schemes_data:
+        set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
 
     # In-memory filtering (instant execution without extra round-trips)
     filtered = []

@@ -15,6 +15,14 @@ from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
 
+# Consultation Statuses
+STATUS_OPEN = "OPEN"
+STATUS_IN_PROGRESS = "IN_PROGRESS"
+STATUS_WAITING_ON_ASPIRANT = "WAITING_ON_ASPIRANT"
+STATUS_WAITING_ON_GUIDE_SME = "WAITING_ON_GUIDE_SME"
+STATUS_RESOLVED = "RESOLVED"
+STATUS_ESCALATED = "ESCALATED"
+
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
     return get_supabase_client()
@@ -22,6 +30,20 @@ def _get_user_client():
 def _get_admin_client():
     """Returns the privileged admin Supabase client (bypasses RLS). Use sparingly."""
     return get_supabase_admin_client()
+
+NEW_TRACKING_COLUMNS = (
+    "last_aspirant_response_at",
+    "last_mentor_response_at",
+    "last_interaction_actor_id",
+    "last_interaction_actor_role",
+    "category_detail"
+)
+
+def _clean_missing_columns(payload: dict) -> dict:
+    cleaned = dict(payload)
+    for col in NEW_TRACKING_COLUMNS:
+        cleaned.pop(col, None)
+    return cleaned
 
 def _enrich_mentor_names(rows: List[Dict], client=None) -> List[Dict]:
     """Enriches consultation ticket rows with guide_name and sme_name from profiles if missing."""
@@ -154,6 +176,9 @@ def create_request(
             "target_role": target_role,
             "request_type": "aspirant_consultation",
             "assigned_at": assigned_at,
+            "last_interaction_actor_id": aspirant_id,
+            "last_interaction_actor_role": "aspirant",
+            "last_aspirant_response_at": now_iso,
             "created_at": now_iso,
             "updated_at": now_iso
         }
@@ -162,31 +187,33 @@ def create_request(
             req = res.data[0] if (res.data and len(res.data) > 0) else req_data
         except Exception as e:
             admin_client = _get_admin_client()
-            if admin_client and admin_client != client:
+            active_c = admin_client or client
+            err_str = str(e)
+            if "PGRST204" in err_str or "schema cache" in err_str or any(col in err_str for col in NEW_TRACKING_COLUMNS):
+                safe_data = _clean_missing_columns(req_data)
+                try:
+                    res = active_c.table("help_requests").insert(safe_data).execute()
+                    req = res.data[0] if (res.data and len(res.data) > 0) else safe_data
+                except Exception as e2:
+                    return None, f"Failed to submit help request to Supabase: {e2}"
+            elif admin_client and admin_client != client:
                 try:
                     res = admin_client.table("help_requests").insert(req_data).execute()
                     req = res.data[0] if (res.data and len(res.data) > 0) else req_data
                 except Exception as e2:
-                    # If category_detail column is missing, retry without it
-                    if "category_detail" in str(e2):
-                        req_data.pop("category_detail", None)
-                        try:
-                            res = admin_client.table("help_requests").insert(req_data).execute()
-                            req = res.data[0] if (res.data and len(res.data) > 0) else req_data
-                        except Exception as e3:
-                            return None, f"Failed to submit help request to Supabase: {e3}"
-                    else:
-                        return None, f"Failed to submit help request to Supabase: {e2}"
-            else:
-                if "category_detail" in str(e):
-                    req_data.pop("category_detail", None)
+                    safe_data = _clean_missing_columns(req_data)
                     try:
-                        res = client.table("help_requests").insert(req_data).execute()
-                        req = res.data[0] if (res.data and len(res.data) > 0) else req_data
+                        res = admin_client.table("help_requests").insert(safe_data).execute()
+                        req = res.data[0] if (res.data and len(res.data) > 0) else safe_data
                     except Exception as e3:
                         return None, f"Failed to submit help request to Supabase: {e3}"
-                else:
-                    return None, f"Failed to submit help request to Supabase: {e}"
+            else:
+                safe_data = _clean_missing_columns(req_data)
+                try:
+                    res = client.table("help_requests").insert(safe_data).execute()
+                    req = res.data[0] if (res.data and len(res.data) > 0) else safe_data
+                except Exception as e3:
+                    return None, f"Failed to submit help request to Supabase: {e3}"
     else:
         # SQLite mode
         local_db = get_local_db()
@@ -402,6 +429,9 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
                 "status": new_status,
                 "guide_response": response.strip(),
                 "last_handled_at": now_iso,
+                "last_mentor_response_at": now_iso,
+                "last_interaction_actor_id": guide_id,
+                "last_interaction_actor_role": "guide",
                 "updated_at": now_iso
             }
             if new_status == "RESOLVED":
@@ -414,13 +444,12 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
                     admin_client.table("help_requests").update(update_payload).eq("id", request_id).execute()
         except Exception as e:
             admin_client = _get_admin_client()
-            if admin_client and admin_client != client:
-                try:
-                    admin_client.table("help_requests").update(update_payload).eq("id", request_id).execute()
-                except Exception as e2:
-                    return False, f"Failed to update help request in Supabase: {e2}"
-            else:
-                return False, f"Failed to update help request in Supabase: {e}"
+            active_c = admin_client or client
+            safe_payload = _clean_missing_columns(update_payload)
+            try:
+                active_c.table("help_requests").update(safe_payload).eq("id", request_id).execute()
+            except Exception as e2:
+                return False, f"Failed to update help request in Supabase: {e2}"
     else:
         # SQLite mode
         local_db = get_local_db()
@@ -571,6 +600,9 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
                 "sme_response": response.strip(),
                 "responded_by": sme_id,
                 "last_handled_at": now_iso,
+                "last_mentor_response_at": now_iso,
+                "last_interaction_actor_id": sme_id,
+                "last_interaction_actor_role": "sme",
                 "updated_at": now_iso
             }
             if new_status == "RESOLVED":
@@ -583,13 +615,12 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
                     admin_client.table("help_requests").update(update_payload).eq("id", request_id).execute()
         except Exception as e:
             admin_client = _get_admin_client()
-            if admin_client and admin_client != client:
-                try:
-                    admin_client.table("help_requests").update(update_payload).eq("id", request_id).execute()
-                except Exception as e2:
-                    return False, f"Failed to update help request in Supabase: {e2}"
-            else:
-                return False, f"Failed to update help request in Supabase: {e}"
+            active_c = admin_client or client
+            safe_payload = _clean_missing_columns(update_payload)
+            try:
+                active_c.table("help_requests").update(safe_payload).eq("id", request_id).execute()
+            except Exception as e2:
+                return False, f"Failed to update help request in Supabase: {e2}"
     else:
         # SQLite mode
         local_db = get_local_db()
@@ -1074,17 +1105,23 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
             subject = req.get("subject", "Consultation")
             mentor_recipient_id = req.get("requester_id") or req.get("assigned_guide_id") or req.get("assigned_sme_id")
 
-            # Try updating with aspirant_response column, fallback to admin_response if column does not exist
+            # Set status to WAITING_ON_GUIDE_SME and track aspirant response without touching last_mentor_response_at
             update_payload = {
-                "status": "IN_PROGRESS",
+                "status": STATUS_WAITING_ON_GUIDE_SME,
                 "aspirant_response": response.strip(),
                 "last_handled_at": now_iso,
+                "last_aspirant_response_at": now_iso,
+                "last_interaction_actor_id": aspirant_id,
+                "last_interaction_actor_role": "aspirant",
                 "updated_at": now_iso
             }
             try:
                 client.table("help_requests").update(update_payload).eq("id", request_id).execute()
             except Exception:
                 update_payload.pop("aspirant_response", None)
+                update_payload.pop("last_aspirant_response_at", None)
+                update_payload.pop("last_interaction_actor_id", None)
+                update_payload.pop("last_interaction_actor_role", None)
                 update_payload["admin_response"] = f"Aspirant Reply: {response.strip()}"
                 client.table("help_requests").update(update_payload).eq("id", request_id).execute()
 
@@ -1093,7 +1130,7 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
             if admin_client and admin_client != client:
                 try:
                     fallback_payload = {
-                        "status": "IN_PROGRESS",
+                        "status": STATUS_WAITING_ON_GUIDE_SME,
                         "admin_response": f"Aspirant Reply: {response.strip()}",
                         "last_handled_at": now_iso,
                         "updated_at": now_iso

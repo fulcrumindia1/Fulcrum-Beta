@@ -15,9 +15,27 @@ from services.local_db import get_local_db
 from services.cache import get_memo, set_memo, invalidate_memo
 
 # Governance Masking Names
-ADMIN_MASKED_NAME = "Fulcrum Administration"
-DISTRICT_ADMIN_MASKED_NAME = "District Administration"
-OPS_ADMIN_MASKED_NAME = "Operational Administration"
+ADMIN_MASKED_NAME = "Fulcrum Support"
+DISTRICT_ADMIN_MASKED_NAME = "Fulcrum Support"
+OPS_ADMIN_MASKED_NAME = "Fulcrum Support"
+
+PRIMARY_ADMIN_EMAIL = "fulcrumindia1@gmail.com"
+PRIMARY_ADMIN_FALLBACK_UUID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
+
+
+def get_primary_admin_id() -> str:
+    """Dynamically resolves the single primary platform administrator UUID."""
+    try:
+        from services.profiles import list_profiles_by_role
+        admins = list_profiles_by_role("admin")
+        for p in admins:
+            if p.get("email") == PRIMARY_ADMIN_EMAIL:
+                return str(p["id"])
+        if admins:
+            return str(admins[0]["id"])
+    except Exception:
+        pass
+    return PRIMARY_ADMIN_FALLBACK_UUID
 
 
 def get_masked_actor_name(user_id: str, real_name: str, role: str) -> str:
@@ -37,12 +55,12 @@ def get_masked_actor_name(user_id: str, real_name: str, role: str) -> str:
 # ── CONFIDENTIAL GUIDE COMPLAINTS ──
 def submit_guide_complaint(
     aspirant_id: str,
-    guide_id: str,
+    guide_id: Optional[str],
     reason: str,
     details: str
 ) -> Tuple[bool, Optional[str]]:
     """
-    Submits a confidential complaint or reassignment request against an assigned Guide.
+    Submits a confidential complaint or reassignment request against an assigned Guide or to Fulcrum Support.
     Strictly isolated: Visible only to Administrators.
     """
     valid_reasons = ("inactivity", "poor_communication", "conflict_of_interest", "professional_conduct", "other")
@@ -52,6 +70,10 @@ def submit_guide_complaint(
     if not details or len(details.strip()) < 10:
         return False, "Please provide detailed context for this request (minimum 10 characters)."
 
+    admin_uuid = get_primary_admin_id()
+    # If no guide is assigned or guide_id is empty, associate with primary admin as fallback recipient
+    effective_guide_id = guide_id if (guide_id and guide_id != aspirant_id) else admin_uuid
+
     import uuid
     complaint_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -59,7 +81,7 @@ def submit_guide_complaint(
     record = {
         "id": complaint_id,
         "aspirant_id": aspirant_id,
-        "guide_id": guide_id,
+        "guide_id": effective_guide_id,
         "reason": reason,
         "details": details.strip(),
         "status": "PENDING",
@@ -72,11 +94,14 @@ def submit_guide_complaint(
     backend = get_data_backend()
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if admin:
-            try:
-                admin.table("guide_complaints").insert(record).execute()
-            except Exception:
-                pass
+        if not admin:
+            return False, "Database error: Administrative database client unavailable."
+        try:
+            res = admin.table("guide_complaints").insert(record).execute()
+            if not res.data:
+                return False, "Database error: Could not record confidential complaint."
+        except Exception as e:
+            return False, f"Database error submitting complaint: {e}"
 
     db = get_local_db()
     if hasattr(db, "insert_guide_complaint"):
@@ -86,16 +111,16 @@ def submit_guide_complaint(
     try:
         from services.notifications import create_notification
         create_notification(
-            user_id="72655c43-9f13-4309-a8a0-194570a6c2aa",  # Platform Admin
-            title="Confidential Mentor Complaint Filed",
-            message=f"An entrepreneur has submitted a confidential {reason.replace('_', ' ')} report regarding their assigned Guide.",
+            user_id=admin_uuid,
+            title="Confidential Support Report Filed",
+            message=f"An entrepreneur has submitted a confidential {reason.replace('_', ' ')} report to Fulcrum Support.",
             notification_type="CONFIDENTIAL_COMPLAINT",
             actor_id=aspirant_id
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Governance] Notification error: {e}")
 
-    return True, None
+    return True, complaint_id
 
 
 def list_guide_complaints(status: Optional[str] = None) -> List[Dict]:
@@ -138,16 +163,19 @@ def resolve_guide_complaint(
 
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if admin:
-            try:
-                admin.table("guide_complaints").update({
-                    "status": status,
-                    "resolution_notes": resolution_notes,
-                    "resolved_by": admin_id,
-                    "resolved_at": now_iso
-                }).eq("id", complaint_id).execute()
-            except Exception as e:
-                pass
+        if not admin:
+            return False, "Database error: Administrative database client unavailable."
+        try:
+            res = admin.table("guide_complaints").update({
+                "status": status,
+                "resolution_notes": resolution_notes,
+                "resolved_by": admin_id,
+                "resolved_at": now_iso
+            }).eq("id", complaint_id).execute()
+            if not res.data:
+                return False, "Database error: Complaint record not found or could not be updated."
+        except Exception as e:
+            return False, f"Database error updating complaint: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_guide_complaint"):

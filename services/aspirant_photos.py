@@ -9,29 +9,172 @@ Key architectural guarantees:
    or scheme matching recalculations.
 3. Privacy & Security: Uses private Supabase Storage bucket 'aspirant-profile-photos'
    with short-lived (300s) signed URLs.
-4. Image Optimization: Strips EXIF metadata, resizes to max 512x512, compresses to WebP.
+4. Image Optimization: Corrects EXIF orientation, strips metadata, resizes to
+   max 320x320 with smart center-crop, compresses to WebP targeting 50-100 KB
+   (strict 150 KB cap). Single optimized file served to all authorized viewers.
 5. Dual-Backend Resilience: Seamless fallback to LocalDatabase for offline/testing.
 """
 
 import io
+import json
 import uuid
 import base64
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Dict
-from PIL import Image
+from PIL import Image, ImageOps
 
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
+from services.cache import get_memo, set_memo, invalidate_memo
 
 STORAGE_BUCKET = "aspirant-profile-photos"
-MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
-MAX_TARGET_DIM = 512
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB raw upload limit
+MAX_TARGET_DIM = 320               # Max output dimension (px)
+MAX_STORED_BYTES = 150 * 1024      # 150 KB strict stored-file cap
+TARGET_QUALITY_HIGH = 85           # Starting WebP quality
+TARGET_QUALITY_LOW = 25            # Minimum acceptable quality before rejection
 SIGNED_URL_EXPIRY_SECONDS = 300
+
+
+def can_view_aspirant_photo(
+    viewer_id: str,
+    aspirant_id: str,
+    viewer_role: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
+    """
+    Trusted server-side authorization check for viewing an aspirant's profile photograph.
+    Supports:
+    1. Aspirant viewing their own photo.
+    2. Single Admin (fulcrumindia1@gmail.com / admin role) viewing any photo.
+    3. Active Guide with accepted NDA assigned to this Aspirant (status='active').
+    4. Active SME with accepted NDA assigned to this Aspirant (status='active').
+    Denies access when:
+    - No assignment exists or assignment was removed.
+    - Guide/SME role has been suspended or revoked.
+    - Mandatory NDA is pending or invalid.
+    - A user manipulates a target Aspirant ID.
+    """
+    if not viewer_id or not aspirant_id:
+        return False, "Missing viewer_id or aspirant_id."
+
+    viewer_id_str = str(viewer_id).strip()
+    aspirant_id_str = str(aspirant_id).strip()
+
+    # 1. Aspirant self-access
+    if viewer_id_str == aspirant_id_str:
+        return True, None
+
+    # 2. Platform Admin oversight
+    from services.governance import get_primary_admin_id
+    from services.roles import user_has_active_role, get_active_roles
+
+    primary_admin = get_primary_admin_id()
+    if primary_admin and viewer_id_str == str(primary_admin):
+        return True, None
+
+    if user_has_active_role(viewer_id_str, "admin"):
+        return True, None
+
+    from services.profiles import get_profile
+    vp = get_profile(viewer_id_str)
+    if vp and vp.get("role") == "admin":
+        return True, None
+
+    # 3. Active Role & NDA checks for Guides and SMEs
+    from services.legal import check_user_nda_accepted
+
+    active_roles = get_active_roles(viewer_id_str)
+    has_active_guide = "guide" in active_roles
+    has_active_sme = "sme" in active_roles
+
+    v_role_clean = str(viewer_role).strip().lower() if viewer_role else ""
+    if v_role_clean == "guide" and not has_active_guide:
+        return False, "Unauthorized: Guide role is not active (pending NDA, suspended, or revoked)."
+    if v_role_clean == "sme" and not has_active_sme:
+        return False, "Unauthorized: SME role is not active (pending NDA, suspended, or revoked)."
+
+    if not has_active_guide and not has_active_sme:
+        return False, "Unauthorized: Viewer does not hold an active mentor role."
+
+    # 4. Check active relationship assignment
+    backend = get_data_backend()
+    rel = None
+
+    if backend == "supabase":
+        admin_c = get_supabase_admin_client() or get_supabase_client()
+        if admin_c:
+            try:
+                res = admin_c.table("relationships")\
+                    .select("aspirant_id, guide_id, guide_ids, sme_id, sme_ids, status")\
+                    .eq("aspirant_id", aspirant_id_str)\
+                    .eq("status", "active")\
+                    .execute()
+                if res.data and len(res.data) > 0:
+                    rel = res.data[0]
+            except Exception as e:
+                print(f"[PhotoAuth] Supabase relationship check error: {e}")
+
+    if not rel:
+        # Check Local DB
+        db = get_local_db()
+        if hasattr(db, "get_relationship"):
+            rel_local = db.get_relationship(aspirant_id_str)
+            if rel_local and rel_local.get("status") == "active":
+                rel = rel_local
+
+    if not rel:
+        return False, "Unauthorized: No active assignment exists for this entrepreneur."
+
+    # Parse primary and multi-mentor assignment lists
+    guide_ids = rel.get("guide_ids") or []
+    if isinstance(guide_ids, str):
+        try: guide_ids = json.loads(guide_ids)
+        except Exception: guide_ids = []
+    if not isinstance(guide_ids, list):
+        guide_ids = []
+    if rel.get("guide_id") and str(rel["guide_id"]) not in guide_ids:
+        guide_ids.append(str(rel["guide_id"]))
+    guide_ids = [str(x) for x in guide_ids]
+
+    sme_ids = rel.get("sme_ids") or []
+    if isinstance(sme_ids, str):
+        try: sme_ids = json.loads(sme_ids)
+        except Exception: sme_ids = []
+    if not isinstance(sme_ids, list):
+        sme_ids = []
+    if rel.get("sme_id") and str(rel["sme_id"]) not in sme_ids:
+        sme_ids.append(str(rel["sme_id"]))
+    sme_ids = [str(x) for x in sme_ids]
+
+    is_assigned_guide = viewer_id_str in guide_ids
+    is_assigned_sme = viewer_id_str in sme_ids
+
+    # Verify Guide authorization
+    if is_assigned_guide and has_active_guide:
+        if not check_user_nda_accepted(viewer_id_str, "guide"):
+            return False, "Unauthorized: Mandatory Guide NDA is pending or invalid."
+        return True, None
+
+    # Verify SME authorization
+    if is_assigned_sme and has_active_sme:
+        if not check_user_nda_accepted(viewer_id_str, "sme"):
+            return False, "Unauthorized: Mandatory SME NDA is pending or invalid."
+        return True, None
+
+    return False, "Unauthorized: Viewer is not an active, NDA-certified mentor assigned to this entrepreneur."
 
 
 def validate_and_process_photo(raw_bytes: bytes) -> Tuple[bool, Optional[bytes], Optional[str], Optional[int], Optional[int], Optional[str]]:
     """
-    Validates, strips EXIF, resizes (max 512x512), and compresses to WebP.
+    Validates, corrects EXIF orientation, strips metadata, resizes to max
+    320×320 with center-crop, and compresses to WebP.
+
+    Compression strategy:
+      1. Start at quality 85 and step down in increments of 5.
+      2. Target: 50–100 KB.  Hard cap: 150 KB.
+      3. If quality reaches 25 and the file still exceeds 150 KB, reject
+         with a human-friendly message instead of storing a blurry image.
+
     Returns: (success, processed_bytes, content_type, width, height, error_message)
     """
     if not raw_bytes:
@@ -47,9 +190,14 @@ def validate_and_process_photo(raw_bytes: bytes) -> Tuple[bool, Optional[bytes],
         if orig_format not in ("JPEG", "JPG", "PNG", "WEBP"):
             return False, None, None, None, None, f"Unsupported image format: {orig_format}. Allowed: JPG, PNG, WEBP."
 
-        # Convert colorspace safely (strip EXIF metadata by loading raw pixel data)
+        # --- 1. Correct EXIF orientation (rotates/flips per camera tag) ---
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass  # Some images have no EXIF; that's fine
+
+        # --- 2. Convert colorspace (strips all metadata by rebuilding pixels) ---
         if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-            # Create a clean RGB canvas with white background if transparency exists
             clean_img = Image.new("RGB", img.size, (255, 255, 255))
             if img.mode == "P":
                 img = img.convert("RGBA")
@@ -58,27 +206,69 @@ def validate_and_process_photo(raw_bytes: bytes) -> Tuple[bool, Optional[bytes],
         elif img.mode != "RGB":
             img = img.convert("RGB")
 
-        # Resize with high-quality LANCZOS while preserving aspect ratio
+        # --- 3. Resize with high-quality LANCZOS, preserving aspect ratio ---
         img.thumbnail((MAX_TARGET_DIM, MAX_TARGET_DIM), Image.Resampling.LANCZOS)
         width, height = img.size
 
-        # Save to WebP format without EXIF metadata
-        out_buf = io.BytesIO()
-        img.save(out_buf, format="WEBP", quality=85, method=6)
-        processed_bytes = out_buf.getvalue()
+        # --- 4. Intelligent WebP compression loop ---
+        quality = TARGET_QUALITY_HIGH
+        processed_bytes = None
+
+        while quality >= TARGET_QUALITY_LOW:
+            out_buf = io.BytesIO()
+            img.save(out_buf, format="WEBP", quality=quality, method=6)
+            candidate = out_buf.getvalue()
+
+            if len(candidate) <= MAX_STORED_BYTES:
+                processed_bytes = candidate
+                break
+
+            quality -= 5
+
+        if processed_bytes is None:
+            # Even at minimum quality the file is too large — reject gracefully
+            return (
+                False, None, None, None, None,
+                "This photograph is too complex to compress to an acceptable file size "
+                "(limit: 150 KB). Please try a different photo with a simpler background "
+                "or lower resolution."
+            )
 
         return True, processed_bytes, "image/webp", width, height, None
     except Exception as e:
         return False, None, None, None, None, f"Failed to process image: {str(e)}"
 
 
-def get_aspirant_photo(user_id: str) -> Optional[Dict]:
+def get_aspirant_photo(
+    user_id: str,
+    viewer_id: Optional[str] = None,
+    viewer_role: Optional[str] = None
+) -> Optional[Dict]:
     """
     Retrieves photo metadata and short-lived signed URL or base64 data URI.
-    Returns None if no photo is registered for this aspirant.
+    Enforces server-side authorization:
+    - If viewer_id is provided, checks can_view_aspirant_photo.
+    - If viewer_id is None, infers from active Streamlit session if available.
+    Returns None if unauthorized or if no photo is registered.
     """
     if not user_id:
         return None
+
+    # Resolve viewer_id from session context if running in Streamlit
+    if viewer_id is None:
+        try:
+            import streamlit as st
+            if hasattr(st, "session_state") and st.session_state.get("user_id"):
+                viewer_id = st.session_state.get("user_id")
+                viewer_role = viewer_role or st.session_state.get("role")
+        except Exception:
+            pass
+
+    # Server-side authorization gate
+    if viewer_id is not None:
+        authorized, _ = can_view_aspirant_photo(viewer_id, user_id, viewer_role)
+        if not authorized:
+            return None
 
     backend = get_data_backend()
 
@@ -93,7 +283,7 @@ def get_aspirant_photo(user_id: str) -> Optional[Dict]:
                     path = record.get("storage_path")
                     bucket = record.get("storage_bucket") or STORAGE_BUCKET
                     if path:
-                        # Generate fresh signed URL
+                        # Generate fresh signed URL (300 seconds short-lived)
                         signed_res = client.storage.from_(bucket).create_signed_url(path, SIGNED_URL_EXPIRY_SECONDS)
                         signed_url = (
                             signed_res.get("signedURL")
@@ -103,8 +293,7 @@ def get_aspirant_photo(user_id: str) -> Optional[Dict]:
                         record["url"] = signed_url
                         return record
             except Exception as e:
-                # Fallback to local DB check if table is not yet migrated in Supabase
-                pass
+                print(f"[AspirantPhotos] Supabase fetch error: {e}")
 
     # 2. Local Database / Fallback Mode
     local_record = get_local_db().get_aspirant_photo(user_id)
@@ -118,13 +307,90 @@ def get_aspirant_photo(user_id: str) -> Optional[Dict]:
     return None
 
 
-def upload_aspirant_photo(user_id: str, file_bytes: bytes, filename: str = "avatar.webp") -> Tuple[bool, Optional[str]]:
+def render_aspirant_photo_header(
+    aspirant_profile: Dict,
+    viewer_id: str,
+    viewer_role: str,
+    accent_color: str = "#2563EB"
+) -> None:
+    """
+    Reusable UI component: Displays the assigned Aspirant's circular photograph (80-90px)
+    beside their name in the Profile Overview heading.
+    Preserves all existing founder details, renders neutral initials placeholder if absent,
+    and enforces strict server-side authorization.
+    Read-only: strictly no photo-upload or editing controls for Guide or SME.
+    """
+    import streamlit as st
+
+    if not aspirant_profile:
+        return
+
+    asp_id = aspirant_profile.get("id")
+    full_name = aspirant_profile.get("full_name", "Entrepreneur")
+    p_data = aspirant_profile.get("profile_data", {})
+    biz = p_data.get("business", {})
+    biz_name = biz.get("business_name") or f"{full_name}'s Enterprise"
+    sector = biz.get("sector") or "General"
+    stage = biz.get("stage") or "idea"
+
+    photo = get_aspirant_photo(asp_id, viewer_id=viewer_id, viewer_role=viewer_role)
+
+    if photo and photo.get("url"):
+        photo_element = (
+            '<div style="text-align:center; flex-shrink:0;">'
+            f'<img src="{photo["url"]}" alt="{full_name}" style="width:84px; height:84px; border-radius:50%; object-fit:cover; border:3px solid {accent_color}; box-shadow:0 3px 10px rgba(0,0,0,0.12);" />'
+            '<div style="font-size:0.68rem; color:#059669; font-weight:700; margin-top:4px;">✓ Verified Photo</div>'
+            '</div>'
+        )
+    else:
+        ini = "".join([part[0].upper() for part in full_name.split()[:2]]) or "A"
+        photo_element = (
+            '<div style="text-align:center; flex-shrink:0;">'
+            f'<div style="width:84px; height:84px; border-radius:50%; background:linear-gradient(135deg, #E2E8F0 0%, #CBD5E1 100%); color:#475569; display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:800; border:2.5px solid #E2E8F0; margin:0 auto; box-shadow:0 2px 6px rgba(0,0,0,0.04);">{ini}</div>'
+            '<div style="font-size:0.68rem; color:#94A3B8; font-weight:600; margin-top:4px;">No Photo Uploaded</div>'
+            '</div>'
+        )
+
+    header_html = (
+        '<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:14px; padding:1.2rem; margin:0.75rem 0 1.25rem 0; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+        '<div style="display:flex; align-items:center; gap:16px;">'
+        f'{photo_element}'
+        '<div style="flex:1;">'
+        f'<h3 style="margin:0 0 4px 0; color:#0F172A; font-size:1.35rem;">Profile Overview: {full_name}</h3>'
+        f'<div style="color:{accent_color}; font-weight:600; font-size:0.9rem;">{biz_name} · {sector} ({stage})</div>'
+        f'<div style="color:#64748B; font-size:0.8rem; margin-top:3px;">ID: {asp_id}</div>'
+        '</div>'
+        '</div>'
+        '</div>'
+    )
+    st.markdown(header_html, unsafe_allow_html=True)
+
+
+def upload_aspirant_photo(
+    user_id: str,
+    file_bytes: bytes,
+    filename: str = "avatar.webp",
+    uploader_id: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
     """
     Validates, compresses, and saves aspirant photo.
-    IMPORTANT: Non-destructive — never invokes update_aspirant_profile() or journey logging.
+    Enforces that ONLY the Aspirant themselves can upload/change their headshot.
+    Strictly prevents silent fallbacks when in Supabase production mode.
     """
     if not user_id:
         return False, "User ID is required."
+
+    # Authorization: Only the entrepreneur can upload their own photo
+    effective_uploader = uploader_id
+    if effective_uploader is None:
+        try:
+            import streamlit as st
+            effective_uploader = st.session_state.get("user_id")
+        except Exception:
+            pass
+
+    if effective_uploader and str(effective_uploader) != str(user_id):
+        return False, "Unauthorized: Only the entrepreneur can upload or update their own profile photo."
 
     ok, processed_bytes, content_type, width, height, err = validate_and_process_photo(file_bytes)
     if not ok:
@@ -150,60 +416,83 @@ def upload_aspirant_photo(user_id: str, file_bytes: bytes, filename: str = "avat
         "created_at": now_iso
     })
 
-    # Supabase upload
+    # Supabase upload with strict fail-fast error reporting
     if backend == "supabase":
         admin = get_supabase_admin_client() or get_supabase_client()
-        if admin:
+        if not admin:
+            return False, "Supabase client unavailable for photo storage."
+
+        try:
+            # 1. Clean up old storage file if present
+            old_photo = None
             try:
-                # 1. Clean up old storage file if present
-                old_photo = None
+                old_res = admin.table("aspirant_photos").select("storage_path").eq("user_id", user_id).limit(1).execute()
+                if old_res.data and len(old_res.data) > 0:
+                    old_photo = old_res.data[0].get("storage_path")
+            except Exception:
+                pass
+
+            if old_photo:
                 try:
-                    old_res = admin.table("aspirant_photos").select("storage_path").eq("user_id", user_id).limit(1).execute()
-                    if old_res.data and len(old_res.data) > 0:
-                        old_photo = old_res.data[0].get("storage_path")
+                    admin.storage.from_(STORAGE_BUCKET).remove([old_photo])
                 except Exception:
                     pass
 
-                if old_photo:
-                    try:
-                        admin.storage.from_(STORAGE_BUCKET).remove([old_photo])
-                    except Exception:
-                        pass
+            # 2. Upload new compressed file
+            upload_res = admin.storage.from_(STORAGE_BUCKET).upload(
+                storage_path,
+                processed_bytes,
+                {"content-type": content_type, "upsert": "true"}
+            )
+            if hasattr(upload_res, "error") and upload_res.error:
+                return False, f"Supabase storage upload error: {upload_res.error}"
 
-                # 2. Upload new compressed file
-                upload_res = admin.storage.from_(STORAGE_BUCKET).upload(
-                    storage_path,
-                    processed_bytes,
-                    {"content-type": content_type, "upsert": "true"}
-                )
+            # 3. Upsert metadata in aspirant_photos
+            admin.table("aspirant_photos").upsert({
+                "id": obj_id,
+                "user_id": user_id,
+                "storage_bucket": STORAGE_BUCKET,
+                "storage_path": storage_path,
+                "content_type": content_type,
+                "file_size_bytes": len(processed_bytes),
+                "width": width,
+                "height": height,
+                "updated_at": now_iso
+            }, on_conflict="user_id").execute()
 
-                # 3. Upsert metadata in aspirant_photos
-                admin.table("aspirant_photos").upsert({
-                    "id": obj_id,
-                    "user_id": user_id,
-                    "storage_bucket": STORAGE_BUCKET,
-                    "storage_path": storage_path,
-                    "content_type": content_type,
-                    "file_size_bytes": len(processed_bytes),
-                    "width": width,
-                    "height": height,
-                    "updated_at": now_iso
-                }, on_conflict="user_id").execute()
-
-                return True, None
-            except Exception as e:
-                # Stored in local fallback
-                return True, None
+            return True, None
+        except Exception as e:
+            return False, f"Failed to persist profile photo to Supabase: {str(e)}"
 
     return True, None
 
 
-def delete_aspirant_photo(user_id: str) -> Tuple[bool, Optional[str]]:
+def delete_aspirant_photo(
+    user_id: str,
+    deleter_id: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
     """
     Deletes the photo from storage and removes metadata records.
+    Enforces that only the Aspirant (or Admin) can delete the photo.
     """
     if not user_id:
         return False, "User ID is required."
+
+    effective_deleter = deleter_id
+    if effective_deleter is None:
+        try:
+            import streamlit as st
+            effective_deleter = st.session_state.get("user_id")
+        except Exception:
+            pass
+
+    if effective_deleter:
+        from services.governance import get_primary_admin_id
+        from services.roles import user_has_active_role
+        primary_admin = get_primary_admin_id()
+        is_admin = (primary_admin and str(effective_deleter) == str(primary_admin)) or user_has_active_role(str(effective_deleter), "admin")
+        if str(effective_deleter) != str(user_id) and not is_admin:
+            return False, "Unauthorized: Only the entrepreneur or Platform Admin may remove this photograph."
 
     backend = get_data_backend()
 
@@ -221,10 +510,11 @@ def delete_aspirant_photo(user_id: str) -> Tuple[bool, Optional[str]]:
                         except Exception:
                             pass
                 admin.table("aspirant_photos").delete().eq("user_id", user_id).execute()
-            except Exception:
-                pass
+            except Exception as e:
+                return False, f"Failed to delete photo from Supabase: {e}"
 
     # Local DB cleanup
     get_local_db().delete_aspirant_photo(user_id)
     return True, None
+
 

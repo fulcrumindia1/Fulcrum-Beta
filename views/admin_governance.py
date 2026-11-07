@@ -18,6 +18,8 @@ from services.roles import (
     grant_role,
     revoke_role,
     suspend_role,
+    reinstate_role,
+    cancel_grant,
     activate_role
 )
 from services.legal import (
@@ -62,6 +64,7 @@ def render_admin_role_grants_tab(admin_id: str):
             uid = u["id"]
             active_badges = " ".join([f"<span style='background:#10B981; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>{r.upper()}</span>" for r in u["active_roles"]])
             pending_badges = " ".join([f"<span style='background:#F59E0B; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>PENDING NDA: {r.upper()}</span>" for r in u["pending_nda_roles"]])
+            suspended_badges = " ".join([f"<span style='background:#6B7280; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>SUSPENDED: {r.upper()}</span>" for r in u.get("suspended_roles", [])])
             revoked_badges = " ".join([f"<span style='background:#EF4444; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>REVOKED: {r.upper()}</span>" for r in u["revoked_roles"]])
 
             st.markdown(textwrap.dedent(f"""
@@ -72,7 +75,7 @@ def render_admin_role_grants_tab(admin_id: str):
                         <div style="font-size:0.8rem; color:#64748B;">{_safe(u['email'])} · 📍 {_safe(u['district'])}</div>
                     </div>
                     <div>
-                        {active_badges} {pending_badges} {revoked_badges}
+                        {active_badges} {pending_badges} {suspended_badges} {revoked_badges}
                     </div>
                 </div>
             </div>
@@ -80,14 +83,23 @@ def render_admin_role_grants_tab(admin_id: str):
 
     with col_g2:
         st.markdown("#### Grant Additional Role")
+        user_options = {u["id"]: f"{u['full_name']} ({u['email']})" for u in users}
+        if not user_options:
+            st.info("No users found.")
+            return
+
         with st.form("form_grant_additional_role"):
-            user_options = {u["id"]: f"{u['full_name']} ({u['email']})" for u in users}
             sel_user_id = st.selectbox("Select User", list(user_options.keys()), format_func=lambda x: user_options[x], key="sel_user_grant")
-            new_role = st.selectbox("Role to Grant", ["guide", "sme", "admin", "district_admin", "operational_admin"], format_func=lambda x: x.replace('_', ' ').title(), key="sel_new_role")
+            new_role = st.selectbox(
+                "Role to Grant",
+                ["guide", "sme"],
+                format_func=lambda x: f"{x.upper()} (Domain Mentor / Caseload Guide)" if x == "guide" else f"{x.upper()} (Subject Matter Expert)",
+                key="sel_new_role"
+            )
             
             st.info("ℹ️ Promoting to Guide or SME sets status to **PENDING NDA**. The user will be required to sign the binding NDA before accessing protected caseloads.")
             
-            submit_grant = st.form_submit_button("Grant Role Grant", type="primary")
+            submit_grant = st.form_submit_button("Grant Role", type="primary")
             if submit_grant:
                 ok, err = grant_role(sel_user_id, new_role, granted_by=admin_id)
                 if ok:
@@ -96,30 +108,114 @@ def render_admin_role_grants_tab(admin_id: str):
                 else:
                     st.error(err or "Failed to grant role.")
 
-        st.markdown("<div style='height:1rem;'></div>", unsafe_allow_html=True)
-        st.markdown("#### Revoke or Suspend Role")
-        with st.form("form_revoke_role"):
-            sel_rev_user = st.selectbox("Select User", list(user_options.keys()), format_func=lambda x: user_options[x], key="sel_rev_user")
-            sel_target_user = next((u for u in users if u["id"] == sel_rev_user), None)
-            revokable_roles = [r for r in (sel_target_user["active_roles"] if sel_target_user else []) if r != "aspirant"]
-            
-            if not revokable_roles:
-                st.caption("This user holds only the base Aspirant role (cannot be revoked).")
-                submit_rev = st.form_submit_button("Revoke Role", disabled=True)
-            else:
-                sel_rev_role = st.selectbox("Select Role to Revoke", revokable_roles, key="sel_rev_role")
-                rev_reason = st.text_input("Reason for Revocation *", placeholder="e.g. Inactivity, ethics breach, caseload rotation")
-                submit_rev = st.form_submit_button("Revoke Role Immediately", type="secondary")
-                if submit_rev:
-                    if not rev_reason.strip():
-                        st.warning("Please enter a revocation reason.")
-                    else:
-                        ok, err = revoke_role(sel_rev_user, sel_rev_role, reason=rev_reason.strip(), revoked_by=admin_id)
+        st.markdown("<div style='height:1.25rem;'></div>", unsafe_allow_html=True)
+        st.markdown("#### Manage Existing Role Grants")
+        sel_manage_user = st.selectbox("Select User to Manage", list(user_options.keys()), format_func=lambda x: user_options[x], key="sel_manage_user")
+        sel_target_user = next((u for u in users if u["id"] == sel_manage_user), None)
+
+        grants = []
+        if sel_target_user:
+            for r in sel_target_user.get("active_roles", []):
+                if r != "aspirant":
+                    grants.append((r, "ACTIVE"))
+            for r in sel_target_user.get("pending_nda_roles", []):
+                if r != "aspirant":
+                    grants.append((r, "PENDING NDA"))
+            for r in sel_target_user.get("suspended_roles", []):
+                if r != "aspirant":
+                    grants.append((r, "SUSPENDED"))
+            for r in sel_target_user.get("revoked_roles", []):
+                if r != "aspirant":
+                    grants.append((r, "REVOKED"))
+
+        if not grants:
+            st.caption("ℹ️ This user holds only the base Aspirant role (cannot be revoked or suspended).")
+        else:
+            sel_grant_idx = st.selectbox(
+                "Select Role Grant to Manage",
+                range(len(grants)),
+                format_func=lambda i: f"{grants[i][0].upper()} — Status: {grants[i][1]}",
+                key=f"sel_grant_{sel_manage_user}"
+            )
+            sel_role, sel_status = grants[sel_grant_idx]
+            status_colors = {"ACTIVE": "#10B981", "PENDING NDA": "#F59E0B", "SUSPENDED": "#6B7280", "REVOKED": "#EF4444"}
+            badge_c = status_colors.get(sel_status, "#64748B")
+            st.markdown(
+                f"<div style='margin-bottom:0.75rem; font-size:0.9rem;'>Current Status: "
+                f"<span style='background:{badge_c}; color:#fff; padding:2px 8px; border-radius:8px; font-weight:700;'>{sel_status}</span></div>",
+                unsafe_allow_html=True
+            )
+
+            if sel_status == "ACTIVE":
+                reason = st.text_input("Reason *", placeholder="e.g. Inactivity, ethics breach, caseload rotation", key="rev_reason_act")
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.button("⏸️ Suspend Role", key="btn_susp_role", type="secondary", use_container_width=True):
+                        if not reason.strip():
+                            st.warning("Please enter a reason.")
+                        else:
+                            ok, err = suspend_role(sel_manage_user, sel_role, reason=reason.strip())
+                            if ok:
+                                st.success(f"Role '{sel_role.upper()}' suspended.")
+                                st.rerun()
+                            else:
+                                st.error(err or "Failed to suspend role.")
+                with col_b2:
+                    if st.button("🚫 Revoke Role", key="btn_rev_role", type="primary", use_container_width=True):
+                        if not reason.strip():
+                            st.warning("Please enter a reason.")
+                        else:
+                            ok, err = revoke_role(sel_manage_user, sel_role, reason=reason.strip(), revoked_by=admin_id)
+                            if ok:
+                                st.success(f"Role '{sel_role.upper()}' revoked.")
+                                st.rerun()
+                            else:
+                                st.error(err or "Failed to revoke role.")
+
+            elif sel_status == "PENDING NDA":
+                st.info(f"Role '{sel_role.upper()}' is awaiting NDA signature by the user.")
+                reason = st.text_input("Reason (optional)", placeholder="e.g. Granted in error", key="cancel_reason_pnd")
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.button("❌ Cancel Grant", key="btn_cancel_grant", type="secondary", use_container_width=True):
+                        ok, err = cancel_grant(sel_manage_user, sel_role)
                         if ok:
-                            st.success(f"Role '{sel_rev_role.upper()}' revoked.")
+                            st.success(f"Pending grant for '{sel_role.upper()}' cancelled.")
+                            st.rerun()
+                        else:
+                            st.error(err or "Failed to cancel grant.")
+                with col_b2:
+                    if st.button("🚫 Revoke Role", key="btn_rev_pnd_role", type="primary", use_container_width=True):
+                        ok, err = revoke_role(sel_manage_user, sel_role, reason=reason.strip() or "Cancelled pending NDA", revoked_by=admin_id)
+                        if ok:
+                            st.success(f"Role '{sel_role.upper()}' marked revoked.")
                             st.rerun()
                         else:
                             st.error(err or "Failed to revoke role.")
+
+            elif sel_status == "SUSPENDED":
+                st.warning(f"Role '{sel_role.upper()}' is currently suspended.")
+                reason = st.text_input("Revocation Reason (if revoking)", placeholder="e.g. Non-compliance", key="rev_reason_susp")
+                col_b1, col_b2 = st.columns(2)
+                with col_b1:
+                    if st.button("▶️ Reinstate Role", key="btn_reinstate_role", type="primary", use_container_width=True):
+                        ok, err = reinstate_role(sel_manage_user, sel_role)
+                        if ok:
+                            st.success(f"Role '{sel_role.upper()}' reinstated to active status.")
+                            st.rerun()
+                        else:
+                            st.error(err or "Failed to reinstate role.")
+                with col_b2:
+                    if st.button("🚫 Revoke Permanently", key="btn_rev_susp_role", type="secondary", use_container_width=True):
+                        ok, err = revoke_role(sel_manage_user, sel_role, reason=reason.strip() or "Revoked after suspension", revoked_by=admin_id)
+                        if ok:
+                            st.success(f"Role '{sel_role.upper()}' revoked.")
+                            st.rerun()
+                        else:
+                            st.error(err or "Failed to revoke role.")
+
+            elif sel_status == "REVOKED":
+                st.info(f"Role '{sel_role.upper()}' is currently revoked. To grant it again, use the Grant Additional Role form above.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

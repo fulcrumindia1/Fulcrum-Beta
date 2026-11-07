@@ -1178,9 +1178,11 @@ class LocalDatabase:
         resolved_by = guide_id if status == "RESOLVED" else None
         cur.execute("""
         UPDATE help_requests
-        SET status = ?, guide_response = ?, last_handled_at = ?, resolved_by = COALESCE(resolved_by, ?), updated_at = ?
+        SET status = ?, guide_response = ?, last_handled_at = ?, last_mentor_response_at = ?,
+            last_interaction_actor_id = ?, last_interaction_actor_role = 'guide',
+            resolved_by = COALESCE(resolved_by, ?), updated_at = ?
         WHERE id = ? AND (assigned_guide_id = ? OR assigned_guide_id IS NULL)
-        """, (status, guide_response, now_iso, resolved_by, now_iso, request_id, guide_id))
+        """, (status, guide_response, now_iso, now_iso, guide_id, resolved_by, now_iso, request_id, guide_id))
         conn.commit()
         changes = conn.total_changes
         conn.close()
@@ -1193,9 +1195,11 @@ class LocalDatabase:
         resolved_by = sme_id if status == "RESOLVED" else None
         cur.execute("""
         UPDATE help_requests
-        SET status = ?, sme_response = ?, last_handled_at = ?, resolved_by = COALESCE(resolved_by, ?), updated_at = ?
+        SET status = ?, sme_response = ?, last_handled_at = ?, last_mentor_response_at = ?,
+            last_interaction_actor_id = ?, last_interaction_actor_role = 'sme',
+            resolved_by = COALESCE(resolved_by, ?), updated_at = ?
         WHERE id = ? AND (assigned_sme_id = ? OR assigned_sme_id IS NULL)
-        """, (status, sme_response, now_iso, resolved_by, now_iso, request_id, sme_id))
+        """, (status, sme_response, now_iso, now_iso, sme_id, resolved_by, now_iso, request_id, sme_id))
         conn.commit()
         changes = conn.total_changes
         conn.close()
@@ -1260,9 +1264,11 @@ class LocalDatabase:
         now_iso = datetime.now(timezone.utc).isoformat()
         cur.execute("""
         UPDATE help_requests
-        SET status = 'IN_PROGRESS', aspirant_response = ?, aspirant_responded_at = ?, last_handled_at = ?, updated_at = ?
+        SET status = 'WAITING_ON_GUIDE_SME', aspirant_response = ?, aspirant_responded_at = ?,
+            last_handled_at = ?, last_aspirant_response_at = ?,
+            last_interaction_actor_id = ?, last_interaction_actor_role = 'aspirant', updated_at = ?
         WHERE id = ? AND aspirant_id = ?
-        """, (response, now_iso, now_iso, now_iso, request_id, aspirant_id))
+        """, (response, now_iso, now_iso, now_iso, aspirant_id, now_iso, request_id, aspirant_id))
         conn.commit()
         changes = conn.total_changes
         conn.close()
@@ -1352,6 +1358,92 @@ class LocalDatabase:
         SET status = ?, admin_directive = ?, directive_issued_at = ?, responded_by = ?, updated_at = ?
         WHERE id = ?
         """, (new_status, directive, now_iso, admin_id, now_iso, query_id))
+        conn.commit()
+        changes = conn.total_changes
+        conn.close()
+        return changes > 0
+
+    # ── SCHEME SUPPORT REVIEWS (Guide -> Admin Human Review) ──
+    def insert_or_update_scheme_support_review(self, record: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import json
+        fc = json.dumps(record.get("failed_criteria", [])) if isinstance(record.get("failed_criteria"), list) else (record.get("failed_criteria") or "[]")
+        mc = json.dumps(record.get("missing_criteria", [])) if isinstance(record.get("missing_criteria"), list) else (record.get("missing_criteria") or "[]")
+        cur.execute("""
+        INSERT INTO scheme_support_reviews (
+            id, aspirant_id, scheme_id, guide_id, match_score,
+            guide_justification, failed_criteria, missing_criteria, status,
+            admin_decision_notes, reviewed_by, reviewed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(aspirant_id, scheme_id, guide_id) DO UPDATE SET
+            match_score = excluded.match_score,
+            guide_justification = excluded.guide_justification,
+            failed_criteria = excluded.failed_criteria,
+            missing_criteria = excluded.missing_criteria,
+            status = excluded.status,
+            updated_at = excluded.updated_at
+        """, (
+            record["id"], record["aspirant_id"], record["scheme_id"], record["guide_id"],
+            record.get("match_score", 0), record.get("guide_justification", ""),
+            fc, mc, record.get("status", "PENDING"),
+            record.get("admin_decision_notes"), record.get("reviewed_by"),
+            record.get("reviewed_at"), record.get("created_at"), record.get("updated_at")
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_scheme_support_reviews(
+        self,
+        status: Optional[str] = None,
+        guide_id: Optional[str] = None,
+        aspirant_id: Optional[str] = None
+    ) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        where_clauses = []
+        params = []
+        if status:
+            where_clauses.append("ssr.status = ?")
+            params.append(status)
+        if guide_id:
+            where_clauses.append("ssr.guide_id = ?")
+            params.append(guide_id)
+        if aspirant_id:
+            where_clauses.append("ssr.aspirant_id = ?")
+            params.append(aspirant_id)
+        where_str = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        cur.execute(f"""
+        SELECT ssr.*, s.name as scheme_name, s.agency as scheme_agency, s.amount as scheme_amount,
+               p.full_name as aspirant_name, p.email as aspirant_email,
+               g.full_name as guide_name, g.email as guide_email
+        FROM scheme_support_reviews ssr
+        LEFT JOIN schemes s ON ssr.scheme_id = s.id
+        LEFT JOIN profiles p ON ssr.aspirant_id = p.id
+        LEFT JOIN profiles g ON ssr.guide_id = g.id
+        {where_str}
+        ORDER BY ssr.created_at DESC
+        """, tuple(params))
+        rows = cur.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def update_scheme_support_review(
+        self,
+        review_id: str,
+        status: str,
+        admin_decision_notes: str,
+        reviewed_by: str
+    ) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        UPDATE scheme_support_reviews
+        SET status = ?, admin_decision_notes = ?, reviewed_by = ?, reviewed_at = ?, updated_at = ?
+        WHERE id = ?
+        """, (status, admin_decision_notes, reviewed_by, now_iso, now_iso, review_id))
         conn.commit()
         changes = conn.total_changes
         conn.close()

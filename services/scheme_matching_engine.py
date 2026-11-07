@@ -35,6 +35,30 @@ TECH_EXCLUSIVE_KEYWORDS = {
     "clinical", "pharma", "medical devices", "quantum"
 }
 
+# Negative domain exclusion sets: Schemes in these domains should NOT match aspirants outside them
+DOMAIN_NEGATIVE_EXCLUSIONS = {
+    "isro": {"isro", "space technology", "space tech", "satellite", "space applications", "in-space", "isac"},
+    "semiconductor": {"semiconductor", "chip design", "vlsi", "esdm", "chip manufacturing", "dms", "specs"},
+    "aerospace": {"aerospace", "defence", "drdo", "hal", "defense innovation", "idex", "air force", "navy"},
+    "pharma_rd": {"pharma r&d", "clinical trial", "drug discovery", "biopharmaceutical", "biotech r&d", "clinical research", "new drug"},
+    "biotech": {"biotech", "biotechnology", "birac", "genomics", "bio-incubator", "molecular biology"},
+    "nuclear": {"nuclear", "atomic energy", "dae"},
+    "ev_automotive": {"ev policy", "electric vehicle", "e-vehicle", "ev manufacturing", "charging infrastructure", "battery pack", "automobile manufacturing"},
+    "deeptech_hardware": {"supercomputing", "quantum computing", "c-dac ai", "abdm sandbox"},
+}
+
+# Aspirant domain keywords that indicate actual capability in the domain
+DOMAIN_CAPABILITY_KEYWORDS = {
+    "isro": {"space", "satellite", "aerospace", "remote sensing", "propulsion", "rocketry"},
+    "semiconductor": {"semiconductor", "chip", "vlsi", "esdm", "integrated circuit", "soc", "foundry"},
+    "aerospace": {"aerospace", "defence", "defense", "military", "uav", "drone", "avionics", "missile"},
+    "pharma_rd": {"clinical trial", "drug discovery", "biopharmaceutical", "biotech r&d", "clinical research", "formulation r&d", "active pharmaceutical ingredient", "new chemical entity", "molecular"},
+    "biotech": {"biotech", "biotechnology", "molecular", "genomics", "bio-pharma", "microbiology", "bio-processing", "bio-incubator", "life sciences"},
+    "nuclear": {"nuclear", "atomic", "reactor", "radiation"},
+    "ev_automotive": {"ev", "electric vehicle", "automobile", "battery", "charging station", "powertrain", "e-mobility", "automotive"},
+    "deeptech_hardware": {"supercomputing", "quantum", "c-dac", "abdm", "healthtech ai"},
+}
+
 
 def normalize_aspirant_profile(profile: Dict) -> Dict[str, Any]:
     """
@@ -55,10 +79,12 @@ def normalize_aspirant_profile(profile: Dict) -> Dict[str, Any]:
     asp_state = str(state_raw).strip() if state_raw else ""
     asp_district = str(profile.get("district") or demo.get("district") or "").strip()
 
-    # Sector & Business Type
+    # Sector, Subsector, Business Type & Commercial Activity
     asp_sector = str(biz.get("sector") or "").strip().lower()
+    asp_subsector = str(biz.get("subsector") or "").strip().lower()
     asp_biz_type = str(biz.get("business_type") or "").strip().lower()
-    asp_stage = str(biz.get("stage") or "idea").strip().lower()
+    asp_activity = str(biz.get("activity") or "").strip().lower()
+    asp_stage = str(biz.get("stage") or "").strip().lower()
 
     # Demographics & Quota
     asp_gender = str(pers.get("gender") or demo.get("gender") or "").strip().lower()
@@ -79,13 +105,16 @@ def normalize_aspirant_profile(profile: Dict) -> Dict[str, Any]:
     is_dpiit = bool(demo.get("is_dpiit_recognized", False))
     is_startuptn = bool(demo.get("is_startuptn_registered", False))
     is_udyam = bool(demo.get("is_udyam_registered", False))
+    is_gst = bool(demo.get("is_gst_registered", False))
+    is_fssai = bool(demo.get("is_fssai_registered", False))
+    is_drug_license = bool(demo.get("is_drug_license", False))
 
     # Description and Name
     asp_desc = str(biz.get("description") or "").lower()
     asp_name = str(biz.get("business_name") or "").lower()
 
-    # Domain keywords
-    keywords = set(re.findall(r'[a-zA-Z]{3,}', f"{asp_sector} {asp_biz_type} {asp_desc} {asp_name}"))
+    # Domain keywords (includes subsector and activity)
+    keywords = set(re.findall(r'[a-zA-Z]{3,}', f"{asp_sector} {asp_subsector} {asp_biz_type} {asp_activity} {asp_desc} {asp_name}"))
 
     return {
         "user_id": profile.get("id"),
@@ -94,7 +123,9 @@ def normalize_aspirant_profile(profile: Dict) -> Dict[str, Any]:
         "is_tn": "tamil nadu" in asp_state.lower() or ("tamil nadu" in asp_district.lower()),
         "district": asp_district,
         "sector": asp_sector,
+        "subsector": asp_subsector,
         "biz_type": asp_biz_type,
+        "activity": asp_activity,
         "stage": asp_stage,
         "gender": asp_gender,
         "is_women_led": is_women_led,
@@ -103,6 +134,9 @@ def normalize_aspirant_profile(profile: Dict) -> Dict[str, Any]:
         "is_dpiit": is_dpiit,
         "is_startuptn": is_startuptn,
         "is_udyam": is_udyam,
+        "is_gst": is_gst,
+        "is_fssai": is_fssai,
+        "is_drug_license": is_drug_license,
         "keywords": keywords,
         "is_food_agri": bool(keywords & FOOD_AGRI_KEYWORDS or "food" in asp_sector or "agri" in asp_sector),
         "is_tech": bool(keywords & {"tech", "software", "ai", "deeptech", "hardware", "saas", "electronics", "robotics"})
@@ -138,13 +172,27 @@ def evaluate_gatekeeper_eligibility(x: Dict[str, Any], scheme: Dict[str, Any], r
         if x["category"] not in ("SC", "ST"):
             disqualifications.append(f"Category Ineligible: Scheme is statutory affirmative quota for SC/ST founders. (Your declared category: {x['category'] or 'General/OBC'}).")
 
-    # 4. Exclusive High-Tech / Pharma vs Traditional Domain Conflict
+    # 4. Negative Domain Exclusion: Specialized schemes must NOT match unrelated aspirants
     s_text = f"{scheme.get('name','')} {scheme.get('brief','')} {scheme.get('description','')} {' '.join(rules['sectors'])}".lower()
-    has_deeptech_exclusivity = any(k in s_text for k in TECH_EXCLUSIVE_KEYWORDS)
-    if has_deeptech_exclusivity and not x["is_tech"] and x["is_food_agri"]:
-        # Exclusive semiconductor/biotech fund where food/agro applicant has zero match
-        if any(k in s_text for k in ["semiconductor", "chip design", "defence innovation", "aerospace", "space tech"]):
-            disqualifications.append("Domain Conflict: Specialized defence/semiconductor fund outside applicant's agro/food industry.")
+    asp_text = f"{x['sector']} {x['biz_type']} {' '.join(x['keywords'])}".lower()
+
+    for domain_key, scheme_markers in DOMAIN_NEGATIVE_EXCLUSIONS.items():
+        scheme_has_domain = any(marker in s_text for marker in scheme_markers)
+        if scheme_has_domain:
+            # Check if the aspirant actually has capability in this domain
+            domain_caps = DOMAIN_CAPABILITY_KEYWORDS.get(domain_key, set())
+            aspirant_matches_domain = any(cap in asp_text for cap in domain_caps)
+            if not aspirant_matches_domain:
+                domain_label = domain_key.replace("_", "/").title()
+                disqualifications.append(f"Domain Exclusion: {domain_label} specialized scheme — applicant's enterprise ({x['sector'].title() or 'Unknown Sector'}) is outside this domain.")
+                break  # One domain exclusion is sufficient
+
+    # 4b. Legacy broad tech exclusion (deeptech vs food/agro)
+    if not disqualifications:
+        has_deeptech_exclusivity = any(k in s_text for k in TECH_EXCLUSIVE_KEYWORDS)
+        if has_deeptech_exclusivity and not x["is_tech"] and x["is_food_agri"]:
+            if any(k in s_text for k in ["semiconductor", "chip design", "defence innovation", "aerospace", "space tech"]):
+                disqualifications.append("Domain Conflict: Specialized defence/semiconductor fund outside applicant's agro/food industry.")
 
     # 5. Registration Pre-conditions
     for reg in rules.get("mandatory_registrations", []):
@@ -182,50 +230,82 @@ def calculate_relevance_score(
     s_desc = (scheme.get("description") or "").lower()
     s_text = f"{s_name} {s_agency} {s_brief} {s_desc}"
 
-    # ── 1. Sector & Domain Alignment (Up to 35 pts) ──
-    has_food_match = x["is_food_agri"] and any(k in s_text for k in FOOD_AGRI_KEYWORDS)
-    has_keyword_match = bool(x["keywords"] & set(rules["sectors"])) or (x["sector"] and any(x["sector"] in sec or sec in x["sector"] for sec in rules["sectors"] if "all sectors" not in sec))
-    is_broad_msme = any(k in s_name for k in ["pmegp", "mudra", "stand up india", "uyegp", "needs", "cgtmse", "startup india seed", "tanfund", "angelstn", "pmfme", "fme", "credit guarantee"])
+    # ── 1. Sector & Domain Alignment (Up to 38 pts) ──
+    GENERIC_SECTOR_KEYWORDS = {
+        "all sectors", "cross-sector", "cross-sector / all sectors", "any", "all",
+        "general", "manufacturing", "services", "technology", "tech"
+    }
 
-    if has_food_match:
-        score += 35
-        reasons.append("Direct sector match: Food Processing & Agribusiness")
-    elif has_keyword_match:
+    specific_rules_sectors = {s.strip().lower() for s in rules.get("sectors", []) if s.strip().lower() not in GENERIC_SECTOR_KEYWORDS}
+
+    has_food_match = x["is_food_agri"] and (
+        any(k in s_text for k in FOOD_AGRI_KEYWORDS) or
+        any(k in specific_rules_sectors for k in ["agri", "food", "agriculture", "food processing"])
+    )
+    is_named_food_scheme = any(k in s_name for k in ["food", "pmfme", "millet", "agri", "ceppc", "cefppc", "mofpi"])
+    has_specific_sector_match = False
+    if not has_food_match and (x["keywords"] or x["sector"]):
+        if specific_rules_sectors:
+            has_specific_sector_match = bool(x["keywords"] & specific_rules_sectors) or (
+                bool(x["sector"]) and any(x["sector"] in sec or sec in x["sector"] for sec in specific_rules_sectors)
+            )
+        # Also check direct scheme name alignment with founder's sector/subsector keywords
+        if not has_specific_sector_match and (x["sector"] or x["subsector"]):
+            core_asp_words = {w for w in (x["keywords"] | {x["sector"], x["subsector"]}) if len(w) >= 3 and w not in GENERIC_SECTOR_KEYWORDS and w not in {"enterprise", "company", "private", "limited", "startup", "founder", "india"}}
+            scheme_name_words = set(re.findall(r'[a-zA-Z]{2,}', s_name))
+            if any(w in scheme_name_words for w in core_asp_words):
+                has_specific_sector_match = True
+
+    is_broad_msme = any(k in s_name for k in ["pmegp", "mudra", "stand up india", "uyegp", "needs", "cgtmse", "startup india seed", "tanfund", "angelstn", "credit guarantee"])
+
+    if is_named_food_scheme and x["is_food_agri"]:
+        score += 38
+        reasons.append("Dedicated sector scheme: Food Processing & Agribusiness")
+    elif has_food_match:
+        score += 30
+        reasons.append("Sector match: Food Processing & Agribusiness")
+    elif has_specific_sector_match:
         score += 35
         match_label = x["sector"].title() if x["sector"] else "Core Domain"
         reasons.append(f"Sector alignment: {match_label}")
     elif "manufacturing" in rules["sectors"] and ("manufacturing" in x["sector"] or "manufacturing" in x["biz_type"]):
-        score += 25
+        score += 18
         reasons.append("Manufacturing enterprise funding allocation")
     elif is_broad_msme:
-        score += 25
-        reasons.append("Broad-based MSME enterprise support scheme")
-    elif rules["is_all_sectors"]:
+        # Reduced from 25 → 15 to prevent broad MSME schemes from inflating scores
         score += 15
-        reasons.append("Open across all commercial sectors")
+        reasons.append("Broad-based MSME enterprise support scheme (general eligibility)")
+    elif rules["is_all_sectors"]:
+        # Reduced from 15 → 8 to prevent generic open-sector schemes from auto-qualifying
+        score += 8
+        reasons.append("Open across all commercial sectors (no sector-specific advantage)")
     else:
-        score += 5
+        score += 3
         concerns.append(f"Sector focus: {', '.join(rules['sectors'][:3]) if rules['sectors'] else 'Specific Industry'}")
 
     # ── 2. Stage Alignment (Up to 25 pts) ──
     s_stage = (scheme.get("stage") or "all").lower()
     is_stage_agnostic = "all" in rules["allowed_stages"] or any(k in s_stage for k in ["all", "agnostic", "multi"])
-    is_early_founder = any(k in x["stage"] for k in ["idea", "ideation", "concept", "pre-seed", "seed", "prototype", "r&d"])
+    is_early_founder = bool(x["stage"]) and any(k in x["stage"] for k in ["idea", "ideation", "concept", "pre-seed", "seed", "early", "revenue", "prototype", "r&d", "mvp", "pilot"])
     is_early_scheme = any(k in s_stage for k in ["idea", "ideation", "concept", "pre-seed", "seed", "early", "prototype"])
-    is_growth_founder = any(k in x["stage"] for k in ["growth", "series", "scale", "expansion", "debt"])
+    is_growth_founder = bool(x["stage"]) and any(k in x["stage"] for k in ["growth", "series", "scale", "expansion", "debt"])
     is_growth_scheme = any(k in s_stage for k in ["growth", "series", "scale", "expansion", "commercial"])
 
-    if is_stage_agnostic:
-        score += 20
-        reasons.append("Open to all venture stages")
-    elif (is_early_founder and is_early_scheme) or (is_growth_founder and is_growth_scheme) or (x["stage"] in s_stage):
+    if (is_early_founder and is_early_scheme) or (is_growth_founder and is_growth_scheme) or (x["stage"] and x["stage"] in s_stage):
         score += 25
         reasons.append(f"Stage fit: {scheme.get('stage', 'Development Phase')}")
+    elif is_stage_agnostic:
+        # Reduced from 20 → 12 to prevent stage-agnostic schemes from inflating scores
+        score += 12
+        reasons.append("Open to all venture stages (no stage-specific advantage)")
+    elif not x["stage"]:
+        score += 5
+        concerns.append("Venture stage not specified in profile")
     elif is_early_founder and is_growth_scheme:
         score += 0
         concerns.append("Requires later-stage commercial traction (Growth/Scale phase)")
     else:
-        score += 10
+        score += 8
         reasons.append(f"Stage acceptable: {scheme.get('stage', 'Flexible')}")
 
     # ── 3. Geography & Jurisdiction (Up to 15 pts) ──
@@ -238,7 +318,8 @@ def calculate_relevance_score(
             score += 0
             concerns.append("State-restricted funding programme")
     else:
-        score += 12
+        # Reduced from 12 → 7 to prevent national schemes from auto-qualifying
+        score += 7
         reasons.append("National / Central Government initiative (All states eligible)")
 
     # ── 4. Assistance Goal & Quantum Fit (Y Match) (Up to 15 pts) ──
@@ -259,7 +340,7 @@ def calculate_relevance_score(
             score += 2
             concerns.append(f"Provides {rules['primary_goal']} (You sought: {requested_goal})")
     else:
-        score += 8  # Default baseline if founder has not selected a specific goal
+        score += 3  # Reduced from 8 → 3: no specific goal selected, minimal baseline
 
     # Quantum fit
     if requested_quantum and requested_quantum != "ANY_AMOUNT":

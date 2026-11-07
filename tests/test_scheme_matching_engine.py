@@ -122,8 +122,8 @@ def test_photo_validation_and_compression():
     ok, proc_b, ctype, w, h, err = validate_and_process_photo(raw_bytes)
     assert ok
     assert ctype == "image/webp"
-    assert w <= 512 and h <= 512
-    assert len(proc_b) < 100 * 1024  # WebP 512x512 should be < 100 KB
+    assert w <= 320 and h <= 320
+    assert len(proc_b) <= 150 * 1024  # Strict 150 KB stored-file cap
 
 
 def test_saved_profile_assistance_need_matching():

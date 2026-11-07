@@ -130,7 +130,13 @@ def get_scheme_structured_rules(scheme: Dict) -> Dict[str, Any]:
     amt_str = scheme.get("amount") or ""
 
     # 1. Geographic Jurisdiction
-    is_tn_only = any(x in scope for x in ["tamil nadu", "tn"]) or any(x in s_agency for x in ["startuptn", "tamil nadu", "tiic", "msme tn", "editn"])
+    is_tn_only = (
+        any(x in scope for x in ["tamil nadu", "tn"]) or
+        any(x in s_agency for x in ["startuptn", "tamil nadu", "tiic", "msme tn", "editn"]) or
+        s_name.startswith("tn ") or
+        "tamil nadu" in s_name or
+        "(tn)" in s_name
+    )
     allowed_states = ["Tamil Nadu"] if is_tn_only else ["ALL"]
 
     # 2. Gender / Women Quota

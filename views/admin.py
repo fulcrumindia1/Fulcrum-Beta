@@ -724,8 +724,14 @@ def render_admin_portal(admin_profile: dict):
     # TAB 5: MENTOR INQUIRIES & ADMINISTRATIVE DIRECTIVES
     # ─────────────────────────────────────────────────────────────
     with tabs[4]:
-        st.subheader("🏛️ Mentor Inquiries & Administrative Directives")
-        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Official Program Directorate Governance: Guides and Domain SMEs submit institutional roadblocks on behalf of their assigned entrepreneurs. Review inquiries, issue binding Administrative Directives, or assign Co-Guides (Guide B) and specialized Domain SMEs. <em>(Strictly invisible to the entrepreneur)</em></p>", unsafe_allow_html=True)
+        subtab_inq, subtab_ssr = st.tabs([
+            "🏛️ Mentor Directives & Inquiries",
+            "📋 Scheme Support Reviews (Guide Escalations)"
+        ])
+
+        with subtab_inq:
+            st.subheader("🏛️ Mentor Inquiries & Administrative Directives")
+            st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Official Program Directorate Governance: Guides and Domain SMEs submit institutional roadblocks on behalf of their assigned entrepreneurs. Review inquiries, issue binding Administrative Directives, or assign Co-Guides (Guide B) and specialized Domain SMEs. <em>(Strictly invisible to the entrepreneur)</em></p>", unsafe_allow_html=True)
 
         col_mq1, col_mq2 = st.columns([2, 2])
         with col_mq1:
@@ -842,9 +848,75 @@ def render_admin_portal(admin_profile: dict):
                                 else:
                                     st.error(err or "Failed to issue directive.")
 
-    # ─────────────────────────────────────────────────────────────
-    # TAB 6: SCHEME CATALOGUE CRUD
-    # ─────────────────────────────────────────────────────────────
+        with subtab_ssr:
+            st.subheader("📋 Scheme Support Reviews & Authoritative Exceptions")
+            st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Caseload Guides escalate high-potential opportunities that require administrative evaluation or policy exceptions. Review guide justifications, inspect match scores, and approve or reject schemes.</p>", unsafe_allow_html=True)
+
+            from services.scheme_reviews import list_scheme_support_reviews, decide_scheme_support_review
+
+            ssr_list = list_scheme_support_reviews()
+            ssr_pending = [r for r in ssr_list if r.get("status") == "PENDING"]
+            ssr_approved = [r for r in ssr_list if r.get("status") == "APPROVED"]
+            ssr_rejected = [r for r in ssr_list if r.get("status") == "REJECTED"]
+
+            c_sr1, c_sr2, c_sr3 = st.columns(3)
+            c_sr1.metric("Pending Review", len(ssr_pending))
+            c_sr2.metric("Approved", len(ssr_approved))
+            c_sr3.metric("Rejected", len(ssr_rejected))
+
+            ssr_filter = st.selectbox("Review Status Filter", ["ALL", "PENDING", "APPROVED", "REJECTED"], key="adm_ssr_filter")
+            filtered_reviews = ssr_list
+            if ssr_filter != "ALL":
+                filtered_reviews = [r for r in ssr_list if r.get("status") == ssr_filter]
+
+            if not filtered_reviews:
+                st.info("No scheme support review requests found.")
+            else:
+                for rev in filtered_reviews:
+                    rev_id = rev["id"]
+                    r_status = rev.get("status", "PENDING")
+                    badge_color = "#F59E0B" if r_status == "PENDING" else ("#10B981" if r_status == "APPROVED" else "#DC2626")
+
+                    with st.expander(f"{rev.get('scheme_name', 'Scheme')} · {rev.get('aspirant_name', 'Founder')} [{r_status}]", expanded=(r_status == "PENDING")):
+                        st.markdown(f"""
+                        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {badge_color}; border-radius:10px; padding:1rem; margin-bottom:0.75rem;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div>
+                                    <div style="font-weight:800; font-size:1.1rem; color:#0F172A;">{_safe_esc(rev.get('scheme_name'))}</div>
+                                    <div style="font-size:0.84rem; color:#64748B;">{_safe_esc(rev.get('scheme_agency'))} · Funding: <strong>{_safe_esc(rev.get('scheme_amount'))}</strong></div>
+                                </div>
+                                <span style="background:{badge_color}; color:#fff; font-weight:800; font-size:0.8rem; padding:3px 10px; border-radius:10px;">{r_status}</span>
+                            </div>
+                            <div style="margin-top:0.6rem; font-size:0.88rem; color:#334155;">
+                                <strong>Entrepreneur:</strong> {_safe_esc(rev.get('aspirant_name'))} ({_safe_esc(rev.get('aspirant_email'))})<br>
+                                <strong>Requesting Guide:</strong> {_safe_esc(rev.get('guide_name'))} ({_safe_esc(rev.get('guide_email'))})<br>
+                                <strong>Algorithm Match Score:</strong> {rev.get('match_score', 0)}%
+                            </div>
+                            <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.75rem; margin-top:0.6rem; font-size:0.86rem; color:#1E293B;">
+                                <strong>Guide Justification:</strong><br>
+                                {_safe_esc(rev.get('guide_justification'))}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        if rev.get("admin_decision_notes"):
+                            st.info(f"Administrative Decision Notes: {rev.get('admin_decision_notes')}")
+
+                        if r_status == "PENDING":
+                            with st.form(f"form_decide_ssr_{rev_id}"):
+                                decision = st.radio("Decision", ["APPROVED", "REJECTED"], horizontal=True, key=f"rad_dec_{rev_id}")
+                                notes = st.text_area("Administrative Audit Decision Notes *", placeholder="Explain reason for approval or rejection...", height=70, key=f"notes_dec_{rev_id}")
+                                if st.form_submit_button("Record Decision & Notify Guide", type="primary"):
+                                    if not notes.strip() or len(notes.strip()) < 5:
+                                        st.warning("Please provide decision notes (minimum 5 characters).")
+                                    else:
+                                        ok_d, err_d = decide_scheme_support_review(rev_id, decision, notes.strip(), admin_id)
+                                        if ok_d:
+                                            st.success(f"Review decision '{decision}' recorded!")
+                                            st.rerun()
+                                        else:
+                                            st.error(err_d or "Failed to record decision.")
+
     # ─────────────────────────────────────────────────────────────
     # TAB 6: SCHEME CATALOGUE CRUD
     # ─────────────────────────────────────────────────────────────

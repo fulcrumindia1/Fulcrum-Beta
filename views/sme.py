@@ -134,7 +134,13 @@ def render_sme_portal(user_profile: dict):
                     biz = p_data.get("business", {})
                     demo = p_data.get("demographics", {})
 
-                    st.markdown(f"### Profile Overview: {asp_full.get('full_name')}")
+                    from services.aspirant_photos import render_aspirant_photo_header
+                    render_aspirant_photo_header(
+                        aspirant_profile=asp_full,
+                        viewer_id=user["id"],
+                        viewer_role="sme",
+                        accent_color="#D97706"
+                    )
 
                     st.markdown("#### 1. Personal Details")
                     cp1, cp2, cp3 = st.columns(3)

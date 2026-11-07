@@ -53,6 +53,7 @@ from services.help_requests import (
     create_mentor_consultation
 )
 from services.schemes_ui import parse_list_field
+from services.scheme_reviews import submit_scheme_support_review, list_scheme_support_reviews
 
 def render_guide_portal(user_profile: dict):
     guide_id = user_profile["id"]
@@ -111,7 +112,7 @@ def render_guide_portal(user_profile: dict):
                 # Calculate direct consultations from this mentee
                 all_guide_tickets = list_guide_requests(guide_id) or []
                 asp_tickets = [t for t in all_guide_tickets if t.get("aspirant_id") == selected_asp_id]
-                open_cnt = sum(1 for t in asp_tickets if t.get("status") in ["OPEN", "IN_PROGRESS", "ACTION_REQUIRED"])
+                open_cnt = sum(1 for t in asp_tickets if t.get("status") in ["OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"])
 
                 # Scheme releases for this mentee
                 existing_releases = get_guide_scheme_releases(guide_id, selected_asp_id) or []
@@ -174,7 +175,13 @@ def render_guide_portal(user_profile: dict):
                     biz = p_data.get("business", {})
                     demo = p_data.get("demographics", {})
 
-                    st.markdown(f"### Profile Overview: {asp_full.get('full_name')}")
+                    from services.aspirant_photos import render_aspirant_photo_header
+                    render_aspirant_photo_header(
+                        aspirant_profile=asp_full,
+                        viewer_id=user["id"],
+                        viewer_role="guide",
+                        accent_color="#2563EB"
+                    )
 
                     # 1. Personal Details
                     st.markdown("#### 1. Personal Details")
@@ -515,9 +522,12 @@ def render_guide_portal(user_profile: dict):
                         </div>
                         """, unsafe_allow_html=True)
 
-                        # Display top 10, rest in expander
-                        top_matches = suggested_matches[:10]
-                        remaining_matches = suggested_matches[10:]
+                        # Display top 5 curated matches, rest in categorized expander
+                        existing_reviews = list_scheme_support_reviews(guide_id=guide_id, aspirant_id=selected_asp_id)
+                        review_map = {str(r.get("scheme_id")): r for r in (existing_reviews or [])}
+
+                        top_matches = suggested_matches[:5]
+                        remaining_matches = suggested_matches[5:]
 
                         def _render_suggested_card(match, card_idx):
                             """Render a single AI-suggested match as an expandable card."""
@@ -594,6 +604,17 @@ def render_guide_portal(user_profile: dict):
                                 </div>
                                 """, unsafe_allow_html=True)
 
+                                # Display Support Review Status Badge if exists
+                                if m_id in review_map:
+                                    r_item = review_map[m_id]
+                                    r_stat = r_item.get("status", "PENDING")
+                                    if r_stat == "PENDING":
+                                        st.info("⏳ **Support Review Pending:** Administrative review has been requested for this scheme. Fulcrum Support is currently evaluating the case.")
+                                    elif r_stat == "APPROVED":
+                                        st.success(f"✅ **Fulcrum Support Approved:** This scheme has been administratively approved for this founder! Notes: {r_item.get('admin_decision_notes', 'Approved by Support')}")
+                                    elif r_stat == "REJECTED":
+                                        st.warning(f"❌ **Fulcrum Support Rejected:** This scheme was reviewed and not approved. Notes: {r_item.get('admin_decision_notes', 'Eligibility criteria not met')}")
+
                                 if is_already_released and rel_info:
                                     rel_date = str(rel_info.get("released_at", ""))[:10]
                                     rel_rec = _safe_esc(rel_info.get("guide_recommendation", ""))
@@ -654,15 +675,47 @@ def render_guide_portal(user_profile: dict):
                                                 else:
                                                     st.error(msg or "Failed to release scheme.")
 
-                        # Render top 10
+                                    # Human Review Escalation (Request Fulcrum Support Review)
+                                    if m_id not in review_map or review_map[m_id].get("status") == "REJECTED":
+                                        with st.expander("🙋 Request Fulcrum Support Review for this Scheme", expanded=False):
+                                            st.caption("If this enterprise shows strong commercial promise or warrants an exception despite missing evidence, request administrative evaluation from Fulcrum Support.")
+                                            with st.form(f"form_req_ssr_{selected_asp_id}_{m_id}_{card_idx}"):
+                                                ssr_just = st.text_area(
+                                                    "Justification for Administrative Review *",
+                                                    placeholder="Explain why this scheme is appropriate for this venture (e.g. unique traction, export orders, patent filing)...",
+                                                    height=75,
+                                                    key=f"ssr_just_{m_id}_{card_idx}"
+                                                )
+                                                if st.form_submit_button("Submit Request to Fulcrum Support", type="secondary"):
+                                                    if not ssr_just.strip() or len(ssr_just.strip()) < 10:
+                                                        st.warning("Please provide a detailed justification (minimum 10 characters).")
+                                                    else:
+                                                        ok_ssr, err_ssr = submit_scheme_support_review(
+                                                            aspirant_id=selected_asp_id,
+                                                            scheme_id=m_id,
+                                                            guide_id=guide_id,
+                                                            match_score=m_score,
+                                                            guide_justification=ssr_just.strip(),
+                                                            failed_criteria=match.get("potential_concerns", []),
+                                                            missing_criteria=[c.get("item") for c in match.get("checklist", []) if c.get("status") != "Verified Eligible"]
+                                                        )
+                                                        if ok_ssr:
+                                                            st.success("Review request submitted to Fulcrum Support!")
+                                                            st.rerun()
+                                                        else:
+                                                            st.error(err_ssr or "Failed to submit review request.")
+
+                        # Render top 5 strong matches
+                        st.markdown(f"#### 🎯 Top Curated Matches ({len(top_matches)})")
+                        st.caption("Algorithmically verified high-confidence funding programs matching this venture's profile and stage.")
                         for idx, m in enumerate(top_matches):
                             _render_suggested_card(m, idx)
 
                         # Remaining matches in expander
                         if remaining_matches:
-                            with st.expander(f"📊 View {len(remaining_matches)} More Matches (60-{remaining_matches[0]['match_score']}%)", expanded=False):
+                            with st.expander(f"📊 View {len(remaining_matches)} Additional Borderline Opportunities (50-{remaining_matches[0]['match_score']}%)", expanded=False):
                                 for idx, m in enumerate(remaining_matches):
-                                    _render_suggested_card(m, idx + 10)
+                                    _render_suggested_card(m, idx + 5)
 
                     # =======================================================
                     # CENTRALIZED SCHEME GOVERNANCE NOTICE
@@ -969,24 +1022,48 @@ def render_guide_portal(user_profile: dict):
         st.subheader("Assigned Mentee Consultations")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Consultation requests submitted by your assigned entrepreneurs requiring your mentorship and guidance.</p>", unsafe_allow_html=True)
 
+        all_guide_tickets_raw = list_guide_requests(guide_id) or []
+        assigned_asp_ids = {a["id"] for a in (assigned_aspirants or [])}
+        guide_tickets = [t for t in all_guide_tickets_raw if t.get("aspirant_id") in assigned_asp_ids]
+
+        c_awaiting = sum(1 for t in guide_tickets if t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED"))
+        c_inprogress = sum(1 for t in guide_tickets if t.get("status") in ("IN_PROGRESS", "WAITING_ON_ASPIRANT"))
+        c_resolved = sum(1 for t in guide_tickets if t.get("status") == "RESOLVED")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("⚡ Awaiting Your Action", c_awaiting)
+        m2.metric("🔄 In Progress / Awaiting Founder", c_inprogress)
+        m3.metric("✅ Resolved", c_resolved)
+
         col_f1, col_f2 = st.columns([3, 1])
         with col_f2:
-            status_filter = st.selectbox("Status Filter", ["ALL", "OPEN", "IN_PROGRESS", "RESOLVED"], key="guide_hr_status_filter")
+            status_filter = st.selectbox(
+                "Status Filter",
+                ["ALL", "AWAITING_ACTION", "IN_PROGRESS", "RESOLVED"],
+                format_func=lambda x: "All Consultations" if x == "ALL" else ("⚡ Awaiting Action" if x == "AWAITING_ACTION" else ("🔄 In Progress" if x == "IN_PROGRESS" else "✅ Resolved")),
+                key="guide_hr_status_filter"
+            )
 
-        guide_tickets = list_guide_requests(guide_id)
-        # Only show tickets from currently assigned caseload entrepreneurs
-        assigned_asp_ids = {a["id"] for a in (assigned_aspirants or [])}
-        guide_tickets = [t for t in (guide_tickets or []) if t.get("aspirant_id") in assigned_asp_ids]
-
-        if status_filter != "ALL":
-            guide_tickets = [t for t in guide_tickets if t.get("status") == status_filter]
+        if status_filter == "AWAITING_ACTION":
+            guide_tickets = [t for t in guide_tickets if t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED")]
+        elif status_filter == "IN_PROGRESS":
+            guide_tickets = [t for t in guide_tickets if t.get("status") in ("IN_PROGRESS", "WAITING_ON_ASPIRANT")]
+        elif status_filter == "RESOLVED":
+            guide_tickets = [t for t in guide_tickets if t.get("status") == "RESOLVED"]
 
         if not guide_tickets:
             st.info("No help requests found in this queue.")
         else:
             for t in guide_tickets:
                 t_status = t.get("status", "OPEN")
-                st_color = "#f59e0b" if t_status == "OPEN" else "#3b82f6" if t_status == "IN_PROGRESS" else "#10b981"
+                status_color_map = {
+                    "OPEN": "#F59E0B",
+                    "WAITING_ON_GUIDE_SME": "#DC2626",
+                    "WAITING_ON_ASPIRANT": "#8B5CF6",
+                    "IN_PROGRESS": "#3B82F6",
+                    "RESOLVED": "#10B981"
+                }
+                st_color = status_color_map.get(t_status, "#64748B")
 
                 escaped_subject = _safe_esc(t.get('subject', 'Support Ticket'))
                 escaped_asp_name = _safe_esc(t.get('aspirant_name') or 'Entrepreneur')
@@ -998,16 +1075,31 @@ def render_guide_portal(user_profile: dict):
                     g_resp = _safe_esc(t.get('guide_response') or '').replace('\n', '<br>')
                     guide_resp_html = f'<div style="background:#F0FDF4; border:1px solid #BBF7D0; border-left:3px solid #10b981; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#166534; margin-top:0.5rem;"><strong>Guide Response:</strong> {g_resp}</div>'
 
+                asp_reply_html = ""
+                if t.get('aspirant_response'):
+                    a_resp = _safe_esc(t.get('aspirant_response') or '').replace('\n', '<br>')
+                    asp_reply_html = f'<div style="background:#EFF6FF; border:1px solid #BFDBFE; border-left:3px solid #3B82F6; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#1E40AF; margin-top:0.5rem;"><strong>Founder Reply:</strong> {a_resp}</div>'
+
+                status_display_labels = {
+                    "OPEN": "OPEN",
+                    "WAITING_ON_GUIDE_SME": "ACTION REQUIRED",
+                    "WAITING_ON_ASPIRANT": "AWAITING FOUNDER",
+                    "IN_PROGRESS": "IN PROGRESS",
+                    "RESOLVED": "RESOLVED"
+                }
+                st_badge_label = status_display_labels.get(t_status, t_status)
+
                 card_html = (
                     f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 12px 12px 0; padding:1.2rem; margin-bottom:0.8rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
                     f'<div style="display:flex; justify-content:space-between; align-items:center;">'
                     f'<div><span style="font-size:1.1rem; font-weight:800; color:#0F172A;">{escaped_subject}</span>'
-                    f'<span style="font-size:0.75rem; font-weight:800; background:{st_color}; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:8px;">{t_status}</span>'
+                    f'<span style="font-size:0.75rem; font-weight:800; background:{st_color}; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:8px;">{st_badge_label}</span>'
                     f'<span style="font-size:0.75rem; font-weight:700; background:#F1F5F9; color:#475569; padding:2px 8px; border-radius:6px; margin-left:4px;">{t.get("priority","MEDIUM")}</span></div>'
                     f'<div style="font-size:0.8rem; color:#64748B;">{str(t.get("created_at",""))[:16]}</div>'
                     f'</div>'
                     f'<div style="font-size:0.85rem; color:#64748B; margin:4px 0;">From: <strong style="color:#0F172A;">{escaped_asp_name}</strong> ({escaped_asp_email})</div>'
                     f'<div style="font-size:0.9rem; color:#334155; margin-top:0.4rem; line-height:1.45;">{escaped_message}</div>'
+                    f'{asp_reply_html}'
                     f'{guide_resp_html}'
                     f'</div>'
                 )
@@ -1019,12 +1111,17 @@ def render_guide_portal(user_profile: dict):
                         st.session_state["guide_selected_aspirant"] = t.get("aspirant_id")
                         st.rerun()
 
-                if t_status in ["OPEN", "IN_PROGRESS"]:
+                if t_status != "RESOLVED":
                     with st.expander(f"💬 Respond to '{t.get('subject')}'", expanded=False):
                         with st.form(f"form_guide_resp_{t['id']}"):
                             c_rs1, c_rs2 = st.columns([1, 2])
                             with c_rs1:
-                                new_st = st.selectbox("Update Status", ["IN_PROGRESS", "RESOLVED"], key=f"sel_st_{t['id']}")
+                                new_st = st.selectbox(
+                                    "Update Status",
+                                    ["WAITING_ON_ASPIRANT", "IN_PROGRESS", "RESOLVED"],
+                                    format_func=lambda x: "Awaiting Founder Action / Documents" if x == "WAITING_ON_ASPIRANT" else ("In Progress (Ongoing Mentorship)" if x == "IN_PROGRESS" else "Resolved (Complete)"),
+                                    key=f"sel_st_{t['id']}"
+                                )
                             with c_rs2:
                                 resp_text = st.text_area("Response Message *", placeholder="Provide guidance, action points, or confirm resolution...", height=80, key=f"txt_resp_{t['id']}")
 
