@@ -401,3 +401,31 @@ def list_users_with_multi_roles() -> List[Dict]:
 
     results.sort(key=lambda x: x["full_name"])
     return results
+
+
+def list_active_profiles_for_role(target_role: str) -> List[Dict]:
+    """
+    Returns all user profiles eligible for target_role ('aspirant', 'guide', 'sme').
+    Includes both base profiles and secondary multi-role holders whose grant is currently ACTIVE.
+    Excludes users whose grant is suspended, revoked, or pending NDA.
+    """
+    from services.profiles import list_profiles_by_role, get_profile
+    base_profiles = list_profiles_by_role(target_role)
+    profiles_by_id = {str(p["id"]): p for p in base_profiles}
+
+    # Inspect all multi-role users
+    for u in list_users_with_multi_roles():
+        uid = str(u["id"])
+        if target_role in u.get("active_roles", []):
+            if uid not in profiles_by_id:
+                prof = get_profile(uid)
+                if prof:
+                    profiles_by_id[uid] = prof
+        else:
+            # If primary profile was target_role but is explicitly suspended or revoked in user_roles
+            if target_role in u.get("revoked_roles", []) or target_role in u.get("suspended_roles", []):
+                profiles_by_id.pop(uid, None)
+
+    results = list(profiles_by_id.values())
+    results.sort(key=lambda x: str(x.get("full_name", "")))
+    return results

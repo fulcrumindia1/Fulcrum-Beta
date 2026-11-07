@@ -193,10 +193,28 @@ def render_admin_role_grants_tab(admin_id: str):
                                 st.error(err or "Failed to revoke role.")
 
             elif sel_status == "PENDING NDA":
-                st.info(f"Role '{sel_role.upper()}' is awaiting NDA signature by the user.")
-                reason = st.text_input("Reason (optional)", placeholder="e.g. Granted in error", key="cancel_reason_pnd")
-                col_b1, col_b2 = st.columns(2)
+                st.info(f"Role '{sel_role.upper()}' is awaiting NDA signature by the user. As Platform Administrator, you may also directly verify and activate this role if confirmed.")
+                col_b1, col_b2, col_b3 = st.columns([1.3, 1, 1])
                 with col_b1:
+                    if st.button("✅ Verify & Activate Role", key=f"btn_act_pnd_{sel_manage_user}_{sel_role}", type="primary", use_container_width=True, help="Administratively approve and activate this role grant."):
+                        from services.roles import activate_role
+                        ok, err = activate_role(sel_manage_user, sel_role)
+                        if ok:
+                            from services.legal import record_legal_acceptance, check_user_nda_accepted
+                            if not check_user_nda_accepted(sel_manage_user, sel_role):
+                                record_legal_acceptance(
+                                    user_id=sel_manage_user,
+                                    user_email=sel_target_user.get("email", ""),
+                                    doc_type="nda_dual",
+                                    typed_name=sel_target_user.get("full_name", ""),
+                                    typed_phrase="I ACCEPT",
+                                    checkbox_confirmed=True
+                                )
+                            st.success(f"Role '{sel_role.upper()}' activated successfully! {sel_target_user.get('full_name')} is now active and available for mentor assignments.")
+                            st.rerun()
+                        else:
+                            st.error(err or "Failed to activate role.")
+                with col_b2:
                     if st.button("❌ Cancel Grant", key="btn_cancel_grant", type="secondary", use_container_width=True):
                         ok, err = cancel_grant(sel_manage_user, sel_role)
                         if ok:
@@ -204,9 +222,9 @@ def render_admin_role_grants_tab(admin_id: str):
                             st.rerun()
                         else:
                             st.error(err or "Failed to cancel grant.")
-                with col_b2:
-                    if st.button("🚫 Revoke Role", key="btn_rev_pnd_role", type="primary", use_container_width=True):
-                        ok, err = revoke_role(sel_manage_user, sel_role, reason=reason.strip() or "Cancelled pending NDA", revoked_by=admin_id)
+                with col_b3:
+                    if st.button("🚫 Revoke Role", key="btn_rev_pnd_role", use_container_width=True):
+                        ok, err = revoke_role(sel_manage_user, sel_role, reason="Cancelled pending NDA", revoked_by=admin_id)
                         if ok:
                             st.success(f"Role '{sel_role.upper()}' marked revoked.")
                             st.rerun()

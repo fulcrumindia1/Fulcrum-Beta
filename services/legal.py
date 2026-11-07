@@ -314,6 +314,8 @@ def check_user_nda_accepted(user_id: str, role: str) -> bool:
     """
     Returns True if user has accepted the mandatory NDA for the given role (guide or sme).
     Aspirants do not require an NDA.
+    Strictly filters by NDA document types ('nda_dual', 'nda_guide', 'nda_sme') to prevent
+    general Terms & Conditions acceptances from falsely satisfying the NDA requirement.
     """
     if not user_id or role not in ("guide", "sme"):
         return True
@@ -330,16 +332,17 @@ def check_user_nda_accepted(user_id: str, role: str) -> bool:
         client = get_supabase_admin_client() or get_supabase_client()
         if client:
             try:
-                res = client.table("legal_acceptances").select("roles_covered").eq("user_id", user_id).execute()
+                res = client.table("legal_acceptances").select("roles_covered, doc_type").eq("user_id", user_id).in_("doc_type", ["nda_dual", "nda_guide", "nda_sme"]).execute()
                 if res.data:
                     for acc in res.data:
+                        d_type = acc.get("doc_type", "")
                         roles = acc.get("roles_covered") or []
                         if isinstance(roles, str):
                             try:
                                 roles = json.loads(roles)
                             except Exception:
                                 roles = [roles]
-                        if role in roles or "nda_dual" in str(acc):
+                        if d_type in ("nda_dual", f"nda_{role}") or role in roles:
                             accepted = True
                             break
             except Exception:

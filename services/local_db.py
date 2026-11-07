@@ -2193,11 +2193,11 @@ class LocalDatabase:
         if doc_type_or_role == "terms_and_conditions":
             cur.execute("SELECT id FROM legal_acceptances WHERE user_id = ? AND doc_type = 'terms_and_conditions' LIMIT 1", (user_id,))
         else:
-            cur.execute("SELECT roles_covered, doc_type FROM legal_acceptances WHERE user_id = ?", (user_id,))
+            cur.execute("SELECT roles_covered, doc_type FROM legal_acceptances WHERE user_id = ? AND doc_type IN ('nda_dual', 'nda_guide', 'nda_sme')", (user_id,))
             rows = cur.fetchall()
             conn.close()
             for r in rows:
-                if doc_type_or_role in str(r[0]) or r[1] == "nda_dual" or r[1] == f"nda_{doc_type_or_role}":
+                if r[1] == "nda_dual" or r[1] == f"nda_{doc_type_or_role}" or doc_type_or_role in str(r[0]):
                     return True
             return False
         row = cur.fetchone()

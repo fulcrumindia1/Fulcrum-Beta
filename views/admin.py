@@ -88,10 +88,11 @@ def render_admin_portal(admin_profile: dict):
                         st.success(f"Sync complete: {bf_res.get('backfilled', 0)} backfilled, {bf_res.get('already_existing', 0)} verified (Total Auth Users: {bf_res.get('total_auth_users', 0)}).")
                         st.rerun()
 
-    # Fetch stats
-    aspirants = list_profiles_by_role("aspirant")
-    guides = list_profiles_by_role("guide")
-    smes = list_profiles_by_role("sme")
+    # Fetch stats (multi-role aware)
+    from services.roles import list_active_profiles_for_role
+    aspirants = list_active_profiles_for_role("aspirant")
+    guides = list_active_profiles_for_role("guide")
+    smes = list_active_profiles_for_role("sme")
     all_schemes = list_schemes(active_only=False)
     mentor_queries = list_mentor_admin_queries()
     pending_directives = [q for q in mentor_queries if q.get("status") == "PENDING_ADMIN"]
@@ -750,9 +751,9 @@ def render_admin_portal(admin_profile: dict):
         if not all_queries:
             st.info("No mentor administrative inquiries currently recorded matching the filter criteria.")
         else:
-            # Build Guide and SME lookup dictionaries for co-assignment options
-            guides_list = list_profiles_by_role("guide")
-            smes_list = list_profiles_by_role("sme")
+            # Build Guide and SME lookup dictionaries for co-assignment options (multi-role aware)
+            guides_list = list_active_profiles_for_role("guide")
+            smes_list = list_active_profiles_for_role("sme")
             guide_options = {"NONE": "None (Keep Current Mentorship Team)"}
             for g in guides_list:
                 guide_options[g["id"]] = f"{g['full_name']} ({g.get('district', 'Tamil Nadu')})"
