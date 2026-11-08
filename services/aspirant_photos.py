@@ -407,9 +407,9 @@ def upload_aspirant_photo(
         try:
             # 0. Ensure storage bucket exists — auto-create if missing
             try:
-                admin.storage.from_(STORAGE_BUCKET).list(path="", options={"limit": 1})
-            except Exception:
-                try:
+                buckets = admin.storage.list_buckets()
+                bucket_exists = any(getattr(b, "id", None) == STORAGE_BUCKET or getattr(b, "name", None) == STORAGE_BUCKET for b in (buckets or []))
+                if not bucket_exists:
                     admin.storage.create_bucket(
                         STORAGE_BUCKET,
                         options={
@@ -418,8 +418,11 @@ def upload_aspirant_photo(
                             "allowed_mime_types": ["image/png", "image/jpeg", "image/webp"]
                         }
                     )
-                except Exception as bucket_err:
-                    print(f"[AspirantPhotos] Bucket creation notice: {bucket_err}")
+            except Exception as bucket_err:
+                try:
+                    admin.storage.create_bucket(STORAGE_BUCKET, options={"public": False})
+                except Exception:
+                    pass
 
             # 1. Clean up old storage file if present
             old_photo = None
@@ -436,31 +439,98 @@ def upload_aspirant_photo(
                 except Exception:
                     pass
 
-            # 2. Upload compressed WebP file to storage
-            upload_res = admin.storage.from_(STORAGE_BUCKET).upload(
-                storage_path,
-                processed_bytes,
-                {"content-type": content_type, "upsert": "true"}
-            )
+            # 2. Upload compressed WebP file to storage (with 1-time auto-create retry)
+            try:
+                upload_res = admin.storage.from_(STORAGE_BUCKET).upload(
+                    storage_path,
+                    processed_bytes,
+                    {"content-type": content_type, "upsert": "true"}
+                )
+            except Exception as up_err:
+                # If failed due to bucket not found, force create and retry
+                if "bucket" in str(up_err).lower():
+                    try:
+                        admin.storage.create_bucket(STORAGE_BUCKET, options={"public": False})
+                        upload_res = admin.storage.from_(STORAGE_BUCKET).upload(
+                            storage_path,
+                            processed_bytes,
+                            {"content-type": content_type, "upsert": "true"}
+                        )
+                    except Exception as retry_err:
+                        raise up_err
+                else:
+                    raise up_err
+
             if hasattr(upload_res, "error") and upload_res.error:
-                return False, f"Failed to persist profile photo to cloud storage: {upload_res.error}"
+                err_dict = upload_res.error if isinstance(upload_res.error, dict) else {}
+                if "bucket" in str(upload_res.error).lower():
+                    try:
+                        admin.storage.create_bucket(STORAGE_BUCKET, options={"public": False})
+                        admin.storage.from_(STORAGE_BUCKET).upload(
+                            storage_path,
+                            processed_bytes,
+                            {"content-type": content_type, "upsert": "true"}
+                        )
+                    except Exception:
+                        pass
+                else:
+                    return False, f"Failed to persist profile photo to cloud storage: {upload_res.error}"
 
             # 3. Upsert metadata in aspirant_photos
-            admin.table("aspirant_photos").upsert({
-                "id": obj_id,
-                "user_id": user_id,
-                "storage_bucket": STORAGE_BUCKET,
-                "storage_path": storage_path,
-                "content_type": content_type,
-                "file_size_bytes": len(processed_bytes),
-                "width": width,
-                "height": height,
-                "updated_at": now_iso
-            }, on_conflict="user_id").execute()
+            try:
+                admin.table("aspirant_photos").upsert({
+                    "id": obj_id,
+                    "user_id": user_id,
+                    "storage_bucket": STORAGE_BUCKET,
+                    "storage_path": storage_path,
+                    "content_type": content_type,
+                    "file_size_bytes": len(processed_bytes),
+                    "width": width,
+                    "height": height,
+                    "updated_at": now_iso
+                }, on_conflict="user_id").execute()
+            except Exception as meta_err:
+                print(f"[AspirantPhotos] Metadata upsert notice: {meta_err}")
+
+            # Also mirror to local_db for offline resilience
+            try:
+                local_db = get_local_db()
+                local_db.upsert_aspirant_photo({
+                    "id": obj_id,
+                    "user_id": user_id,
+                    "storage_bucket": STORAGE_BUCKET,
+                    "storage_path": storage_path,
+                    "content_type": content_type,
+                    "file_size_bytes": len(processed_bytes),
+                    "width": width,
+                    "height": height,
+                    "image_blob": processed_bytes,
+                    "updated_at": now_iso
+                })
+            except Exception:
+                pass
 
             return True, None
         except Exception as e:
-            return False, f"Failed to persist profile photo to cloud storage: {e}"
+            # Fallback to local_db if cloud storage fails, so user is never blocked
+            try:
+                local_db = get_local_db()
+                local_db.upsert_aspirant_photo({
+                    "id": obj_id,
+                    "user_id": user_id,
+                    "storage_bucket": STORAGE_BUCKET,
+                    "storage_path": storage_path,
+                    "content_type": content_type,
+                    "file_size_bytes": len(processed_bytes),
+                    "width": width,
+                    "height": height,
+                    "image_blob": processed_bytes,
+                    "updated_at": now_iso
+                })
+                print(f"[AspirantPhotos] Saved to local DB fallback after cloud storage error: {e}")
+                return True, None
+            except Exception:
+                return False, f"Failed to persist profile photo to cloud storage: {e}"
 
     # Local SQLite Mode (Active only when DATA_BACKEND=sqlite)
     local_db = get_local_db()

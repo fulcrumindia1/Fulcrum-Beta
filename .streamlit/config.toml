@@ -11,6 +11,7 @@ runOnSave = true
 headless = true
 enableCORS = false
 enableXsrfProtection = false
+maxUploadSize = 5
 
 [client]
 toolbarMode = "minimal"

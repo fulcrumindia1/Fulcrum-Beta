@@ -232,7 +232,7 @@ def render_aspirant_portal(user_profile: dict):
 
             with col_ph2:
                 st.markdown("<div style='font-size:1rem; font-weight:700; color:#0F172A; margin-top:2px;'>Founder Profile Photo</div>", unsafe_allow_html=True)
-                st.markdown("<div style='font-size:0.8rem; color:#64748B;'>Upload an official founder headshot (JPG, PNG, WebP — max 5 MB). Compressed and stored securely for your assigned Guides, SMEs, and Program Administrators.</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size:0.8rem; color:#64748B;'>Upload an official founder headshot (JPG, PNG, WebP — max 5 MB).</div>", unsafe_allow_html=True)
                 if current_photo:
                     st.caption(f"✓ Photo active ({current_photo.get('width', 0)}x{current_photo.get('height', 0)}px · {current_photo.get('content_type', 'image/webp')})")
 
