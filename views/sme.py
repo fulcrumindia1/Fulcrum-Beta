@@ -83,8 +83,13 @@ def render_sme_portal(user_profile: dict):
                     _aid = _t.get("aspirant_id")
                     open_tickets_by_asp[_aid] = open_tickets_by_asp.get(_aid, 0) + 1
 
+            sorted_assigned_aspirants = sorted(
+                assigned_aspirants,
+                key=lambda a: (-open_tickets_by_asp.get(a["id"], 0), str(a.get("full_name") or "").lower())
+            )
+
             asp_options = {}
-            for a in assigned_aspirants:
+            for a in sorted_assigned_aspirants:
                 _open_n = open_tickets_by_asp.get(a["id"], 0)
                 _badge = f"[🔴 {_open_n} Open]" if _open_n > 0 else "[🟢 Active]"
                 _bname = a.get("profile_data", {}).get("business", {}).get("business_name", "Enterprise")
@@ -452,6 +457,10 @@ def render_sme_portal(user_profile: dict):
                                     else:
                                         st.error(err or "Failed to dispatch advisory notice.")
 
+                    from services.governance import check_sme_has_conflict
+                    if check_sme_has_conflict(sme_id, selected_asp_id):
+                        st.warning("⚖️ Conflict of Interest Declared — advisory responses on this case are paused pending Admin reassignment.")
+
                     if not asp_tickets:
                         st.info(f"No domain advisory requests currently recorded with {curr_asp['full_name']}. You may initiate a domain check-in above.")
                     else:
@@ -782,7 +791,25 @@ def render_sme_portal(user_profile: dict):
             except Exception:
                 cur_data = {}
 
-        # Profile Card
+        # Profile Card + Private Professional Photograph
+        from services.professional_photos import (
+            get_professional_photo_url,
+            upload_professional_photo,
+            delete_professional_photo,
+            render_professional_avatar_html,
+        )
+        sme_photo_url = get_professional_photo_url(
+            viewer_id=sme_id,
+            subject_user_id=sme_id,
+            viewer_email=cur_profile.get("email"),
+        )
+        avatar_96_html = render_professional_avatar_html(
+            full_name=cur_profile.get("full_name") or "Subject Matter Expert",
+            photo_url=sme_photo_url,
+            size_px=96,
+            role="sme",
+        )
+
         bio_text = _safe_esc(cur_data.get("bio"))
         bio_html = f'<div style="font-size:0.85rem; color:#64748B; margin-top:0.4rem; font-style:italic;">"{bio_text}"</div>' if bio_text else ''
         p_name = _safe_esc(cur_profile.get('full_name') or 'Subject Matter Expert')
@@ -793,8 +820,10 @@ def render_sme_portal(user_profile: dict):
         p_ind = _safe_esc(cur_data.get('industry') or 'Multi-Sector')
 
         card_html = (
-            f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 12px 12px 0; padding:1.25rem; margin-bottom:1.5rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
-            f'<div style="display:flex; justify-content:space-between; align-items:flex-start;">'
+            f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 12px 12px 0; padding:1.25rem; margin-bottom:1.25rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+            f'<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">'
+            f'<div style="display:flex; align-items:flex-start; gap:1.1rem;">'
+            f'{avatar_96_html}'
             f'<div>'
             f'<h3 style="margin:0; color:#0F172A; font-size:1.35rem;">{p_name}</h3>'
             f'<div style="color:#D97706; font-weight:700; font-size:0.9rem; margin-top:2px;">Subject Matter Expert · {p_dist}</div>'
@@ -809,11 +838,53 @@ def render_sme_portal(user_profile: dict):
             f'</div>'
             f'{bio_html}'
             f'</div>'
+            f'</div>'
             f'<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">VERIFIED SME</span>'
             f'</div>'
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
+
+        with st.expander("📷 Manage My Private Professional Photograph", expanded=False):
+            st.caption("🔒 **Strict Confidentiality:** Your professional photograph is visible **only** to you and the Platform Administrator (`fulcrumindia1@gmail.com`). It is never displayed to Aspirants or other mentors. If you hold both Guide and SME roles, your single professional photograph is automatically shared across both mentor profiles.")
+            col_sph_up, col_sph_act = st.columns([3, 1])
+            with col_sph_up:
+                up_sme_photo = st.file_uploader(
+                    "Upload / Replace Professional Headshot (JPG, PNG, WEBP · Max 5 MB · Auto-cropped to 320×320)",
+                    type=["jpg", "jpeg", "png", "webp"],
+                    key=f"sme_prof_photo_uploader_{sme_id}"
+                )
+            with col_sph_act:
+                st.write("")
+                st.write("")
+                if st.button("⬆️ Save Headshot", type="primary", use_container_width=True, key=f"btn_save_sme_photo_{sme_id}"):
+                    if not up_sme_photo:
+                        st.warning("Please select an image file first.")
+                    else:
+                        ok_ph, err_ph = upload_professional_photo(
+                            subject_user_id=sme_id,
+                            file_bytes=up_sme_photo.getvalue(),
+                            uploaded_by=sme_id,
+                            filename=up_sme_photo.name,
+                            actor_email=cur_profile.get("email"),
+                        )
+                        if ok_ph:
+                            st.success("Professional photograph saved!")
+                            st.rerun()
+                        else:
+                            st.error(err_ph or "Failed to upload photograph.")
+                if sme_photo_url:
+                    if st.button("🗑️ Remove Photo", use_container_width=True, key=f"btn_del_sme_photo_{sme_id}"):
+                        ok_rm, err_rm = delete_professional_photo(
+                            subject_user_id=sme_id,
+                            actor_id=sme_id,
+                            actor_email=cur_profile.get("email"),
+                        )
+                        if ok_rm:
+                            st.success("Professional photograph removed.")
+                            st.rerun()
+                        else:
+                            st.error(err_rm or "Failed to remove photograph.")
 
         with st.expander("✏️ Edit My Specialist Profile & Credentials", expanded=False):
             with st.form("form_edit_sme_profile"):

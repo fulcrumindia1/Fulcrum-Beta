@@ -17,6 +17,56 @@ VALID_GRANTABLE_ROLES = ("aspirant", "guide", "sme")
 VALID_ROLES = ("aspirant", "guide", "sme", "admin")
 VALID_STATUSES = ("active", "pending_nda", "suspended", "revoked")
 
+SOLE_ADMIN_EMAIL = "fulcrumindia1@gmail.com"
+SOLE_ADMIN_UUID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
+
+
+def is_strict_admin(
+    user_id: Optional[str] = None,
+    email: Optional[str] = None,
+    user_dict: Optional[dict] = None,
+) -> bool:
+    """
+    Canonical Single-Admin Identity Gate.
+    Returns True ONLY when the identity belongs to fulcrumindia1@gmail.com
+    (UUID: 616304b5-aef5-4cd0-88be-2fda7ddf7f88).
+    Never trusts profiles.role == 'admin', district_admin, operational_admin,
+    or user_metadata.role alone.
+    """
+    if isinstance(user_dict, dict):
+        user_id = user_id or user_dict.get("id")
+        email = email or user_dict.get("email")
+
+    clean_email = str(email or "").strip().lower()
+    clean_uid = str(user_id or "").strip().lower()
+
+    # If email is explicitly known and is NOT fulcrumindia1@gmail.com, deny immediately
+    if clean_email and clean_email != SOLE_ADMIN_EMAIL:
+        return False
+
+    # If UUID matches SOLE_ADMIN_UUID (and email is either omitted or matches SOLE_ADMIN_EMAIL)
+    if clean_uid == SOLE_ADMIN_UUID and (not clean_email or clean_email == SOLE_ADMIN_EMAIL):
+        return True
+
+    # Lookup profile when only user_id or only email is provided
+    if clean_uid:
+        try:
+            from services.profiles import get_profile
+            p = get_profile(clean_uid)
+            if p:
+                p_email = str(p.get("email") or "").strip().lower()
+                if p_email == SOLE_ADMIN_EMAIL:
+                    return True
+                if p_email and p_email != SOLE_ADMIN_EMAIL:
+                    return False
+        except Exception:
+            pass
+
+    if clean_email == SOLE_ADMIN_EMAIL and not clean_uid:
+        return True
+
+    return False
+
 
 def _get_admin_client():
     return get_supabase_admin_client()
@@ -66,18 +116,21 @@ def get_user_roles(user_id: str) -> List[Dict]:
 
     # Ensure the user's primary/registered role is included if no explicit multi-role grants exist
     from services.profiles import get_profile
-    from services.governance import get_primary_admin_id
     p = get_profile(user_id)
-    if p:
-        base_role = p.get("role", "aspirant")
-        user_email = str(p.get("email", "")).strip().lower()
-        primary_admin_id = str(get_primary_admin_id() or "")
+    user_email = str(p.get("email", "")).strip().lower() if p else ""
+    is_platform_admin = is_strict_admin(user_id=user_id, email=user_email)
 
-        is_platform_admin = (
-            base_role in ("admin", "district_admin", "operational_admin")
-            or user_email == "fulcrumindia1@gmail.com"
-            or (primary_admin_id and str(user_id) == primary_admin_id)
-        )
+    if not is_platform_admin:
+        # Strip any unauthorized admin/district_admin/operational_admin grants from non-primary accounts
+        roles = [
+            r for r in roles
+            if str(r.get("role", "")).strip().lower() not in ("admin", "district_admin", "operational_admin")
+        ]
+
+    if p:
+        base_role = str(p.get("role", "aspirant")).strip().lower()
+        if not is_platform_admin and base_role in ("admin", "district_admin", "operational_admin"):
+            base_role = "aspirant"
 
         if is_platform_admin:
             # Single Platform Admin is strictly an Admin, NEVER an Aspirant
@@ -198,6 +251,10 @@ def grant_role(
         print(f"[Roles] Grant notification notice: {e}")
 
     return True, None
+
+
+# Alias for backward/blueprint compatibility
+assign_user_role = grant_role
 
 
 def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:

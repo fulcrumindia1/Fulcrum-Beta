@@ -733,13 +733,15 @@ def render_aspirant_portal(user_profile: dict):
                 st.markdown("##### 📋 Your Submitted Confidential Support Reports")
                 for mc in my_complaints:
                     mc_status = str(mc.get("status", "open")).upper()
-                    mc_badge_bg = "#10B981" if mc_status == "RESOLVED" else "#3B82F6" if mc_status == "REVIEWED" else "#F59E0B"
+                    mc_badge_bg = "#10B981" if mc_status == "RESOLVED" else "#3B82F6" if mc_status in ("REVIEWED", "UNDER_REVIEW") else "#F59E0B"
+                    mc_reason_raw = mc.get("reason") or mc.get("reason_category") or "Confidential Feedback"
+                    mc_reason_disp = _safe_esc(str(mc_reason_raw).replace("_", " ").title())
                     mc_note = mc.get("resolution_notes") or ""
                     mc_note_html = f'<div style="margin-top:4px; font-size:0.82rem; color:#1E40AF;"><strong>Fulcrum Support Update:</strong> {_safe_esc(mc_note)}</div>' if mc_note else ""
                     st.markdown(f"""
                     <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.75rem 1rem; margin-bottom:0.5rem;">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <span style="font-size:0.85rem; font-weight:700; color:#0F172A;">Reason: {_safe_esc(str(mc.get('reason_category', '')).replace('_', ' ').title())} · {str(mc.get('created_at', ''))[:10]}</span>
+                            <span style="font-size:0.85rem; font-weight:700; color:#0F172A;">Reason: {mc_reason_disp} · {str(mc.get('created_at', ''))[:10]}</span>
                             <span style="background:{mc_badge_bg}; color:#ffffff; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:6px;">{mc_status}</span>
                         </div>
                         <div style="font-size:0.82rem; color:#475569; margin-top:4px;">{_safe_esc(mc.get('details', ''))}</div>

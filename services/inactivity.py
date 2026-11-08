@@ -595,7 +595,9 @@ def evaluate_aspirant_engagement_roster() -> List[Dict]:
             tickets_by_asp.setdefault(aid, []).append(t)
 
     guide_ids = [str(r.get("guide_id")) for r in all_rels if r.get("guide_id")]
-    guide_profiles = get_profiles_batch(guide_ids)
+    sme_ids = [str(r.get("sme_id")) for r in all_rels if r.get("sme_id")]
+    all_mentor_ids = list({*guide_ids, *sme_ids})
+    mentor_profiles = get_profiles_batch(all_mentor_ids)
 
     now = datetime.now(timezone.utc)
     roster: List[Dict] = []
@@ -607,26 +609,37 @@ def evaluate_aspirant_engagement_roster() -> List[Dict]:
         comp_pct = int(asp.get("completion_pct") or 0)
         rel = rel_by_asp.get(asp_id)
         guide_id = str(rel.get("guide_id")) if (rel and rel.get("guide_id")) else None
-        guide_prof = guide_profiles.get(guide_id) if guide_id else None
+        guide_prof = mentor_profiles.get(guide_id) if guide_id else None
         guide_name = guide_prof.get("full_name", "Unassigned") if guide_prof else "Unassigned"
+        sme_id = str(rel.get("sme_id")) if (rel and rel.get("sme_id")) else None
+        sme_prof = mentor_profiles.get(sme_id) if sme_id else None
+        sme_name = sme_prof.get("full_name", "Unassigned") if sme_prof else "Unassigned"
+
+        p_data = asp.get("profile_data") or {}
+        if isinstance(p_data, str):
+            try:
+                p_data = json.loads(p_data)
+            except Exception:
+                p_data = {}
+        biz_name = (p_data.get("business") or {}).get("business_name") or asp.get("business_name") or "Enterprise"
 
         asp_tickets = tickets_by_asp.get(asp_id, [])
         released_schemes = get_released_schemes_for_aspirant(asp_id)
         events = get_journey_timeline(asp_id)
 
-        # Compute last verified Aspirant activity timestamp
-        asp_timestamps: List[datetime] = []
+        # Compute last verified Aspirant activity timestamp & source
+        asp_timestamps: List[Tuple[datetime, str]] = []
         for field in ("updated_at", "created_at"):
             val = asp.get(field)
             if val:
                 try:
-                    asp_timestamps.append(datetime.fromisoformat(str(val).replace("Z", "+00:00")))
+                    asp_timestamps.append((datetime.fromisoformat(str(val).replace("Z", "+00:00")), "Profile / Registration"))
                 except Exception:
                     pass
         for ev in events:
             if ev.get("actor_role") == "aspirant" and ev.get("created_at"):
                 try:
-                    asp_timestamps.append(datetime.fromisoformat(str(ev["created_at"]).replace("Z", "+00:00")))
+                    asp_timestamps.append((datetime.fromisoformat(str(ev["created_at"]).replace("Z", "+00:00")), "Journey Milestone"))
                 except Exception:
                     pass
         for tk in asp_tickets:
@@ -634,11 +647,14 @@ def evaluate_aspirant_engagement_roster() -> List[Dict]:
                 tval = tk.get(tf)
                 if tval and (tf == "last_aspirant_response_at" or tk.get("requester_role") in (None, "aspirant")):
                     try:
-                        asp_timestamps.append(datetime.fromisoformat(str(tval).replace("Z", "+00:00")))
+                        asp_timestamps.append((datetime.fromisoformat(str(tval).replace("Z", "+00:00")), "Consultation Reply"))
                     except Exception:
                         pass
 
-        last_active_dt = max(asp_timestamps) if asp_timestamps else (now - timedelta(days=1))
+        if asp_timestamps:
+            last_active_dt, last_activity_source = max(asp_timestamps, key=lambda pair: pair[0])
+        else:
+            last_active_dt, last_activity_source = (now - timedelta(days=1)), "Registration"
         days_quiet = max(0, (now - last_active_dt).days)
 
         # Check Blocker Exclusion Rules BEFORE classifying quietness
@@ -651,63 +667,91 @@ def evaluate_aspirant_engagement_roster() -> List[Dict]:
             if tk.get("status") == "WAITING_ON_ASPIRANT"
         ]
 
+        is_blocked = False
+        engagement_state = "ACTIVE"
         if not guide_id:
             category = "BLOCKED_ON_ADMIN"
+            engagement_state = "BLOCKED_ON_ADMIN"
+            is_blocked = True
             badge_label = "Blocked on Admin (No Guide Assigned)"
             badge_color = "#DC2626"
-            recommended_action = "Assign a Dedicated Guide in Tab 2 (Guide Assignments)."
+            recommended_action = "Assign a Dedicated Guide in Tab 4 (Mentor Assignments)."
         elif waiting_on_mentor_tickets:
             category = "WAITING_ON_MENTOR"
+            engagement_state = "WAITING_ON_MENTOR"
+            is_blocked = True
             badge_label = f"Waiting on Mentor Reply ({len(waiting_on_mentor_tickets)} Open)"
             badge_color = "#D97706"
             recommended_action = "Follow up with assigned Guide/SME to answer pending consultation."
         elif comp_pct < 60:
             category = "STALLED_ONBOARDING"
+            engagement_state = "GENTLE_CHECKIN"
+            is_blocked = True
             badge_label = f"Stalled Onboarding ({comp_pct}% Profile)"
             badge_color = "#7C3AED"
             recommended_action = "Guide should send a supportive check-in to help complete Business & Assistance profile."
         elif len(released_schemes) == 0 and days_quiet >= 7:
             category = "WAITING_ON_SCHEME_RELEASE"
+            engagement_state = "WAITING_ON_SCHEME_RELEASE"
+            is_blocked = True
             badge_label = "Waiting on Guide Scheme Release"
             badge_color = "#2563EB"
             recommended_action = "Guide should evaluate and release initial curated scheme recommendations."
         elif days_quiet >= 60:
             category = "DAY_60_DORMANT_REVIEW"
+            engagement_state = "DORMANT"
             badge_label = f"60d+ Dormant Review ({days_quiet}d quiet)"
             badge_color = "#64748B"
             recommended_action = "Admin & Guide review: Send supportive re-engagement outreach (never auto-archived)."
         elif days_quiet >= 30:
             category = "DAY_30_SUPPORTIVE_OUTREACH"
+            engagement_state = "SUPPORT_NEEDED"
             badge_label = f"30d Supportive Outreach ({days_quiet}d quiet)"
             badge_color = "#F59E0B"
             recommended_action = "Guide outreach recommended via WhatsApp/Email or Proactive Consultation."
         elif days_quiet >= 14:
             category = "DAY_14_GENTLE_CHECKIN"
+            engagement_state = "GENTLE_CHECKIN"
             badge_label = f"14d Gentle Check-In ({days_quiet}d quiet)"
             badge_color = "#3B82F6"
             recommended_action = "Gentle Guide check-in on venture milestones or DPR progress."
         else:
             category = "ACTIVE_ENGAGED"
+            engagement_state = "ACTIVE"
             badge_label = f"Active & Engaged ({days_quiet}d ago)"
             badge_color = "#10B981"
             recommended_action = "No intervention needed; venture is actively progressing."
 
+        full_name_val = asp.get("full_name", "Entrepreneur")
+        email_val = asp.get("email", "")
+        phone_val = asp.get("phone", "")
         roster.append({
             "aspirant_id": asp_id,
-            "aspirant_name": asp.get("full_name", "Entrepreneur"),
-            "aspirant_email": asp.get("email", ""),
-            "aspirant_phone": asp.get("phone", ""),
+            "full_name": full_name_val,
+            "aspirant_name": full_name_val,
+            "business_name": biz_name,
+            "email": email_val,
+            "aspirant_email": email_val,
+            "phone": phone_val,
+            "aspirant_phone": phone_val,
             "district": asp.get("district", "Tamil Nadu"),
             "completion_pct": comp_pct,
             "guide_id": guide_id,
             "guide_name": guide_name,
+            "guide_names": [guide_name] if guide_id else [],
+            "sme_names": [sme_name] if sme_id else [],
             "days_quiet": days_quiet,
+            "days_inactive": days_quiet,
             "last_active_str": last_active_dt.strftime("%d %b %Y"),
+            "last_activity_source": f"{last_activity_source} · {last_active_dt.strftime('%d %b %Y')}",
             "released_schemes_count": len(released_schemes),
             "open_tickets_count": len(waiting_on_mentor_tickets),
             "waiting_on_aspirant_count": len(waiting_on_aspirant_tickets),
             "category": category,
+            "engagement_state": engagement_state,
+            "is_blocked": is_blocked,
             "badge_label": badge_label,
+            "state_label": badge_label,
             "badge_color": badge_color,
             "recommended_action": recommended_action
         })

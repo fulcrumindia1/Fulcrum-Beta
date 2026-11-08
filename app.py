@@ -880,18 +880,12 @@ def main():
             # ─────────────────────────────────────────────────────────────────
             # MULTI-ROLE: CURRENT WORKSPACE SELECTOR
             # ─────────────────────────────────────────────────────────────────
-            from services.roles import get_active_roles, get_pending_nda_roles, get_user_roles
-            from services.governance import get_primary_admin_id
+            from services.roles import get_active_roles, get_pending_nda_roles, get_user_roles, is_strict_admin
             user_id = user.get("id")
             user_email = str(user.get("email", "")).strip().lower()
-            base_p_role = user.get("role", "aspirant")
-            primary_admin_id = str(get_primary_admin_id() or "")
+            base_p_role = str(user.get("role", "aspirant")).strip().lower()
 
-            is_single_admin = (
-                base_p_role in ("admin", "district_admin", "operational_admin")
-                or user_email == "fulcrumindia1@gmail.com"
-                or (primary_admin_id and str(user_id) == primary_admin_id)
-            )
+            is_single_admin = is_strict_admin(user_dict=user)
 
             if is_single_admin:
                 # Single Platform Admin is strictly an Admin, never an Aspirant or Mentor
@@ -900,8 +894,19 @@ def main():
                 ws_options = [("admin", "🏛️ Admin Dashboard")]
                 st.session_state["active_workspace"] = "admin"
             else:
-                active_r = get_active_roles(user_id) if user_id else []
-                pending_r = get_pending_nda_roles(user_id) if user_id else []
+                if base_p_role in ("admin", "district_admin", "operational_admin"):
+                    base_p_role = "aspirant"
+                    user["role"] = "aspirant"
+                    st.session_state["role"] = "aspirant"
+
+                active_r = [
+                    r for r in (get_active_roles(user_id) if user_id else [])
+                    if r not in ("admin", "district_admin", "operational_admin")
+                ]
+                pending_r = [
+                    r for r in (get_pending_nda_roles(user_id) if user_id else [])
+                    if r not in ("admin", "district_admin", "operational_admin")
+                ]
 
                 # If user has no explicit multi-role grants in user_roles, use base profile role
                 # BUT only if there are no revoked/suspended grants (don't resurrect revoked access)
@@ -922,8 +927,6 @@ def main():
                 if "sme" in active_r or "sme" in pending_r:
                     s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
                     ws_options.append(("sme", s_lbl))
-                if any(r in active_r for r in ("admin", "district_admin", "operational_admin")):
-                    ws_options.append(("admin", "🏛️ Admin Dashboard"))
 
                 if not ws_options:
                     ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
@@ -1133,7 +1136,12 @@ def main():
         elif active_role == "sme":
             render_sme_portal(user)
         elif active_role in ("admin", "district_admin", "operational_admin"):
-            render_admin_portal(user)
+            from services.roles import is_strict_admin
+            if not is_strict_admin(user_dict=user):
+                st.session_state["active_workspace"] = "aspirant"
+                render_aspirant_portal(user)
+            else:
+                render_admin_portal(user)
         else:
             st.error(f"Unrecognized workspace: '{active_role}'. Please contact support.")
             if st.button("Reset Session"):

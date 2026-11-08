@@ -35,14 +35,10 @@ def get_primary_admin_id() -> str:
         from services.profiles import list_profiles_by_role
         admins = list_profiles_by_role("admin")
         for p in admins:
-            if p.get("email") == PRIMARY_ADMIN_EMAIL:
+            if str(p.get("email") or "").strip().lower() == PRIMARY_ADMIN_EMAIL:
                 resolved = str(p["id"])
                 set_global_cache("primary_admin_id", resolved, ttl_seconds=3600)
                 return resolved
-        if admins:
-            resolved = str(admins[0]["id"])
-            set_global_cache("primary_admin_id", resolved, ttl_seconds=3600)
-            return resolved
     except Exception:
         pass
     set_global_cache("primary_admin_id", PRIMARY_ADMIN_FALLBACK_UUID, ttl_seconds=3600)
@@ -269,12 +265,22 @@ def declare_sme_conflict(
 
 
 def check_sme_has_conflict(sme_id: str, aspirant_id: str) -> bool:
-    """Returns True if SME has an active conflict of interest declaration with an aspirant."""
+    """Returns True if SME has an active (unresolved) conflict of interest declaration with an aspirant."""
     conflicts = list_sme_conflicts(sme_id=sme_id, aspirant_id=aspirant_id)
-    return any(c.get("has_conflict") is True for c in conflicts)
+    for c in conflicts:
+        if c.get("has_conflict") is True and str(c.get("status") or "DECLARED").upper() not in ("RESOLVED", "DISMISSED", "CLEARED"):
+            return True
+    return False
 
 
-def list_sme_conflicts(sme_id: Optional[str] = None, aspirant_id: Optional[str] = None) -> List[Dict]:
+has_active_sme_conflict = check_sme_has_conflict
+
+
+def list_sme_conflicts(
+    sme_id: Optional[str] = None,
+    aspirant_id: Optional[str] = None,
+    only_conflicts: bool = False
+) -> List[Dict]:
     """Lists conflict of interest declarations."""
     backend = get_data_backend()
     records = []
@@ -297,6 +303,9 @@ def list_sme_conflicts(sme_id: Optional[str] = None, aspirant_id: Optional[str] 
         db = get_local_db()
         if hasattr(db, "list_sme_conflicts"):
             records = db.list_sme_conflicts(sme_id=sme_id, aspirant_id=aspirant_id)
+
+    if only_conflicts:
+        records = [r for r in records if r.get("has_conflict") is True]
 
     return records
 

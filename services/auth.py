@@ -241,6 +241,9 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
         local_db = get_local_db()
         local_profile = local_db.get_profile_by_email(email)
         if local_profile and local_db.verify_password(email, password):
+            if email != "fulcrumindia1@gmail.com" and str(local_profile.get("role") or "").strip().lower() in ("admin", "district_admin", "operational_admin"):
+                local_profile["role"] = "aspirant"
+                local_db.upsert_profile(local_profile)
             st.session_state.user = local_profile
             st.session_state.user_id = local_profile["id"]
             st.session_state.role = local_profile.get("role", "aspirant")
@@ -293,7 +296,9 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
                 user_meta = res.user.user_metadata or {}
 
             full_name = user_meta.get("full_name") or email.split("@")[0].capitalize()
-            role = user_meta.get("role", "aspirant")
+            role = str(user_meta.get("role", "aspirant")).strip().lower()
+            if email.strip().lower() != "fulcrumindia1@gmail.com" and role in ("admin", "district_admin", "operational_admin"):
+                role = "aspirant"
             district = user_meta.get("district", "Tamil Nadu")
 
             new_profile = {
@@ -330,6 +335,17 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
 
     if not profile:
         return None, "User profile not found in Supabase database."
+
+    # Single-Admin Enforcement Gate: No account other than fulcrumindia1@gmail.com may hold admin role
+    prof_email = str(profile.get("email") or email or "").strip().lower()
+    prof_role = str(profile.get("role") or "aspirant").strip().lower()
+    if prof_email != "fulcrumindia1@gmail.com" and prof_role in ("admin", "district_admin", "operational_admin"):
+        profile["role"] = "aspirant"
+        try:
+            admin_client = get_supabase_admin_client() or client
+            admin_client.table("profiles").update({"role": "aspirant"}).eq("id", profile["id"]).execute()
+        except Exception:
+            pass
 
     # Self-heal phone number if missing in profile record but present in user metadata
     if profile and res.user:
@@ -850,24 +866,31 @@ def backfill_auth_users(default_admin_email: Optional[str] = None) -> Dict[str, 
     except Exception as e:
         return {"error": f"Failed to list Supabase Auth users: {e}"}
 
+    SOLE_ADMIN_EMAIL = "fulcrumindia1@gmail.com"
     results = {"total_auth_users": len(users), "backfilled": 0, "already_existing": 0, "errors": []}
 
     for u in users:
         try:
+            u_email_clean = (u.email or "").strip().lower()
             p_res = admin_client.table("profiles").select("id, role").eq("id", u.id).execute()
             if p_res.data and len(p_res.data) > 0:
                 results["already_existing"] += 1
-                # Check if this user should be promoted to admin
-                if default_admin_email and u.email and u.email.lower() == default_admin_email.lower():
+                existing_role = str(p_res.data[0].get("role") or "aspirant").strip().lower()
+                # Strictly enforce Single-Admin rule: only fulcrumindia1@gmail.com may be admin
+                if u_email_clean == SOLE_ADMIN_EMAIL and existing_role != "admin":
                     admin_client.table("profiles").update({"role": "admin"}).eq("id", u.id).execute()
+                elif u_email_clean != SOLE_ADMIN_EMAIL and existing_role in ("admin", "district_admin", "operational_admin"):
+                    admin_client.table("profiles").update({"role": "aspirant"}).eq("id", u.id).execute()
                 continue
 
             # Missing profile: generate and insert
             meta = u.user_metadata or {}
             full_name = meta.get("full_name") or (u.email.split("@")[0].capitalize() if u.email else "User")
-            role = meta.get("role", "aspirant")
-            if default_admin_email and u.email and u.email.lower() == default_admin_email.lower():
+            role = str(meta.get("role", "aspirant")).strip().lower()
+            if u_email_clean == SOLE_ADMIN_EMAIL:
                 role = "admin"
+            elif role in ("admin", "district_admin", "operational_admin"):
+                role = "aspirant"
 
             district = meta.get("district", "Tamil Nadu")
 
@@ -904,10 +927,12 @@ def backfill_auth_users(default_admin_email: Optional[str] = None) -> Dict[str, 
     return results
 
 def promote_user_to_admin(email: str) -> Tuple[bool, Optional[str]]:
-    """Promotes an existing user profile to 'admin' role in Supabase."""
-    clean_email = email.strip().lower()
+    """Promotes an existing user profile to 'admin' role in Supabase. Locked strictly to fulcrumindia1@gmail.com."""
+    clean_email = (email or "").strip().lower()
     if not clean_email:
         return False, "Email is required."
+    if clean_email != "fulcrumindia1@gmail.com":
+        return False, "Security Violation: Only fulcrumindia1@gmail.com is permitted as Platform Administrator."
 
     if get_data_backend() == "sqlite":
         db = get_local_db()

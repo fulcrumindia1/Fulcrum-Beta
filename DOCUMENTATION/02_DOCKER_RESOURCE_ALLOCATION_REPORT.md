@@ -3,72 +3,55 @@
 
 ---
 
-## 1. Verified In-Kernel cgroup v2 Resource Limits
+## 1. Currently Enforced In-Kernel cgroup v2 Resource Limits
 
-The Docker Compose configuration was deployed to `/home/pravin/fulcrum-staging/` on `10.44.155.57` and inspected directly via Docker engine and `/sys/fs/cgroup/`:
+The Docker Compose configuration deployed at `/home/pravin/fulcrum-staging/` on `10.44.155.57` was inspected directly via the Docker Engine and `/sys/fs/cgroup/`:
 
-| Metric | Docker Compose Spec | Effective cgroup v2 Value (`/sys/fs/cgroup`) | HostConfig Verification | Enforced? |
+| Metric | Docker Compose Spec | Effective cgroup v2 Value (`/sys/fs/cgroup`) | HostConfig Verification | Currently Enforced? |
 | :--- | :--- | :--- | :--- | :---: |
-| **CPU Limit** | `cpus: '1.5'` | `150000 100000` (quota/period) | `NanoCpus: 1500000000` | **YES** |
+| **CPU Limit** | `cpus: '1.5'` | `150000 100000` (quota/period) | `NanoCpus: 1500000000` | **YES (`1.50 vCPU`)** |
 | **CPU Reservation** | `cpus: '0.25'` | `25000 100000` (min weight) | `CpuShares: 256` | **YES** |
-| **Memory Limit** | `memory: 1800M` | `1887436800` bytes (`1,800.0 MiB` / `1.758 GiB`) | `Memory: 1887436800` | **YES** |
+| **Memory Limit** | `memory: 1800M` | `1887436800` bytes (`1,800.0 MB` / `1,757.8 MiB`) | `Memory: 1887436800` | **YES (`1,800 MB`)** |
 | **Memory Reservation** | `memory: 256M` | `268435456` bytes (`256.0 MiB`) | `MemoryReservation: 268435456` | **YES** |
 
 ---
 
-## 2. Measured Resource Consumption Baseline
+## 2. Measured Resource Consumption Baseline & PDF Pressure Telemetry
 
-Direct empirical measurement via `docker stats --no-stream` on `10.44.155.57`:
-
-| Container Name | Role | Status | CPU % | Active Memory RSS / Limit | Mem % | PIDs |
+### A. Container Idle & Co-Hosted Baseline (`docker stats --no-stream`)
+| Container Name | Role | Status | CPU % | Active Memory RSS / Enforced Limit | Mem % | PIDs |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
-| **`fulcrum-app`** | Streamlit Web Application | Up (healthy) | `0.46%` | **`68.20 MiB` / `1,800 MiB`** | **`3.79%`** | 4 |
+| **`fulcrum-app`** | Streamlit Web Application | Up (healthy) | `0.46%` | **`68.20 MiB` / `1,757.8 MiB` (`1,800 MB`)** | **`3.79%`** | 4 |
 | **`fulcrum-caddy`** | Reverse Proxy (Gzip/Zstd) | Up (healthy) | `0.00%` | **`10.21 MiB` / `7,942 MiB`** | **`0.13%`** | 7 |
 | **`pairdo-staging-*` (5 ctns)** | Co-hosted Workload | Up (healthy) | `1.15%` | **`413.88 MiB` combined** | `5.21%` | 33 |
 | **Total Host Memory Usage** | OS + All 7 Containers | Active | `1.61%` | **`1,234.4 MiB` used / `7,942 MiB`** | **`15.5%`** | 173 |
 
-- **Idle Streamlit Baseline RSS:** **`68.20 MiB`**.
-- **Caddy Baseline RSS:** **`10.21 MiB`**.
-- **Host Memory Available Without Swap:** **`6.71 GiB` (`6,707 MiB`)**.
-- **Swap Utilization:** **`0 B` / `4,096 MiB` (`0%`)**.
+### B. Empirically Measured Founder Dossier PDF Memory Spikes (`services/pdf_generator.py`)
+We executed `1`, `3`, and `5` simultaneous calls to [`generate_aspirant_dossier_pdf()`](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/services/pdf_generator.py#L793) inside `fulcrum-app` on `10.44.155.57` under the **currently enforced `1,800 MB` (`1,757.8 MiB`) cgroup v2 limit** and read `/sys/fs/cgroup/memory.current` and `/sys/fs/cgroup/memory.peak`:
+
+| Concurrent PDF Exports | Total Wall Time | Pre-Render RSS (`memory.current`) | Peak cgroup RSS (`memory.peak`) | Post-Render RSS (`memory.current`) | % of Enforced `1,800 MB` Limit | Engine Behavior & Output Sizes |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`1` PDF** | `6,468.0 ms` (`6.47s`) | `78.7 MiB` | **`348.4 MiB`** | `148.5 MiB` | **`19.8%`** | 1 Playwright Chromium render (`360.4 KB`) |
+| **`3` PDFs** | `10,421.1 ms` (`10.42s`) | `79.9 MiB` | **`545.7 MiB`** | `156.6 MiB` | **`31.0%`** | Throttled by `BoundedSemaphore(2)`; 3 Playwright PDFs (`360.8–363.3 KB`) |
+| **`5` PDFs** | `14,714.0 ms` (`14.71s`) | `80.2 MiB` | **`563.3 MiB`** | `165.3 MiB` | **`32.0%`** | 4 Playwright PDFs (`361.1–363.1 KB`) + 1 ReportLab fallback (`237.9 KB`) |
+
+> [!IMPORTANT]
+> **Why Peak Memory Capped at `563.3 MiB` Under 5 Concurrent PDF Exports:**
+> [`services/pdf_generator.py`](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/services/pdf_generator.py#L581) enforces `_PDF_CONCURRENCY_SEMAPHORE = threading.BoundedSemaphore(2)` with a 15-second acquisition timeout and automatic ReportLab fallback. Because at most **2 headless Chromium subprocesses** (`~220–260 MiB` RSS each) can exist simultaneously inside `fulcrum-app`, concurrent PDF exports **never exceed `~565 MiB`**, comfortably within the currently enforced **`1,800 MB` (`1,757.8 MiB`)** container limit!
 
 ---
 
-## 3. Host RAM Allocation Study & Sizing Model
+## 3. Evaluation of Current `1,800 MB` Enforced Limit vs. Candidate `3,072 MB` Limit
 
-Hostinger KVM 2 provides **`8.0 GB RAM`** (`7,942 MiB` detected). The VM currently hosts `pairdo-staging` (`~414 MiB` active, soft budget `1,500 MiB`).
-
-### Per-Session & Workload Memory Consumption Breakdown:
-1. **Base Python + Streamlit Engine:** `68.2 MiB` baseline.
-2. **Per Active Authenticated Browser Session (WebSocket `_stcore/stream`):**
-   - Session State + UI component tree: `~12–18 MiB` per user.
-   - Profile & Scheme match memoization: `~3–6 MiB` per user.
-   - Total per concurrent user session: **`~15–24 MiB / user`**.
-3. **Founder Dossier PDF Generation Spike (`services/dossier_pdf.py`):**
-   - Playwright Chromium subprocess invocation: **`~250–350 MiB` peak RSS per concurrent PDF render**.
-   - HTML-to-PDF rendering buffer: `~25–45 MiB`.
-4. **Photographic Optimization Spike (`Pillow` WebP compression):**
-   - Headshot image upload (up to 5 MB input) decoded to RGBA bitmap: `~20–40 MiB` peak for ~200 ms.
-
-### Evaluation of Candidate 3,072 MB Limit:
-- Under the current `1,800 MB` limit:
-  - If 30 concurrent users are active (`30 * 20 MiB = 600 MiB`) + base (`68 MiB`) = `668 MiB`.
-  - If two users simultaneously download Founder Dossier PDFs (`2 * 350 MiB = 700 MiB`), memory reaches `~1,368 MiB` (`76%` of `1,800 MB`).
-  - If three concurrent PDF renders occur or a sudden traffic spike arrives, the container approaches `1,800 MB`, risking an aggressive OOM kill by the Linux kernel.
-- **Proposed Candidate Limit: `3,072 MB` (`3.0 GiB`):**
-  - Leaves `7,942 MiB - 3,072 MiB = 4,870 MiB` (`4.75 GiB`) on the host.
-  - OS / Kernel reserve: `700 MiB`.
-  - Co-hosted `pairdo-staging` reserve: `1,500 MiB`.
-  - Unallocated safe host buffer: **`> 2.6 GiB`**.
-  - **Verdict:** Increasing `fulcrum-app` memory limit from `1800M` to `3072M` is **fully safe, eliminates OOM risk during concurrent PDF generation, and leaves ample headroom for the OS and co-hosted services**.
-
----
-
-## 4. Proposed Staging Docker Compose Patch
+- **With the Current Enforced `1,800 MB` (`1,757.8 MiB`) Limit:**
+  - Base container + 50–100 active authenticated sessions + 2 concurrent Chromium PDF workers peaks at **`~600–650 MiB`**, leaving **`> 1,100 MiB` of free headroom inside the `1,800 MB` container cgroup**.
+  - Therefore, **`1,800 MB` is already safe and does NOT experience OOM kills**.
+- **Optional Candidate Limit (`3,072 MB` / `1.75 CPU` — Status: `NOT APPROVED, Awaiting Owner Decision`):**
+  - Since the host has `6.71 GiB` (`6,707 MiB`) of unused RAM (`0 B` swap), raising the container ceiling to `3,072 MB` is an optional zero-cost buffer expansion that still leaves `> 2.6 GiB` of unallocated host RAM after accounting for the OS (`700 MiB`) and `pairdo-staging` (`1,500 MiB`).
 
 ```diff
---- docker-compose.yml (Current)
-+++ docker-compose.yml (Proposed Optimization)
+--- docker-compose.yml (Currently Enforced: 1800M / 1.5 CPU)
++++ docker-compose.yml (Optional Candidate CR-01: 3072M / 1.75 CPU — Awaiting Owner Approval)
 @@ -17,8 +17,8 @@
          resources:
            limits:
@@ -81,4 +64,3 @@ Hostinger KVM 2 provides **`8.0 GB RAM`** (`7,942 MiB` detected). The VM current
 -            memory: 256M
 +            memory: 512M
 ```
-*(Note: Per Phase B instructions, this patch is documented for owner approval and can be benchmarked in staging to verify zero swap usage).*

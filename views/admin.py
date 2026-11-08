@@ -50,6 +50,11 @@ from services.constants import (
 )
 
 def render_admin_portal(admin_profile: dict):
+    from services.roles import is_strict_admin, SOLE_ADMIN_EMAIL
+    if not is_strict_admin(user_dict=admin_profile):
+        st.error("🚫 Access Denied: This workspace is restricted exclusively to the Sole Platform Administrator (fulcrumindia1@gmail.com).")
+        st.stop()
+
     admin_id = admin_profile["id"]
     admin_name = admin_profile.get("full_name", "Administrator")
 
@@ -70,23 +75,17 @@ def render_admin_portal(admin_profile: dict):
     </div>
     """, unsafe_allow_html=True)
 
-    # In Supabase mode, allow Admin to run safe backfill/sync
+    # In Supabase mode, allow Admin to run safe backfill/sync (locked strictly to SOLE_ADMIN_EMAIL)
     if get_data_backend() == "supabase":
         with st.expander("⚡ Supabase Auth Synchronization & User Backfill", expanded=False):
-            st.markdown("<p style='font-size:0.85rem; color:#64748B;'>Sync registered Supabase Auth users to application profiles, journeys, and mentor relationship records.</p>", unsafe_allow_html=True)
-            col_bf1, col_bf2 = st.columns([2, 1])
-            with col_bf1:
-                admin_email_to_promote = st.text_input("Designated Super Admin Email", value="fulcrumindia1@gmail.com", key="admin_sync_email")
-            with col_bf2:
-                st.write("")
-                st.write("")
-                if st.button("🔄 Sync Auth Users", key="btn_admin_sync_auth"):
-                    bf_res = backfill_auth_users(default_admin_email=admin_email_to_promote)
-                    if "error" in bf_res:
-                        st.error(bf_res["error"])
-                    else:
-                        st.success(f"Sync complete: {bf_res.get('backfilled', 0)} backfilled, {bf_res.get('already_existing', 0)} verified (Total Auth Users: {bf_res.get('total_auth_users', 0)}).")
-                        st.rerun()
+            st.markdown(f"<p style='font-size:0.85rem; color:#64748B;'>Sync registered Supabase Auth users to application profiles, journeys, and mentor relationship records. Sole Platform Admin is locked to <code>{SOLE_ADMIN_EMAIL}</code>.</p>", unsafe_allow_html=True)
+            if st.button("🔄 Sync Auth Users", key="btn_admin_sync_auth"):
+                bf_res = backfill_auth_users(default_admin_email=SOLE_ADMIN_EMAIL)
+                if "error" in bf_res:
+                    st.error(bf_res["error"])
+                else:
+                    st.success(f"Sync complete: {bf_res.get('backfilled', 0)} backfilled, {bf_res.get('already_existing', 0)} verified (Total Auth Users: {bf_res.get('total_auth_users', 0)}).")
+                    st.rerun()
 
     # Fetch stats (multi-role aware)
     from services.roles import list_active_profiles_for_role
@@ -143,7 +142,26 @@ def render_admin_portal(admin_profile: dict):
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height:1.5rem;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:1.0rem;'></div>", unsafe_allow_html=True)
+
+    # Global Pending Governance Triage Queue (Visible above all Admin Tabs)
+    from services.governance import list_guide_complaints, list_sme_conflicts
+    from services.scheme_reviews import list_scheme_support_reviews
+    open_complaints_cnt = len([c for c in (list_guide_complaints() or []) if str(c.get("status", "open")).upper() in ("OPEN", "PENDING", "UNDER_REVIEW")])
+    pending_ssr_cnt = len([r for r in (list_scheme_support_reviews() or []) if r.get("status") == "PENDING"])
+    open_coi_cnt = len([c for c in (list_sme_conflicts(only_conflicts=True) or []) if str(c.get("status", "DECLARED")).upper() in ("DECLARED", "OPEN", "UNDER_REVIEW")])
+    if len(pending_directives) > 0 or pending_ssr_cnt > 0 or open_complaints_cnt > 0 or open_coi_cnt > 0:
+        st.markdown(f"""
+        <div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #F59E0B; border-radius:10px; padding:0.75rem 1.1rem; margin-bottom:1rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div style="font-size:0.88rem; font-weight:700; color:#92400E;">⚡ Pending Governance Triage Queue</div>
+            <div style="display:flex; gap:10px; font-size:0.8rem; font-weight:700; flex-wrap:wrap;">
+                <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">🏛️ {len(pending_directives)} Mentor Directives</span>
+                <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">📋 {pending_ssr_cnt} Scheme Reviews</span>
+                <span style="background:#FEE2E2; color:#991B1B; padding:3px 10px; border-radius:999px;">🛡️ {open_complaints_cnt} Open Complaints</span>
+                <span style="background:#FEF3C7; color:#92400E; padding:3px 10px; border-radius:999px;">⚖️ {open_coi_cnt} SME Conflicts</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     # Admin Tabs (Lazy evaluated with state tracking)
     tabs = st.tabs([
@@ -167,21 +185,6 @@ def render_admin_portal(admin_profile: dict):
     with tabs[0]:
       if is_tab_active(tabs[0]):
         from services.roles import list_users_with_multi_roles
-        from services.governance import list_guide_complaints
-        from services.scheme_reviews import list_scheme_support_reviews
-        open_complaints_cnt = len([c for c in (list_guide_complaints() or []) if str(c.get("status", "open")).upper() in ("OPEN", "PENDING", "UNDER_REVIEW")])
-        pending_ssr_cnt = len([r for r in (list_scheme_support_reviews() or []) if r.get("status") == "PENDING"])
-        if len(pending_directives) > 0 or pending_ssr_cnt > 0 or open_complaints_cnt > 0:
-            st.markdown(f"""
-            <div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #F59E0B; border-radius:10px; padding:0.75rem 1.1rem; margin-bottom:1rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                <div style="font-size:0.88rem; font-weight:700; color:#92400E;">⚡ Pending Governance Triage Queue</div>
-                <div style="display:flex; gap:10px; font-size:0.8rem; font-weight:700;">
-                    <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">🏛️ {len(pending_directives)} Mentor Directives</span>
-                    <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">📋 {pending_ssr_cnt} Scheme Reviews</span>
-                    <span style="background:#FEE2E2; color:#991B1B; padding:3px 10px; border-radius:999px;">🛡️ {open_complaints_cnt} Open Complaints</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
 
         st.subheader("Entrepreneurs Directory")
         if not aspirants:
@@ -250,6 +253,42 @@ def render_admin_portal(admin_profile: dict):
                         '</div>'
                     )
 
+                from services.professional_photos import (
+                    get_professional_photos_batch,
+                    render_professional_avatar_html,
+                )
+                mentor_ids_for_asp = [
+                    mid for mid in [
+                        g_assigned.get("id") if g_assigned else None,
+                        s_assigned.get("id") if s_assigned else None,
+                    ] if mid
+                ]
+                mentor_photo_map = get_professional_photos_batch(
+                    viewer_id=admin_id,
+                    user_ids=mentor_ids_for_asp,
+                    viewer_email=admin_profile.get("email"),
+                )
+                g_avatar_sm = (
+                    render_professional_avatar_html(
+                        g_assigned.get("full_name", "Guide"),
+                        mentor_photo_map.get(g_assigned["id"]),
+                        size_px=30,
+                        role="guide",
+                    )
+                    if g_assigned and g_assigned.get("id")
+                    else ""
+                )
+                s_avatar_sm = (
+                    render_professional_avatar_html(
+                        s_assigned.get("full_name", "SME"),
+                        mentor_photo_map.get(s_assigned["id"]),
+                        size_px=30,
+                        role="sme",
+                    )
+                    if s_assigned and s_assigned.get("id")
+                    else ""
+                )
+
                 guide_label = g_assigned.get('full_name') if g_assigned else 'None'
                 sme_label = s_assigned.get('full_name') if s_assigned else 'None'
                 b_name_disp = b_info.get('business_name', 'Enterprise')
@@ -270,13 +309,34 @@ def render_admin_portal(admin_profile: dict):
                     '</div>'
                     f'{photo_html}'
                     '<div style="text-align:right; flex-shrink:0;">'
-                    f'<div style="font-size:0.9rem; color:#334155;"><strong style="color:#0F172A;">Guide:</strong> <span style="color:#059669; font-weight:700;">{guide_label}</span></div>'
-                    f'<div style="font-size:0.9rem; color:#334155; margin-top:3px;"><strong style="color:#0F172A;">SME:</strong> <span style="color:#D97706; font-weight:700;">{sme_label}</span></div>'
+                    f'<div style="font-size:0.9rem; color:#334155; display:flex; align-items:center; justify-content:flex-end; gap:6px;">{g_avatar_sm}<strong style="color:#0F172A;">Guide:</strong> <span style="color:#059669; font-weight:700;">{guide_label}</span></div>'
+                    f'<div style="font-size:0.9rem; color:#334155; margin-top:5px; display:flex; align-items:center; justify-content:flex-end; gap:6px;">{s_avatar_sm}<strong style="color:#0F172A;">SME:</strong> <span style="color:#D97706; font-weight:700;">{sme_label}</span></div>'
                     '</div>'
                     '</div>'
                     '</div>'
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
+
+                # Show Released Schemes & Post-Release Application Stage Summary for this Founder
+                from services.schemes import get_released_schemes_for_aspirant
+                asp_rel_schemes = get_released_schemes_for_aspirant(selected_asp_id) or []
+                if asp_rel_schemes:
+                    with st.expander(f"🏛️ Released Schemes & Application Progress ({len(asp_rel_schemes)} Released)", expanded=False):
+                        for rs in asp_rel_schemes:
+                            rs_name = _safe_esc(rs.get("name") or rs.get("scheme_name") or "Government Scheme")
+                            rs_stage = _safe_esc(rs.get("application_stage") or "Released")
+                            rs_note = _safe_esc(rs.get("application_note") or "")
+                            rs_upd = str(rs.get("stage_updated_at") or rs.get("released_at") or "")[:10]
+                            st.markdown(
+                                f'<div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.65rem 1rem; margin-bottom:0.45rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">'
+                                f'<div><strong style="color:#0F172A; font-size:0.9rem;">{rs_name}</strong>'
+                                f'{" · <span style=\"color:#475569; font-size:0.82rem;\">" + rs_note + "</span>" if rs_note else ""}</div>'
+                                f'<div style="display:flex; align-items:center; gap:8px;">'
+                                f'<span style="background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; font-size:0.74rem; font-weight:800; padding:2px 8px; border-radius:999px;">Stage: {rs_stage}</span>'
+                                f'<span style="color:#94A3B8; font-size:0.75rem;">{rs_upd}</span>'
+                                f'</div></div>',
+                                unsafe_allow_html=True
+                            )
 
                 st.markdown("#### Complete Chronological Journey")
 
@@ -454,25 +514,86 @@ def render_admin_portal(admin_profile: dict):
                     else:
                         st.warning("Please fill in all required fields.")
 
-        # Guides Table
+        # Guides Table (with Batch-Prefetched Private Professional Photographs)
         if not guides:
             st.info("No guides currently registered. Create one above.")
         else:
+            from services.professional_photos import (
+                get_professional_photos_batch,
+                render_professional_avatar_html,
+                upload_professional_photo,
+                delete_professional_photo,
+            )
+            guide_photo_map = get_professional_photos_batch(
+                viewer_id=admin_id,
+                user_ids=[g["id"] for g in guides if g.get("id")],
+                viewer_email=admin_profile.get("email"),
+            )
             for g in guides:
+                gid = g["id"]
                 exp_g = g.get('profile_data', {}).get('expertise', 'Mentorship')
+                g_photo_url = guide_photo_map.get(gid)
+                g_avatar_html = render_professional_avatar_html(
+                    full_name=g.get("full_name", "Guide"),
+                    photo_url=g_photo_url,
+                    size_px=48,
+                    role="guide",
+                    show_missing_badge_for_admin=True,
+                )
                 st.markdown(
-                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
-                    f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.4rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">'
+                    f'<div style="display:flex; align-items:center; gap:12px;">'
+                    f'{g_avatar_html}'
                     f'<div>'
-                    f'<strong style="color:#0F172A; font-size:1.05rem;">{g["full_name"]}</strong>'
-                    f'<span style="color:#059669; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({g.get("district", "Tamil Nadu")})</span>'
-                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Expertise: {exp_g} | Email: {g["email"]}</div>'
+                    f'<strong style="color:#0F172A; font-size:1.05rem;">{_safe_esc(g.get("full_name"))}</strong>'
+                    f'<span style="color:#059669; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({_safe_esc(g.get("district", "Tamil Nadu"))})</span>'
+                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Expertise: {_safe_esc(exp_g)} | Email: {_safe_esc(g.get("email"))}</div>'
+                    f'</div>'
                     f'</div>'
                     f'<span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE GUIDE</span>'
                     f'</div>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
+                with st.expander(f"📷 Manage Professional Photograph — {g.get('full_name', 'Guide')}", expanded=False):
+                    c_gp1, c_gp2 = st.columns([3, 1])
+                    with c_gp1:
+                        adm_g_file = st.file_uploader(
+                            f"Upload / Replace Headshot for {g.get('full_name')}",
+                            type=["jpg", "jpeg", "png", "webp"],
+                            key=f"adm_up_g_photo_{gid}",
+                        )
+                    with c_gp2:
+                        st.write("")
+                        if st.button("⬆️ Save Photo", key=f"adm_btn_save_g_photo_{gid}", type="primary", use_container_width=True):
+                            if not adm_g_file:
+                                st.warning("Select an image first.")
+                            else:
+                                ok_gp, err_gp = upload_professional_photo(
+                                    subject_user_id=gid,
+                                    file_bytes=adm_g_file.getvalue(),
+                                    uploaded_by=admin_id,
+                                    filename=adm_g_file.name,
+                                    actor_email=admin_profile.get("email"),
+                                )
+                                if ok_gp:
+                                    st.success("Guide headshot updated!")
+                                    st.rerun()
+                                else:
+                                    st.error(err_gp or "Upload failed.")
+                        if g_photo_url:
+                            if st.button("🗑️ Remove Photo", key=f"adm_btn_rm_g_photo_{gid}", use_container_width=True):
+                                ok_rm, err_rm = delete_professional_photo(
+                                    subject_user_id=gid,
+                                    actor_id=admin_id,
+                                    actor_email=admin_profile.get("email"),
+                                )
+                                if ok_rm:
+                                    st.success("Guide headshot removed.")
+                                    st.rerun()
+                                else:
+                                    st.error(err_rm or "Remove failed.")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 3: SMES MANAGEMENT & PROVISIONING
@@ -529,25 +650,86 @@ def render_admin_portal(admin_profile: dict):
                     else:
                         st.warning("Please fill in required fields.")
 
-        # SMEs Table
+        # SMEs Table (with Batch-Prefetched Private Professional Photographs)
         if not smes:
             st.info("No SMEs registered. Create one above.")
         else:
+            from services.professional_photos import (
+                get_professional_photos_batch,
+                render_professional_avatar_html,
+                upload_professional_photo,
+                delete_professional_photo,
+            )
+            sme_photo_map = get_professional_photos_batch(
+                viewer_id=admin_id,
+                user_ids=[s["id"] for s in smes if s.get("id")],
+                viewer_email=admin_profile.get("email"),
+            )
             for s in smes:
+                sid = s["id"]
                 exp_s = s.get('profile_data', {}).get('expertise', 'Advisory')
+                s_photo_url = sme_photo_map.get(sid)
+                s_avatar_html = render_professional_avatar_html(
+                    full_name=s.get("full_name", "SME"),
+                    photo_url=s_photo_url,
+                    size_px=48,
+                    role="sme",
+                    show_missing_badge_for_admin=True,
+                )
                 st.markdown(
-                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
-                    f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.4rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">'
+                    f'<div style="display:flex; align-items:center; gap:12px;">'
+                    f'{s_avatar_html}'
                     f'<div>'
-                    f'<strong style="color:#0F172A; font-size:1.05rem;">{s["full_name"]}</strong>'
-                    f'<span style="color:#D97706; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({s.get("district", "Tamil Nadu")})</span>'
-                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Domain: {exp_s} | Email: {s["email"]}</div>'
+                    f'<strong style="color:#0F172A; font-size:1.05rem;">{_safe_esc(s.get("full_name"))}</strong>'
+                    f'<span style="color:#D97706; font-weight:600; font-size:0.85rem; margin-left:0.5rem;">({_safe_esc(s.get("district", "Tamil Nadu"))})</span>'
+                    f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Domain: {_safe_esc(exp_s)} | Email: {_safe_esc(s.get("email"))}</div>'
+                    f'</div>'
                     f'</div>'
                     f'<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE SME</span>'
                     f'</div>'
                     f'</div>',
                     unsafe_allow_html=True
                 )
+                with st.expander(f"📷 Manage Professional Photograph — {s.get('full_name', 'SME')}", expanded=False):
+                    c_sp1, c_sp2 = st.columns([3, 1])
+                    with c_sp1:
+                        adm_s_file = st.file_uploader(
+                            f"Upload / Replace Headshot for {s.get('full_name')}",
+                            type=["jpg", "jpeg", "png", "webp"],
+                            key=f"adm_up_s_photo_{sid}",
+                        )
+                    with c_sp2:
+                        st.write("")
+                        if st.button("⬆️ Save Photo", key=f"adm_btn_save_s_photo_{sid}", type="primary", use_container_width=True):
+                            if not adm_s_file:
+                                st.warning("Select an image first.")
+                            else:
+                                ok_sp, err_sp = upload_professional_photo(
+                                    subject_user_id=sid,
+                                    file_bytes=adm_s_file.getvalue(),
+                                    uploaded_by=admin_id,
+                                    filename=adm_s_file.name,
+                                    actor_email=admin_profile.get("email"),
+                                )
+                                if ok_sp:
+                                    st.success("SME headshot updated!")
+                                    st.rerun()
+                                else:
+                                    st.error(err_sp or "Upload failed.")
+                        if s_photo_url:
+                            if st.button("🗑️ Remove Photo", key=f"adm_btn_rm_s_photo_{sid}", use_container_width=True):
+                                ok_rm, err_rm = delete_professional_photo(
+                                    subject_user_id=sid,
+                                    actor_id=admin_id,
+                                    actor_email=admin_profile.get("email"),
+                                )
+                                if ok_rm:
+                                    st.success("SME headshot removed.")
+                                    st.rerun()
+                                else:
+                                    st.error(err_rm or "Remove failed.")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 4: MENTOR ASSIGNMENTS (Admin Authority)

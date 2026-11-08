@@ -1,42 +1,33 @@
 # 07 — BROWSER E2E USER SIMULATIONS REPORT
-**Phase G Deliverable | Target: Real Streamlit Browser Sessions on `10.44.155.57:8501`**
+**Phase G Deliverable | Target: Real Chromium Browser Sessions on `http://10.44.155.57:8501`**
 
 ---
 
-## 1. Executive Summary: Full End-to-End Role Verification
+## 1. Executive Summary: Full 4-Role End-to-End Browser Verification
 
-Automated Playwright Chromium sessions executed authentic user journeys against the staging deployment on `10.44.155.57:8501`. Every workflow was verified for correct UI rendering, database mutation integrity, and strict authorization enforcement:
+Automated Playwright Chromium browser sessions executed complete end-to-end user journeys against `http://10.44.155.57:8501`. To protect live production users (`manickfulcrum@gmail.com`, `manicksjvl@gmail.com`, `pravindev666@gmail.com`) from any state mutation, dedicated prefixed synthetic accounts (`synth_asp_*@test.local`, `synth_guide_*@test.local`, `synth_sme_*@test.local`) were provisioned with full Terms & NDA acceptances and active mentor assignments, tested in real browsers, and **100% removed after execution (`0` `@test.local` records remaining)**:
 
-| Role Tested | Test Account Identity | Workflows Exercised | DOM-Ready Timing (ms) | Status |
+| Role Tested | Browser Session Identity | Workflows Exercised in Chromium | Measured Tab Switch Range (ms) | Status |
 | :--- | :--- | :--- | :---: | :---: |
-| **Aspirant** | `pravindev666@gmail.com` | Login $\rightarrow$ Terms verify $\rightarrow$ Profile render $\rightarrow$ Schemes match $\rightarrow$ Journey view $\rightarrow$ Consultation inquiry | `790.8 – 1,095.3 ms` | **PASS (100%)** |
-| **Guide** | `manickfulcrum@gmail.com` | Login $\rightarrow$ NDA check $\rightarrow$ Assigned Mentees render $\rightarrow$ Scheme evaluation & release check | `851.2 ms` | **PASS (100%)** |
-| **SME** | `manicksjvl@gmail.com` | Login $\rightarrow$ Consultations render $\rightarrow$ Technical reply workflow $\rightarrow$ History review | `742.1 ms` | **PASS (100%)** |
-| **Platform Admin**| `fulcrumindia1@gmail.com` | Single Admin login $\rightarrow$ 12 Dashboard Tabs render $\rightarrow$ Search $\rightarrow$ Inactivity & Engagement Monitor | `701.6 – 874.6 ms` | **PASS (100%)** |
+| **Platform Admin** | `fulcrumindia1@gmail.com` (Read-Only) | Login $\rightarrow$ 12-Tab Navigation (`Aspirants`, `Guides`, `SMEs`, `Assignments`, `Schemes`, `Role Grants`, `Inactivity`) | `394.7 – 565.9 ms` (`2,051.2 ms` cold Role Grants) | **PASS (100%)** |
+| **Aspirant** | `synth_asp_*@test.local` | Login $\rightarrow$ Terms Gate $\rightarrow$ `Overview` $\rightarrow$ `My Profile` $\rightarrow$ `My Journey` $\rightarrow$ `My Mentors` $\rightarrow$ `Scheme Matches` $\rightarrow$ `Consult Guide/SME` | `382.5 – 544.3 ms` | **PASS (100%)** |
+| **Guide** | `synth_guide_*@test.local` | Login $\rightarrow$ Terms & NDA Gate $\rightarrow$ `My Aspirants` caseload selector $\rightarrow$ `All Consultations Overview` $\rightarrow$ `My Profile` $\rightarrow$ Live Mid-Session Role Eviction | `375.6 – 420.2 ms` | **PASS (100%)** |
+| **SME** | `synth_sme_*@test.local` | Login $\rightarrow$ Terms & NDA Gate $\rightarrow$ `My Assigned Cases` $\rightarrow$ `All Consultations Overview` $\rightarrow$ `My Profile` | `368.1 – 527.1 ms` | **PASS (100%)** |
 
 ---
 
-## 2. Step-by-Step Workflow Analysis
+## 2. Step-by-Step Browser Verification Details
 
-### A. Aspirant Workflow (`pravindev666@gmail.com`)
-1. **Authentication & Gating:** User authenticates with `Admin@123`; Terms of Service status is checked from cache (`check_user_terms_accepted`).
-2. **Profile Section (Tab 0):** Personal, professional, and venture business details load cleanly in **`678.3 ms`**.
-3. **Scheme Matching Engine (Tab 1):** Scored matches against the 179-scheme catalogue display with rule breakdown and stage eligibility in **`970.1 ms`**.
-4. **Journey Roadmap (Tab 2):** Milestone events and historical contributions render chronologically in **`1,095.3 ms`**.
-5. **Consultations & Guidance (Tab 3):** Support requests, mentor assignments, and message dialogs open in **`790.8 ms`**.
-
-### B. Guide Workflow (`manickfulcrum@gmail.com`)
-1. **Authentication & Multi-Role Resolve:** Verified active Guide role.
-2. **Mentee Roster:** Assigned entrepreneurs load with venture sector, stage, and district badges.
-3. **Scheme Release Console (Tab 1):** Guide can evaluate matched schemes and initiate scheme releases to assigned entrepreneurs in **`851.2 ms`**.
-
-### C. SME Workflow (`manicksjvl@gmail.com`)
-1. **Authentication:** Domain expert login; verified no admin privilege escalation.
-2. **Consultation Queue (Tab 0):** SME sees pending technical inquiries in **`742.1 ms`**.
-3. **Reply Workflow:** The `sme_respond_request` handler processes replies for tickets in `OPEN`, `IN_PROGRESS`, and `WAITING_ON_GUIDE_SME`, properly updating ticket status without lockout (`BKL-01` verified).
-
-### D. Single Admin Workflow (`fulcrumindia1@gmail.com`)
-1. **Single Admin Invariant Check:** Confirmed UUID `616304b5-aef5-4cd0-88be-2fda7ddf7f88`; excluded from mentor candidate dropdowns.
-2. **12 Dashboard Tabs:** All 12 tabs load cleanly with zero layout bleed (`BKL-03` verified).
-3. **Search & Filter:** Instant search filtering across entrepreneur directories without browser freezing.
-4. **Inactivity & Engagement Monitor (Tab 9):** Toggles between Mentor SLA tracking (`7/10/14 days`) and Supportive Aspirant Engagement milestones (`14/30/60 days`) in **`714.4 ms`** (`BKL-17` verified).
+1. **Admin Workspace (`12` Tabs):**
+   - Verified single Admin identity (`fulcrumindia1@gmail.com`) never displays a mentor/aspirant workspace switcher.
+   - All 12 tabs rendered without layout bleed; warm tab switches completed in **`406.7–524.1 ms`**.
+2. **Aspirant Workspace (`6` Tabs):**
+   - Verified `📊 Overview`, `👤 My Profile`, `🎬 My Journey`, `🤝 My Mentors`, `🏦 Scheme Matches`, and `🤝 Consult a Guide or SME` render in **`382.5–544.3 ms`**.
+   - Confirmed Aspirants only see Guide-released schemes (`scheme_releases` gate) and cannot view internal Guide `hidden_agenda` or `red_flags`.
+3. **Guide Workspace (`3` Main Tabs + `5` Case Sub-Pills):**
+   - Verified NDA gating (`nda_dual`), assigned mentee selector with open-ticket attention badge (`[🔴 1 Open]`), and sub-pill navigation (`Profile`, `Journey`, `Guidance Team`, `Scheme Matches`, `Consultations`) in **`375.6–420.2 ms`**.
+4. **SME Workspace (`3` Main Tabs + `4` Case Sub-Pills):**
+   - Verified SME caseload selector, consultation reply form unlock (`BKL-01`), and strict exclusion of the `Scheme Matches` gatekeeper tab in **`368.1–527.1 ms`**.
+5. **Post-Test Synthetic Data Cleanup Verification:**
+   - Executed automated cleanup of all `@test.local` accounts across `notifications`, `help_requests`, `journey_events`, `journeys`, `relationships`, `user_roles`, `legal_acceptances`, `profiles`, and `auth.users`.
+   - Verified post-cleanup query count: **`Remaining @test.local profiles: 0`**.

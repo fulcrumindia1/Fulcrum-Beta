@@ -64,20 +64,10 @@ def can_view_aspirant_photo(
     if viewer_id_str == aspirant_id_str:
         return True, None
 
-    # 2. Platform Admin oversight
-    from services.governance import get_primary_admin_id
-    from services.roles import user_has_active_role, get_active_roles
+    # 2. Platform Admin oversight (strictly fulcrumindia1@gmail.com)
+    from services.roles import is_strict_admin, get_active_roles
 
-    primary_admin = get_primary_admin_id()
-    if primary_admin and viewer_id_str == str(primary_admin):
-        return True, None
-
-    if user_has_active_role(viewer_id_str, "admin"):
-        return True, None
-
-    from services.profiles import get_profile
-    vp = get_profile(viewer_id_str)
-    if vp and vp.get("role") == "admin":
+    if is_strict_admin(user_id=viewer_id_str):
         return True, None
 
     # 3. Active Role & NDA checks for Guides and SMEs

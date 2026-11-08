@@ -791,6 +791,16 @@ def update_scheme_application_stage(
                 curr_note = str(row.get("guide_note") or "").strip()
                 upd_payload["guide_note"] = f"{curr_note} | [{stage}] {note.strip()}".strip(" |")
             writer.table("scheme_releases").update(upd_payload).eq("aspirant_id", aspirant_id).eq("scheme_id", scheme_id).execute()
+            # Best-effort: persist to dedicated columns (Migration 008). Silently skipped if columns absent.
+            try:
+                writer.table("scheme_releases").update({
+                    "application_stage": stage,
+                    "application_note": (note or "").strip(),
+                    "stage_updated_at": now_iso,
+                    "stage_updated_by": actor_id
+                }).eq("aspirant_id", aspirant_id).eq("scheme_id", scheme_id).execute()
+            except Exception:
+                pass
         except Exception as e:
             return False, f"Failed to update scheme application stage: {e}"
     else:

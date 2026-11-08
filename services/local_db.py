@@ -632,6 +632,42 @@ class LocalDatabase:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_aspirant_photos_user ON aspirant_photos(user_id);")
 
         cur.execute("""
+        CREATE TABLE IF NOT EXISTS professional_photos (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL UNIQUE,
+            storage_bucket TEXT NOT NULL DEFAULT 'professional-headshots',
+            storage_path TEXT NOT NULL,
+            mime_type TEXT NOT NULL DEFAULT 'image/webp',
+            byte_size INTEGER NOT NULL,
+            width INTEGER DEFAULT 320,
+            height INTEGER DEFAULT 320,
+            sha256_hash TEXT,
+            uploaded_by TEXT,
+            data_blob BLOB,
+            uploaded_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_professional_photos_user ON professional_photos(user_id);")
+
+        # Enforce Single-Admin rule in SQLite (only fulcrumindia1@gmail.com may hold admin role)
+        try:
+            cur.execute("""
+                UPDATE profiles
+                SET role = 'aspirant'
+                WHERE lower(email) <> 'fulcrumindia1@gmail.com'
+                  AND lower(role) IN ('admin', 'district_admin', 'operational_admin')
+            """)
+            cur.execute("""
+                DELETE FROM user_roles
+                WHERE lower(role) IN ('admin', 'district_admin', 'operational_admin')
+                  AND user_id <> '616304b5-aef5-4cd0-88be-2fda7ddf7f88'
+            """)
+            conn.commit()
+        except Exception:
+            pass
+
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS scheme_support_reviews (
             id TEXT PRIMARY KEY,
             aspirant_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
@@ -2561,6 +2597,53 @@ class LocalDatabase:
         conn = self._get_conn()
         cur = conn.cursor()
         cur.execute("DELETE FROM aspirant_photos WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+        return True
+
+    # ── PROFESSIONAL PHOTOS (GUIDES & SMES) ──
+    def get_professional_photo(self, user_id: str) -> Optional[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM professional_photos WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def upsert_professional_photo(self, photo_data: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        pid = photo_data.get("id") or str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        INSERT OR REPLACE INTO professional_photos (
+            id, user_id, storage_bucket, storage_path, mime_type,
+            byte_size, width, height, sha256_hash, uploaded_by, data_blob, uploaded_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            pid,
+            photo_data["user_id"],
+            photo_data.get("storage_bucket", "professional-headshots"),
+            photo_data["storage_path"],
+            photo_data.get("mime_type", "image/webp"),
+            photo_data["byte_size"],
+            photo_data.get("width", 320),
+            photo_data.get("height", 320),
+            photo_data.get("sha256_hash", ""),
+            photo_data.get("uploaded_by", photo_data["user_id"]),
+            photo_data.get("data_blob"),
+            photo_data.get("uploaded_at", now_iso),
+            now_iso,
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def delete_professional_photo(self, user_id: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM professional_photos WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
         return True

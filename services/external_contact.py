@@ -27,20 +27,13 @@ from services.governance import get_primary_admin_id
 # 1. AUTHORIZATION GATE
 # ─────────────────────────────────────────────────────────────────────────────
 def is_authorized_admin(user_id: Optional[str]) -> bool:
-    """Verifies that the caller is the authorized single Platform Admin."""
+    """Verifies that the caller is the authorized single Platform Admin (fulcrumindia1@gmail.com)."""
     if not user_id:
         return False
-    primary_id = str(get_primary_admin_id() or "")
-    if primary_id and str(user_id) == primary_id:
-        return True
-
-    from services.profiles import get_profile
-    p = get_profile(user_id)
-    if not p:
-        return False
-    email = str(p.get("email", "")).strip().lower()
-    role = str(p.get("role", "")).strip().lower()
-    return email == "fulcrumindia1@gmail.com" or role == "admin"
+    from services.roles import is_strict_admin
+    if isinstance(user_id, dict):
+        return is_strict_admin(user_dict=user_id)
+    return is_strict_admin(user_id=str(user_id))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

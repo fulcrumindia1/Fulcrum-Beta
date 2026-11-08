@@ -678,29 +678,50 @@ def render_admin_sme_conflicts_tab(admin_id: str):
         if not conflicts:
             st.info("No conflict of interest declarations on record.")
         else:
+            from services.profiles import list_all_profiles
+            from services.relationships import unassign_sme
             all_p = {p["id"]: p for p in list_all_profiles()}
             for c in conflicts:
                 sme_p = all_p.get(c.get("sme_id", "")) or {}
                 asp_p = all_p.get(c.get("aspirant_id", "")) or {}
                 has_conf = c.get("has_conflict", False)
+                c_status = str(c.get("status") or "DECLARED").upper()
 
-                color = "#DC2626" if has_conf else "#10B981"
-                text = "CONFLICT DECLARED" if has_conf else "CLEARED / NO CONFLICT"
+                color = "#DC2626" if (has_conf and c_status not in ("RESOLVED", "DISMISSED")) else "#10B981"
+                text = f"CONFLICT ({c_status})" if has_conf else "CLEARED / NO CONFLICT"
 
                 st.markdown(f"""
-                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {color}; border-radius:10px; padding:0.9rem; margin-bottom:0.75rem;">
+                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {color}; border-radius:10px; padding:0.9rem; margin-bottom:0.5rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <div>
-                            <span style="font-weight:700; color:#0F172A;">{sme_p.get('full_name', 'SME')}</span> ➔ <span style="font-weight:700; color:#0F172A;">{asp_p.get('full_name', 'Aspirant')}</span>
+                            <span style="font-weight:700; color:#0F172A;">{_safe(sme_p.get('full_name', 'SME'))}</span> ➔ <span style="font-weight:700; color:#0F172A;">{_safe(asp_p.get('full_name', 'Aspirant'))}</span>
                             <div style="font-size:0.85rem; color:#334155; margin-top:4px;">{_safe(c.get('conflict_details'))}</div>
                         </div>
                         <div style="text-align:right;">
                             <span style="background:{color}; color:#fff; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:8px;">{text}</span>
-                            <div style="font-size:0.7rem; color:#94A3B8; margin-top:4px;">Declared: {c.get('created_at', '')[:16].replace('T', ' ')}</div>
+                            <div style="font-size:0.7rem; color:#94A3B8; margin-top:4px;">Declared: {str(c.get('created_at', ''))[:16].replace('T', ' ')}</div>
                         </div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+                if has_conf and c_status not in ("RESOLVED", "DISMISSED") and c.get("aspirant_id") and c.get("sme_id"):
+                    if st.button(
+                        f"🔄 Approve Recusal & Unassign {sme_p.get('full_name', 'SME')} from {asp_p.get('full_name', 'Aspirant')}",
+                        key=f"btn_resolve_coi_{c.get('id')}",
+                        type="primary"
+                    ):
+                        ok_u, err_u = unassign_sme(
+                            aspirant_id=c["aspirant_id"],
+                            sme_id=c["sme_id"],
+                            admin_id=admin_id,
+                            reason=f"Conflict of Interest Recusal Approved: {c.get('conflict_details', '')}"
+                        )
+                        if ok_u:
+                            st.success("Conflicted SME unassigned and logged in Assignment History.")
+                            st.rerun()
+                        else:
+                            st.error(err_u or "Failed to unassign SME.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -198,8 +198,21 @@ def decide_scheme_support_review(
             reviewed_by=admin_id
         )
 
-    # Notify Guide of Support Decision
+    # Notify Guide of Support Decision & Auto-Release Scheme on Approval
     if target_review:
+        if decision == "APPROVED" and target_review.get("aspirant_id") and target_review.get("scheme_id"):
+            try:
+                from services.schemes import release_scheme_to_aspirant
+                release_scheme_to_aspirant(
+                    guide_id=target_review.get("guide_id") or admin_id,
+                    aspirant_id=target_review["aspirant_id"],
+                    scheme_id=target_review["scheme_id"],
+                    guide_recommendation=target_review.get("justification") or admin_notes.strip(),
+                    guide_note=f"Approved via Scheme Support Review: {admin_notes.strip()}",
+                )
+            except Exception as rel_err:
+                print(f"[SchemeReviews] Auto-release note: {rel_err}")
+
         try:
             from services.notifications import create_notification
             guide_recipient_id = target_review.get("guide_id")

@@ -165,10 +165,14 @@ def main():
         else:
             print(f"  [AUTH EXISTS]  {email} (ID: {existing_auth[email]})")
 
-    # Upsert profiles
+    # Upsert profiles (strictly enforcing Single Admin = fulcrumindia1@gmail.com)
     cleaned_profiles = []
     for pid, prof in profiles_by_id.items():
         p_clean = remap_id(prof)
+        p_email = str(p_clean.get("email") or "").strip().lower()
+        p_role = str(p_clean.get("role") or "aspirant").strip().lower()
+        if p_email != "fulcrumindia1@gmail.com" and p_role in ("admin", "district_admin", "operational_admin"):
+            p_clean["role"] = "aspirant"
         cleaned_profiles.append(p_clean)
 
     batch_upsert(admin, "profiles", cleaned_profiles)
