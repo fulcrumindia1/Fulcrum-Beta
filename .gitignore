@@ -10,9 +10,11 @@
 *.dump
 *.tar
 *.bak
+*.backup
 
 # Local database (SQLite)
 *.db
+*.db*
 cluster_a.db
 
 # Python bytecode & cache

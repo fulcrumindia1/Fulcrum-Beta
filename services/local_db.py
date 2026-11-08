@@ -331,6 +331,18 @@ class LocalDatabase:
         if "aspirant_responded_at" not in hr_cols:
             try: cur.execute("ALTER TABLE help_requests ADD COLUMN aspirant_responded_at TEXT")
             except Exception: pass
+        if "last_mentor_response_at" not in hr_cols:
+            try: cur.execute("ALTER TABLE help_requests ADD COLUMN last_mentor_response_at TEXT")
+            except Exception: pass
+        if "last_interaction_actor_id" not in hr_cols:
+            try: cur.execute("ALTER TABLE help_requests ADD COLUMN last_interaction_actor_id TEXT REFERENCES profiles(id)")
+            except Exception: pass
+        if "last_interaction_actor_role" not in hr_cols:
+            try: cur.execute("ALTER TABLE help_requests ADD COLUMN last_interaction_actor_role TEXT")
+            except Exception: pass
+        if "last_aspirant_response_at" not in hr_cols:
+            try: cur.execute("ALTER TABLE help_requests ADD COLUMN last_aspirant_response_at TEXT")
+            except Exception: pass
         conn.commit()
 
         # Seed default super admin (fulcrumindia1@gmail.com) if missing
