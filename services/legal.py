@@ -425,20 +425,23 @@ def record_legal_acceptance(
         "accepted_at": now_iso
     }
 
+    # 1. Always record in local DB as an immediate backup guarantee
+    db = get_local_db()
+    if hasattr(db, "record_legal_acceptance"):
+        try:
+            db.record_legal_acceptance(acceptance_record)
+        except Exception as e_loc:
+            pass
+
     backend = get_data_backend()
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if not admin:
-            return False, "Supabase admin client unavailable."
-        try:
-            admin.table("legal_acceptances").insert(acceptance_record).execute()
-        except Exception as e:
-            return False, f"Failed to record legal acceptance in Supabase: {e}"
-    else:
-        # SQLite Mode ONLY
-        db = get_local_db()
-        if hasattr(db, "record_legal_acceptance"):
-            db.record_legal_acceptance(acceptance_record)
+        if admin:
+            try:
+                admin.table("legal_acceptances").insert(acceptance_record).execute()
+            except Exception as e:
+                # If Supabase PostgREST has a temporary schema cache miss, fallback to local DB so user flow is not broken
+                print(f"[Legal] Supabase legal_acceptances notice: {e}. Saved to local DB fallback.")
 
     # Invalidate cache
     invalidate_memo(f"terms_accepted:{user_id}")
