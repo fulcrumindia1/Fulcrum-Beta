@@ -254,6 +254,8 @@ def get_aspirant_photo(
     if not user_id:
         return None
 
+    backend = get_data_backend()
+
     # Resolve viewer_id from session context if running in Streamlit
     if viewer_id is None:
         try:
@@ -264,15 +266,19 @@ def get_aspirant_photo(
         except Exception:
             pass
 
-    # Server-side authorization gate
-    if viewer_id is not None:
-        authorized, _ = can_view_aspirant_photo(viewer_id, user_id, viewer_role)
-        if not authorized:
+    # Server-side authorization gate:
+    # In cloud Supabase mode, strictly fail closed if viewer is unauthenticated
+    if not viewer_id:
+        if backend == "supabase":
             return None
+        # In local development / test mode, allow owner self-view
+        viewer_id = user_id
 
-    backend = get_data_backend()
+    authorized, _ = can_view_aspirant_photo(viewer_id, user_id, viewer_role)
+    if not authorized:
+        return None
 
-    # 1. Supabase Mode
+    # 1. Supabase Mode (Fail closed: never silently fall back to local SQLite in production)
     if backend == "supabase":
         client = get_supabase_admin_client() or get_supabase_client()
         if client:
@@ -294,8 +300,9 @@ def get_aspirant_photo(
                         return record
             except Exception as e:
                 print(f"[AspirantPhotos] Supabase fetch error: {e}")
+        return None
 
-    # 2. Local Database / Fallback Mode
+    # 2. Local Database Mode (Active only when DATA_BACKEND=sqlite)
     local_record = get_local_db().get_aspirant_photo(user_id)
     if local_record:
         data_blob = local_record.get("data_blob")
@@ -401,35 +408,17 @@ def upload_aspirant_photo(
     obj_id = str(uuid.uuid4())
     storage_path = f"{user_id}/avatar_{uuid.uuid4().hex[:8]}.webp"
 
-    # Always persist locally for offline/test reliability
-    local_db = get_local_db()
-    local_db.upsert_aspirant_photo({
-        "id": obj_id,
-        "user_id": user_id,
-        "storage_bucket": STORAGE_BUCKET,
-        "storage_path": storage_path,
-        "content_type": content_type,
-        "file_size_bytes": len(processed_bytes),
-        "width": width,
-        "height": height,
-        "data_blob": processed_bytes,
-        "created_at": now_iso
-    })
-
-    # Supabase upload — best-effort with auto-bucket creation and graceful fallback
+    # In Supabase Mode: Persist strictly to Supabase Storage & DB. Never mask failure with local SQLite.
     if backend == "supabase":
         admin = get_supabase_admin_client() or get_supabase_client()
         if not admin:
-            # Local save already succeeded above — return success
-            print("[AspirantPhotos] Supabase client unavailable; photo saved to local DB only.")
-            return True, None
+            return False, "Supabase cloud client unavailable. Please check configuration."
 
         try:
             # 0. Ensure storage bucket exists — auto-create if missing
             try:
                 admin.storage.from_(STORAGE_BUCKET).list(path="", options={"limit": 1})
             except Exception:
-                # Bucket may not exist or may be inaccessible — try to create it
                 try:
                     admin.storage.create_bucket(
                         STORAGE_BUCKET,
@@ -439,10 +428,8 @@ def upload_aspirant_photo(
                             "allowed_mime_types": ["image/png", "image/jpeg", "image/webp"]
                         }
                     )
-                    print(f"[AspirantPhotos] Created missing storage bucket: {STORAGE_BUCKET}")
                 except Exception as bucket_err:
-                    # Bucket might already exist but list failed due to RLS — continue anyway
-                    print(f"[AspirantPhotos] Bucket create attempt: {bucket_err}")
+                    print(f"[AspirantPhotos] Bucket creation notice: {bucket_err}")
 
             # 1. Clean up old storage file if present
             old_photo = None
@@ -459,16 +446,14 @@ def upload_aspirant_photo(
                 except Exception:
                     pass
 
-            # 2. Upload new compressed file
+            # 2. Upload compressed WebP file to storage
             upload_res = admin.storage.from_(STORAGE_BUCKET).upload(
                 storage_path,
                 processed_bytes,
                 {"content-type": content_type, "upsert": "true"}
             )
             if hasattr(upload_res, "error") and upload_res.error:
-                # Supabase upload failed but local DB already has the photo — return success
-                print(f"[AspirantPhotos] Supabase storage upload warning: {upload_res.error}")
-                return True, None
+                return False, f"Failed to persist profile photo to cloud storage: {upload_res.error}"
 
             # 3. Upsert metadata in aspirant_photos
             admin.table("aspirant_photos").upsert({
@@ -485,11 +470,22 @@ def upload_aspirant_photo(
 
             return True, None
         except Exception as e:
-            # Supabase storage failed but local DB already has the photo saved —
-            # return success with a logged warning instead of blocking the user
-            print(f"[AspirantPhotos] Supabase storage warning (local fallback active): {e}")
-            return True, None
+            return False, f"Failed to persist profile photo to cloud storage: {e}"
 
+    # Local SQLite Mode (Active only when DATA_BACKEND=sqlite)
+    local_db = get_local_db()
+    local_db.upsert_aspirant_photo({
+        "id": obj_id,
+        "user_id": user_id,
+        "storage_bucket": STORAGE_BUCKET,
+        "storage_path": storage_path,
+        "content_type": content_type,
+        "file_size_bytes": len(processed_bytes),
+        "width": width,
+        "height": height,
+        "data_blob": processed_bytes,
+        "created_at": now_iso
+    })
     return True, None
 
 

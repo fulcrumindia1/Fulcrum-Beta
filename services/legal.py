@@ -428,17 +428,17 @@ def record_legal_acceptance(
     backend = get_data_backend()
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if admin:
-            try:
-                admin.table("legal_acceptances").insert(acceptance_record).execute()
-            except Exception as e:
-                # If Supabase table missing, log and fallback to local
-                pass
-
-    # Always write to local DB
-    db = get_local_db()
-    if hasattr(db, "record_legal_acceptance"):
-        db.record_legal_acceptance(acceptance_record)
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            admin.table("legal_acceptances").insert(acceptance_record).execute()
+        except Exception as e:
+            return False, f"Failed to record legal acceptance in Supabase: {e}"
+    else:
+        # SQLite Mode ONLY
+        db = get_local_db()
+        if hasattr(db, "record_legal_acceptance"):
+            db.record_legal_acceptance(acceptance_record)
 
     # Invalidate cache
     invalidate_memo(f"terms_accepted:{user_id}")

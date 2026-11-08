@@ -269,8 +269,8 @@ def test_02_profile_photo_lifecycle(actors):
     ok_up, err_up = upload_aspirant_photo(alpha_id, png_bytes, "headshot.png")
     assert ok_up, f"Upload photo failed: {err_up}"
 
-    # 3. Read saved photo
-    photo_rec = get_aspirant_photo(alpha_id)
+    # 3. Read saved photo (owner self-view)
+    photo_rec = get_aspirant_photo(alpha_id, viewer_id=alpha_id, viewer_role="aspirant")
     assert photo_rec is not None, "Photo record not found after upload"
     assert photo_rec["width"] == 120
     assert photo_rec["height"] == 120
@@ -285,13 +285,13 @@ def test_02_profile_photo_lifecycle(actors):
 
     ok_rep, err_rep = upload_aspirant_photo(alpha_id, jpeg_bytes, "headshot2.jpg")
     assert ok_rep, f"Replace photo failed: {err_rep}"
-    photo_rec2 = get_aspirant_photo(alpha_id)
+    photo_rec2 = get_aspirant_photo(alpha_id, viewer_id=alpha_id, viewer_role="aspirant")
     assert photo_rec2["width"] == 200
 
     # 5. Remove photo
     ok_del, err_del = delete_aspirant_photo(alpha_id)
     assert ok_del, f"Delete photo failed: {err_del}"
-    assert get_aspirant_photo(alpha_id) is None
+    assert get_aspirant_photo(alpha_id, viewer_id=alpha_id, viewer_role="aspirant") is None
 
     # 6. Negative test: Reject corrupt / non-image bytes
     ok_bad, _, _, _, _, err_bad = validate_and_process_photo(b"NOT_AN_IMAGE_DATA")

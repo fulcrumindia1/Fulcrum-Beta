@@ -263,7 +263,12 @@ def render_login_page():
             st.success("✅ Email confirmed successfully. Please sign in with your email and password.")
 
         # PASSWORD RECOVERY FLOW
-        is_recovery = (auth_type == "recovery") or (bool(acc_token) and auth_type != "signup") or st.session_state.get("show_recovery_form", False)
+        # In Supabase mode, strictly require cryptographic recovery token from the email link
+        backend = get_data_backend()
+        has_token = bool(acc_token) or bool(st.session_state.get("sb_access_token"))
+        is_recovery = (auth_type == "recovery") or (has_token and auth_type != "signup")
+        if backend == "sqlite" and st.session_state.get("show_recovery_form", False):
+            is_recovery = True
 
         if is_recovery:
             st.markdown("""
@@ -290,8 +295,8 @@ def render_login_page():
                         st.error("Please enter and confirm your new password.")
                     elif new_p1 != new_p2:
                         st.error("Passwords do not match.")
-                    elif len(new_p1) < 6:
-                        st.error("Password must be at least 6 characters long.")
+                    elif len(new_p1) < 8:
+                        st.error("Password must be at least 8 characters long.")
                     else:
                         ok, err = complete_password_reset(new_p1, access_token=acc_token, refresh_token=ref_token, email=rec_email.strip())
                         if ok:
@@ -371,14 +376,14 @@ def render_login_page():
 
                     st.markdown("""
                     <div style="border-top: 1px dashed #E2E8F0; margin-top: 0.9rem; padding-top: 0.75rem; text-align: center;">
-                        <span style="font-size:0.8rem; color:#64748B;">Already received the reset email or opened the link?</span>
+                        <span style="font-size:0.8rem; color:#64748B;">For security, click the verified recovery link sent to your email to set a new password.</span>
                     </div>
                     """, unsafe_allow_html=True)
-                    if st.button("🔑 Set New Password Here →", key="btn_open_set_pwd", use_container_width=True):
-                        st.session_state.show_recovery_form = True
-                        st.rerun()
                 else:
                     st.info("In local development mode (SQLite), password resets via email are disabled. Please use the verified demo test accounts below or contact fulcrumindia1@gmail.com.")
+                    if st.button("🔑 Reset Local Dev Password", key="btn_open_set_pwd_local", use_container_width=True):
+                        st.session_state.show_recovery_form = True
+                        st.rerun()
 
             # Contact System Maintenance notice requested by user
             st.markdown("""

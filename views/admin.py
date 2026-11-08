@@ -401,7 +401,9 @@ def render_admin_portal(admin_profile: dict):
                         if cg_loc_custom and cg_loc_custom.strip():
                             cg_loc = cg_loc_custom.strip()
                     cg_exp = st.text_input("Primary Expertise *", placeholder="e.g. PMEGP Loan Specialist, Banking, Food Processing")
-                    cg_pwd = st.text_input("Temporary Password", value="Guide@123")
+                    import secrets
+                    gen_guide_pwd = secrets.token_urlsafe(12)
+                    cg_pwd = st.text_input("Temporary Password", value=gen_guide_pwd)
                 cg_bio = st.text_area("Professional Background", placeholder="Retired Chief Manager with 30 years experience in MSME lending.")
 
                 if st.form_submit_button("CREATE GUIDE ACCOUNT", type="primary"):
@@ -418,7 +420,7 @@ def render_admin_portal(admin_profile: dict):
                             bio=cg_bio
                         )
                         if g_prof:
-                            st.session_state["admin_guide_create_success"] = f"✅ Guide account '{cg_name}' created successfully! Credentials: {cg_email} / {cg_pwd}"
+                            st.session_state["admin_guide_create_success"] = f"✅ Guide account '{cg_name}' ({cg_email}) created successfully with temporary credentials. First-login password change is enforced."
                             st.rerun()
                         else:
                             st.error(err or "Failed to create guide.")
@@ -474,7 +476,9 @@ def render_admin_portal(admin_profile: dict):
                         if cs_loc_custom and cs_loc_custom.strip():
                             cs_loc = cs_loc_custom.strip()
                     cs_exp = st.text_input("Specialization Domain *", placeholder="e.g. GST Auditing, Taxation, Corporate Compliance")
-                    cs_pwd = st.text_input("Temporary Password", value="Sme@123")
+                    import secrets
+                    gen_sme_pwd = secrets.token_urlsafe(12)
+                    cs_pwd = st.text_input("Temporary Password", value=gen_sme_pwd)
                 cs_ind = st.text_input("Industry Specialization", placeholder="e.g. Food Processing, Export, Manufacturing")
                 cs_bio = st.text_area("Professional Summary", placeholder="Chartered Accountant and GST consultant advising MSMEs for 15 years.")
 
@@ -493,7 +497,7 @@ def render_admin_portal(admin_profile: dict):
                             industry=cs_ind
                         )
                         if s_prof:
-                            st.session_state["admin_sme_create_success"] = f"✅ SME account '{cs_name}' created successfully! Credentials: {cs_email} / {cs_pwd}"
+                            st.session_state["admin_sme_create_success"] = f"✅ SME account '{cs_name}' ({cs_email}) created successfully with temporary credentials. First-login password change is enforced."
                             st.rerun()
                         else:
                             st.error(err or "Failed to create SME.")

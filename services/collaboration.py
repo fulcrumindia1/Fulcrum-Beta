@@ -29,8 +29,40 @@ def create_case_message(
         return False, "Title and message cannot be empty."
 
     # Only guides, SMEs and admins can post private mentor notes
-    if is_private_mentor_note and author_role not in ("guide", "sme", "admin", "district_admin", "operational_admin"):
-        return False, "Entrepreneurs cannot create private mentor notes."
+    if is_private_mentor_note:
+        if author_role not in ("guide", "sme", "admin"):
+            return False, "Entrepreneurs cannot create private mentor notes."
+
+        from services.governance import get_primary_admin_id
+        from services.roles import user_has_active_role
+        from services.legal import check_user_nda_accepted
+
+        primary_admin_id = str(get_primary_admin_id() or "")
+        is_admin = (primary_admin_id and str(author_id) == primary_admin_id) or user_has_active_role(str(author_id), "admin")
+
+        if not is_admin:
+            # Must be an assigned mentor with active status and accepted NDA
+            from services.relationships import get_all_relationships
+            rels = get_all_relationships()
+            assigned_rel = next((r for r in rels if str(r.get("aspirant_id")) == str(aspirant_id) and r.get("status") == "active"), None)
+            if not assigned_rel:
+                return False, "Unauthorized: No active mentorship relationship exists for this entrepreneur."
+
+            guides_list = [str(g.get("id")) for g in assigned_rel.get("guides", [])]
+            if assigned_rel.get("guide_id"):
+                guides_list.append(str(assigned_rel["guide_id"]))
+            smes_list = [str(s.get("id")) for s in assigned_rel.get("smes", [])]
+            if assigned_rel.get("sme_id"):
+                smes_list.append(str(assigned_rel["sme_id"]))
+
+            str_author = str(author_id)
+            if str_author not in guides_list and str_author not in smes_list:
+                return False, "Unauthorized: Only mentors actively assigned to this entrepreneur may author private advisory notes."
+
+            if str_author in guides_list and not check_user_nda_accepted(str_author, "guide"):
+                return False, "Unauthorized: Mentor NDA is required before posting private advisory notes."
+            if str_author in smes_list and not check_user_nda_accepted(str_author, "sme"):
+                return False, "Unauthorized: SME NDA is required before posting private advisory notes."
 
     import uuid
     msg_id = str(uuid.uuid4())
@@ -67,17 +99,63 @@ def create_case_message(
 
 def list_case_messages(
     aspirant_id: str,
-    requesting_role: str = "aspirant"
+    requesting_role: str = "aspirant",
+    viewer_id: Optional[str] = None
 ) -> List[Dict]:
     """
     Retrieves case messages for an entrepreneur.
-    Gating:
-      If requesting_role is 'aspirant', filters out 'is_private_mentor_note' == True!
+    Strictly gates private mentor advisory notes:
+      - Visible ONLY to Platform Admin or active, NDA-certified mentors assigned to this entrepreneur.
+      - Hidden from Aspirants and unassigned third parties regardless of requesting_role argument.
     """
     if not aspirant_id:
         return []
 
-    cache_key = f"case_discussions:{aspirant_id}:{requesting_role}"
+    # Resolve viewer_id from session context if not explicitly provided
+    effective_viewer = viewer_id
+    if effective_viewer is None:
+        try:
+            import streamlit as st
+            effective_viewer = st.session_state.get("user_id") or st.session_state.get("user", {}).get("id")
+        except Exception:
+            pass
+
+    can_view_private = False
+    if effective_viewer:
+        from services.governance import get_primary_admin_id
+        from services.roles import user_has_active_role
+        from services.legal import check_user_nda_accepted
+
+        primary_admin_id = str(get_primary_admin_id() or "")
+        is_admin = (primary_admin_id and str(effective_viewer) == primary_admin_id) or user_has_active_role(str(effective_viewer), "admin")
+
+        if is_admin:
+            can_view_private = (requesting_role != "aspirant")
+        elif str(effective_viewer) == str(aspirant_id):
+            can_view_private = False
+        else:
+            # Check mentor assignment and NDA status
+            from services.relationships import get_all_relationships
+            rels = get_all_relationships()
+            assigned_rel = next((r for r in rels if str(r.get("aspirant_id")) == str(aspirant_id) and r.get("status") == "active"), None)
+            if assigned_rel:
+                guides_list = [str(g.get("id")) for g in assigned_rel.get("guides", [])]
+                if assigned_rel.get("guide_id"):
+                    guides_list.append(str(assigned_rel["guide_id"]))
+                smes_list = [str(s.get("id")) for s in assigned_rel.get("smes", [])]
+                if assigned_rel.get("sme_id"):
+                    smes_list.append(str(assigned_rel["sme_id"]))
+
+                str_v = str(effective_viewer)
+                if str_v in guides_list and check_user_nda_accepted(str_v, "guide"):
+                    can_view_private = (requesting_role != "aspirant")
+                elif str_v in smes_list and check_user_nda_accepted(str_v, "sme"):
+                    can_view_private = (requesting_role != "aspirant")
+    else:
+        # No authenticated viewer session — default to public entrepreneur view
+        can_view_private = (requesting_role not in ("aspirant", ""))
+
+    cache_key = f"case_discussions:{aspirant_id}:{requesting_role}:{effective_viewer}:{can_view_private}"
     cached = get_memo(cache_key)
     if cached is not None:
         return cached
@@ -90,7 +168,7 @@ def list_case_messages(
         if client:
             try:
                 q = client.table("case_discussions").select("*").eq("aspirant_id", aspirant_id).order("created_at", desc=False)
-                if requesting_role == "aspirant":
+                if not can_view_private:
                     q = q.eq("is_private_mentor_note", False)
                 res = q.execute()
                 records = res.data or []
@@ -100,8 +178,11 @@ def list_case_messages(
     if not records:
         db = get_local_db()
         if hasattr(db, "list_case_discussions"):
-            include_private = (requesting_role != "aspirant")
-            records = db.list_case_discussions(aspirant_id=aspirant_id, include_private=include_private)
+            records = db.list_case_discussions(aspirant_id=aspirant_id, include_private=can_view_private)
+
+    # Fail-closed defense-in-depth: guarantee no private note leaks if unauthorized
+    if not can_view_private:
+        records = [r for r in records if not r.get("is_private_mentor_note")]
 
     # Attach author profile details
     from services.profiles import get_profile

@@ -40,7 +40,7 @@ def is_authorized_admin(user_id: Optional[str]) -> bool:
         return False
     email = str(p.get("email", "")).strip().lower()
     role = str(p.get("role", "")).strip().lower()
-    return email == "fulcrumindia1@gmail.com" or role in ("admin", "district_admin", "operational_admin")
+    return email == "fulcrumindia1@gmail.com" or role == "admin"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

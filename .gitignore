@@ -1,8 +1,15 @@
 # Secrets & Credentials
 .streamlit/secrets.toml
 .env
+.env.*
 *.key
 *.pem
+*.tar.gz
+*.tgz
+*.zip
+*.dump
+*.tar
+*.bak
 
 # Local database (SQLite)
 *.db

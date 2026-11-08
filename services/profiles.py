@@ -343,12 +343,8 @@ def update_aspirant_profile(
         if not client:
             return None, "Supabase client not available."
         try:
-            res = client.table("profiles").update(updated_record).eq("id", user_id).execute()
-            if not res.data:
-                # If RLS restricted update, verify admin client
-                admin = _get_admin_client()
-                if admin and admin != client:
-                    res = admin.table("profiles").update(updated_record).eq("id", user_id).execute()
+            admin = _get_admin_client() or client
+            res = admin.table("profiles").update(updated_record).eq("id", user_id).execute()
             admin_c = _get_admin_client() or client
             if admin_c:
                 admin_c.table("journeys").update({

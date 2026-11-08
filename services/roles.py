@@ -157,16 +157,18 @@ def grant_role(
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("user_roles").upsert(record, on_conflict="user_id, role").execute()
-            except Exception as e:
-                err_str = str(e)
-                print(f"[Roles] Supabase user_roles upsert notice: {err_str}")
-                if "PGRST205" not in err_str and "user_roles" not in err_str:
-                    return False, f"Supabase error granting role: {e}"
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            admin.table("user_roles").upsert(record, on_conflict="user_id, role").execute()
+        except Exception as e:
+            return False, f"Supabase error granting role: {e}"
+        invalidate_memo(f"user_roles:{user_id}")
+        invalidate_memo(f"guide_aspirants:{user_id}")
+        invalidate_memo(f"sme_aspirants:{user_id}")
+        return True, None
 
-    # Always mirror to local DB
+    # SQLite Mode ONLY
     db = get_local_db()
     if hasattr(db, "upsert_user_role"):
         db.upsert_user_role(record)
@@ -184,18 +186,20 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("user_roles").update({
-                    "status": "active",
-                    "activated_at": now_iso,
-                    "updated_at": now_iso
-                }).eq("user_id", user_id).eq("role", role).execute()
-            except Exception as e:
-                err_str = str(e)
-                print(f"[Roles] Supabase activate notice: {err_str}")
-                if "PGRST205" not in err_str and "user_roles" not in err_str:
-                    return False, f"Failed to activate role in Supabase: {e}"
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            admin.table("user_roles").update({
+                "status": "active",
+                "activated_at": now_iso,
+                "updated_at": now_iso
+            }).eq("user_id", user_id).eq("role", role).execute()
+        except Exception as e:
+            return False, f"Failed to activate role in Supabase: {e}"
+        invalidate_memo(f"user_roles:{user_id}")
+        invalidate_memo(f"guide_aspirants:{user_id}")
+        invalidate_memo(f"sme_aspirants:{user_id}")
+        return True, None
 
     db = get_local_db()
     if hasattr(db, "update_role_status"):
@@ -220,23 +224,21 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("user_roles").update({
-                    "status": "revoked",
-                    "revoked_at": now_iso,
-                    "revocation_reason": reason or "Revoked by Administration",
-                    "updated_at": now_iso
-                }).eq("user_id", user_id).eq("role", role).execute()
-            except Exception as e:
-                err_str = str(e)
-                print(f"[Roles] Supabase revoke notice: {err_str}")
-                if "PGRST205" not in err_str and "user_roles" not in err_str:
-                    return False, f"Failed to revoke role in Supabase: {e}"
-
-    db = get_local_db()
-    if hasattr(db, "update_role_status"):
-        db.update_role_status(user_id, role, "revoked", revocation_reason=reason)
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            admin.table("user_roles").update({
+                "status": "revoked",
+                "revoked_at": now_iso,
+                "revocation_reason": reason or "Revoked by Administration",
+                "updated_at": now_iso
+            }).eq("user_id", user_id).eq("role", role).execute()
+        except Exception as e:
+            return False, f"Failed to revoke role in Supabase: {e}"
+    else:
+        db = get_local_db()
+        if hasattr(db, "update_role_status"):
+            db.update_role_status(user_id, role, "revoked", revocation_reason=reason)
 
     # If revoking a Guide, immediately unassign active caseload to prevent privileged data access
     if role == "guide":
@@ -408,14 +410,28 @@ def list_active_profiles_for_role(target_role: str) -> List[Dict]:
     Returns all user profiles eligible for target_role ('aspirant', 'guide', 'sme').
     Includes both base profiles and secondary multi-role holders whose grant is currently ACTIVE.
     Excludes users whose grant is suspended, revoked, or pending NDA.
+    Strictly excludes the Platform Administrator from candidate lists.
     """
     from services.profiles import list_profiles_by_role, get_profile
+    from services.governance import get_primary_admin_id
+    primary_admin_id = str(get_primary_admin_id() or "")
+
     base_profiles = list_profiles_by_role(target_role)
-    profiles_by_id = {str(p["id"]): p for p in base_profiles}
+    profiles_by_id = {}
+    for p in base_profiles:
+        p_id = str(p.get("id", ""))
+        p_email = str(p.get("email", "")).strip().lower()
+        if p_email == "fulcrumindia1@gmail.com" or (primary_admin_id and p_id == primary_admin_id) or p.get("role") == "admin":
+            continue
+        profiles_by_id[p_id] = p
 
     # Inspect all multi-role users
     for u in list_users_with_multi_roles():
         uid = str(u["id"])
+        u_email = str(u.get("email", "")).strip().lower()
+        if u_email == "fulcrumindia1@gmail.com" or (primary_admin_id and uid == primary_admin_id):
+            continue
+
         if target_role in u.get("active_roles", []):
             if uid not in profiles_by_id:
                 prof = get_profile(uid)
@@ -423,7 +439,7 @@ def list_active_profiles_for_role(target_role: str) -> List[Dict]:
                     profiles_by_id[uid] = prof
         else:
             # If primary profile was target_role but is explicitly suspended or revoked in user_roles
-            if target_role in u.get("revoked_roles", []) or target_role in u.get("suspended_roles", []):
+            if target_role in u.get("revoked_roles", []) or target_role in u.get("suspended_roles", []) or target_role in u.get("pending_nda_roles", []):
                 profiles_by_id.pop(uid, None)
 
     results = list(profiles_by_id.values())

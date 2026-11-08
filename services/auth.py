@@ -533,19 +533,23 @@ def complete_password_reset(
     email: Optional[str] = None
 ) -> Tuple[bool, Optional[str]]:
     """
-    Updates user password following recovery redirect or direct email password update.
-    Supports:
-    1. Supabase Auth token session update (if token available).
-    2. Direct Supabase Admin API password update by registered email.
-    3. SQLite local DB mirror update.
+    Updates user password following a verified Supabase Auth recovery link.
+    Strictly requires a cryptographic recovery token or active recovery session.
+    Arbitrary email password overrides via Admin API are completely removed (CWE-640).
     """
-    if len(new_password) < 6:
-        return False, "Password must be at least 6 characters long."
+    if not new_password or len(new_password) < 8:
+        return False, "Password must be at least 8 characters long."
 
     clean_email = (email or "").strip().lower()
+
+    # The Single Platform Administrator credentials can NEVER be reset via public self-serve flow
+    if clean_email == "fulcrumindia1@gmail.com":
+        return False, "Security Notice: Platform Administrator credentials cannot be reset through self-service recovery. Contact system maintenance."
+
     backend = get_data_backend()
 
     if backend == "sqlite":
+        # In local SQLite development mode only, require verified registered account
         if not clean_email:
             return False, "Please enter your registered email address."
         from services.local_db import get_local_db_conn
@@ -566,70 +570,54 @@ def complete_password_reset(
         except Exception as e:
             return False, f"Failed to update local password: {e}"
 
-    # Supabase mode
+    # Supabase Mode: STRICTLY REQUIRE VERIFIED RECOVERY SESSION
     client = get_supabase_client()
-    admin_client = get_supabase_admin_client()
-
     token = access_token or st.session_state.get("sb_access_token")
     ref_token = refresh_token or st.session_state.get("sb_refresh_token") or token
 
-    updated = False
+    if not token or not client:
+        return False, "Invalid or missing recovery credentials. Please use the secure reset link sent to your registered email."
 
-    # 1. Attempt token-based session update if token is present
-    if client and token:
-        try:
-            client.auth.set_session(token, ref_token or token)
-            res = client.auth.update_user({"password": new_password})
-            if res and getattr(res, "user", None):
-                updated = True
-        except Exception as e:
-            print(f"[Auth] Token-based update attempt notice: {e}")
+    try:
+        # Establish session with the recovery token
+        sess = client.auth.set_session(token, ref_token or token)
+        if not sess or not getattr(sess, "user", None):
+            return False, "Recovery session has expired or is invalid. Please request a new password reset link."
 
-    # 2. Attempt Admin Client update by resolving registered email to user ID
-    if not updated and admin_client and clean_email:
-        try:
-            prof_res = admin_client.table("profiles").select("id").ilike("email", clean_email).execute()
-            user_id = None
-            if prof_res.data and len(prof_res.data) > 0:
-                user_id = prof_res.data[0].get("id")
+        # Verify target user matches recovery session if email was provided
+        sess_email = getattr(sess.user, "email", "") or ""
+        if clean_email and sess_email.lower() != clean_email:
+            return False, "Security violation: Recovery token does not match the provided email address."
 
-            if not user_id:
-                try:
-                    users_list = admin_client.auth.admin.list_users()
-                    for u in users_list:
-                        if getattr(u, "email", "").lower() == clean_email:
-                            user_id = getattr(u, "id", None)
-                            break
-                except Exception:
-                    pass
+        # Double check: Admin account protection
+        if sess_email.lower() == "fulcrumindia1@gmail.com":
+            return False, "Security Notice: Platform Administrator credentials cannot be reset through self-service recovery."
 
-            if user_id:
-                admin_client.auth.admin.update_user_by_id(user_id, {"password": new_password})
-                updated = True
-            else:
-                return False, f"No registered account found with email: {clean_email}. Please check your email address."
-        except Exception as e:
-            return False, f"Failed to reset password in Supabase Auth: {e}"
+        # Perform password update within the verified session context
+        res = client.auth.update_user({"password": new_password})
+        if not res or not getattr(res, "user", None):
+            return False, "Password update failed. Please request a new recovery link."
 
-    if updated:
-        # Also keep local SQLite DB in sync
+        # Sync local SQLite mirror if present
         try:
             from services.local_db import get_local_db_conn
             import hashlib
             pwd_hash = hashlib.sha256(new_password.encode("utf-8")).hexdigest()
             conn = get_local_db_conn()
             cur = conn.cursor()
-            cur.execute("UPDATE profiles SET password_hash = ? WHERE LOWER(email) = ?", (pwd_hash, clean_email))
+            cur.execute("UPDATE profiles SET password_hash = ? WHERE LOWER(email) = ?", (pwd_hash, sess_email.lower()))
             conn.commit()
             conn.close()
         except Exception:
             pass
+
         return True, None
+    except Exception as e:
+        err_msg = str(e)
+        if "expired" in err_msg.lower():
+            return False, "The recovery link has expired. Please request a new reset link."
+        return False, f"Password reset verification failed: {err_msg}"
 
-    if not clean_email and not token:
-        return False, "Please enter your registered email address."
-
-    return False, "Unable to update password. Please verify your registered email address or request a new reset link."
 
 def complete_first_login_password_change(
     user_id: str,
@@ -638,9 +626,16 @@ def complete_first_login_password_change(
     """
     Enforces the first-login permanent password change for accounts provisioned with a temporary password.
     Updates the password in Supabase Auth or SQLite local DB, and sets temp_password_issued: False in profile_data.
+    Requires caller to be authenticated as the target user.
     """
-    if len(new_password) < 6:
-        return False, "Password must be at least 6 characters long."
+    if not new_password or len(new_password) < 8:
+        return False, "Password must be at least 8 characters long."
+
+    # Verify session authorization: caller MUST be authenticated as user_id
+    session_user = st.session_state.get("user")
+    if not session_user or str(session_user.get("id")) != str(user_id):
+        if str(st.session_state.get("user_id")) != str(user_id):
+            return False, "Unauthorized: Session user does not match target account."
 
     backend = get_data_backend()
     from services.profiles import get_profile, update_profile
@@ -743,10 +738,11 @@ def complete_first_login_password_change(
 
     return True, None
 
-def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: str, phone: str, location: str, expertise: str, temp_password: str = "Welcome@2026", bio: str = "", industry: str = "") -> Tuple[Optional[Dict], Optional[str]]:
+def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: str, phone: str, location: str, expertise: str, temp_password: Optional[str] = None, bio: str = "", industry: str = "") -> Tuple[Optional[Dict], Optional[str]]:
     """
     Administrative creation of Guide or SME accounts.
     Strictly restricted to Admin. No public signup allowed for these roles.
+    Uses cryptographically strong random temporary passwords by default.
     """
     if role not in ("guide", "sme"):
         return None, f"Invalid mentor role: {role}"
@@ -755,6 +751,9 @@ def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: st
     full_name = full_name.strip()
     if not email or not full_name:
         return None, "Name and email are required."
+
+    import secrets
+    effective_temp_password = temp_password if temp_password and len(temp_password) >= 8 else secrets.token_urlsafe(12)
 
     backend = get_data_backend()
 
@@ -779,7 +778,7 @@ def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: st
             "is_active": True,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
-        local_db.create_user_with_password(email, temp_password, profile)
+        local_db.create_user_with_password(email, effective_temp_password, profile)
         local_db.log_activity(admin_user_id, f"create_{role}", "profiles", mentor_user_id, {"full_name": full_name, "email": email})
         return profile, None
 
@@ -792,7 +791,7 @@ def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: st
     try:
         res = admin_client.auth.admin.create_user({
             "email": email,
-            "password": temp_password,
+            "password": effective_temp_password,
             "email_confirm": True,
             "user_metadata": {
                 "full_name": full_name,
