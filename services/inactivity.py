@@ -542,7 +542,187 @@ def compute_alert_live_status(
         fu_channel = (record.get("follow_up_channel") or "External").title()
         return f"Follow-up Initiated ({fu_channel})", "#3B82F6", live_days, last_eng_str
 
+    # 3b. Check if mentor has already responded and is waiting on the Aspirant's reply (SLA Grace)
+    try:
+        from services.help_requests import list_requests
+        reqs = list_requests(aspirant_id=aspirant_id)
+        mentor_tickets = [
+            r for r in reqs
+            if (mentor_role == "guide" and str(r.get("assigned_guide_id")) == str(mentor_id))
+            or (mentor_role == "sme" and str(r.get("assigned_sme_id")) == str(mentor_id))
+        ]
+        active_mentor_tickets = [r for r in mentor_tickets if r.get("status") not in ("RESOLVED",)]
+        if active_mentor_tickets and all(r.get("status") == "WAITING_ON_ASPIRANT" for r in active_mentor_tickets) and live_days <= 21:
+            return "Waiting on Entrepreneur Reply", "#8B5CF6", live_days, f"{last_eng_str} (Awaiting founder reply)"
+    except Exception:
+        pass
+
     # 4. Needs Attention
     stage = record.get("escalation_stage", "")
     badge_color = "#DC2626" if "DAY_14" in stage else "#F59E0B"
     return "Needs Attention", badge_color, live_days, last_eng_str
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. SUPPORTIVE ASPIRANT ENGAGEMENT & BLOCKER MONITOR (DEC-05: 14 / 30 / 60 DAYS)
+# ─────────────────────────────────────────────────────────────────────────────
+def evaluate_aspirant_engagement_roster() -> List[Dict]:
+    """
+    Supportive, blocker-aware Aspirant Engagement Monitor (14 / 30 / 60 days).
+    Never penalizes or suspends an entrepreneur; first checks whether the founder
+    is blocked on Fulcrum (unassigned Guide, waiting on mentor reply, stalled onboarding,
+    or waiting on first scheme release) before classifying 14d/30d/60d quietness.
+    """
+    cached = get_memo("aspirant_engagement_roster")
+    if cached is not None:
+        return cached
+
+    from services.roles import list_active_profiles_for_role
+    from services.relationships import get_all_relationships
+    from services.help_requests import list_requests
+    from services.schemes import get_released_schemes_for_aspirant
+    from services.journey import get_journey_timeline
+    from services.profiles import get_profiles_batch
+
+    aspirants = list_active_profiles_for_role("aspirant")
+    all_rels = get_all_relationships()
+    rel_by_asp = {str(r.get("aspirant_id")): r for r in all_rels if r.get("status") == "active" and r.get("aspirant_id")}
+    all_tickets = list_requests()
+    tickets_by_asp: Dict[str, List[Dict]] = {}
+    for t in all_tickets:
+        aid = str(t.get("aspirant_id") or "")
+        if aid:
+            tickets_by_asp.setdefault(aid, []).append(t)
+
+    guide_ids = [str(r.get("guide_id")) for r in all_rels if r.get("guide_id")]
+    guide_profiles = get_profiles_batch(guide_ids)
+
+    now = datetime.now(timezone.utc)
+    roster: List[Dict] = []
+
+    for asp in aspirants:
+        asp_id = str(asp.get("id") or "")
+        if not asp_id:
+            continue
+        comp_pct = int(asp.get("completion_pct") or 0)
+        rel = rel_by_asp.get(asp_id)
+        guide_id = str(rel.get("guide_id")) if (rel and rel.get("guide_id")) else None
+        guide_prof = guide_profiles.get(guide_id) if guide_id else None
+        guide_name = guide_prof.get("full_name", "Unassigned") if guide_prof else "Unassigned"
+
+        asp_tickets = tickets_by_asp.get(asp_id, [])
+        released_schemes = get_released_schemes_for_aspirant(asp_id)
+        events = get_journey_timeline(asp_id)
+
+        # Compute last verified Aspirant activity timestamp
+        asp_timestamps: List[datetime] = []
+        for field in ("updated_at", "created_at"):
+            val = asp.get(field)
+            if val:
+                try:
+                    asp_timestamps.append(datetime.fromisoformat(str(val).replace("Z", "+00:00")))
+                except Exception:
+                    pass
+        for ev in events:
+            if ev.get("actor_role") == "aspirant" and ev.get("created_at"):
+                try:
+                    asp_timestamps.append(datetime.fromisoformat(str(ev["created_at"]).replace("Z", "+00:00")))
+                except Exception:
+                    pass
+        for tk in asp_tickets:
+            for tf in ("last_aspirant_response_at", "created_at"):
+                tval = tk.get(tf)
+                if tval and (tf == "last_aspirant_response_at" or tk.get("requester_role") in (None, "aspirant")):
+                    try:
+                        asp_timestamps.append(datetime.fromisoformat(str(tval).replace("Z", "+00:00")))
+                    except Exception:
+                        pass
+
+        last_active_dt = max(asp_timestamps) if asp_timestamps else (now - timedelta(days=1))
+        days_quiet = max(0, (now - last_active_dt).days)
+
+        # Check Blocker Exclusion Rules BEFORE classifying quietness
+        waiting_on_mentor_tickets = [
+            tk for tk in asp_tickets
+            if tk.get("status") in ("OPEN", "IN_PROGRESS", "WAITING_ON_GUIDE_SME")
+        ]
+        waiting_on_aspirant_tickets = [
+            tk for tk in asp_tickets
+            if tk.get("status") == "WAITING_ON_ASPIRANT"
+        ]
+
+        if not guide_id:
+            category = "BLOCKED_ON_ADMIN"
+            badge_label = "Blocked on Admin (No Guide Assigned)"
+            badge_color = "#DC2626"
+            recommended_action = "Assign a Dedicated Guide in Tab 2 (Guide Assignments)."
+        elif waiting_on_mentor_tickets:
+            category = "WAITING_ON_MENTOR"
+            badge_label = f"Waiting on Mentor Reply ({len(waiting_on_mentor_tickets)} Open)"
+            badge_color = "#D97706"
+            recommended_action = "Follow up with assigned Guide/SME to answer pending consultation."
+        elif comp_pct < 60:
+            category = "STALLED_ONBOARDING"
+            badge_label = f"Stalled Onboarding ({comp_pct}% Profile)"
+            badge_color = "#7C3AED"
+            recommended_action = "Guide should send a supportive check-in to help complete Business & Assistance profile."
+        elif len(released_schemes) == 0 and days_quiet >= 7:
+            category = "WAITING_ON_SCHEME_RELEASE"
+            badge_label = "Waiting on Guide Scheme Release"
+            badge_color = "#2563EB"
+            recommended_action = "Guide should evaluate and release initial curated scheme recommendations."
+        elif days_quiet >= 60:
+            category = "DAY_60_DORMANT_REVIEW"
+            badge_label = f"60d+ Dormant Review ({days_quiet}d quiet)"
+            badge_color = "#64748B"
+            recommended_action = "Admin & Guide review: Send supportive re-engagement outreach (never auto-archived)."
+        elif days_quiet >= 30:
+            category = "DAY_30_SUPPORTIVE_OUTREACH"
+            badge_label = f"30d Supportive Outreach ({days_quiet}d quiet)"
+            badge_color = "#F59E0B"
+            recommended_action = "Guide outreach recommended via WhatsApp/Email or Proactive Consultation."
+        elif days_quiet >= 14:
+            category = "DAY_14_GENTLE_CHECKIN"
+            badge_label = f"14d Gentle Check-In ({days_quiet}d quiet)"
+            badge_color = "#3B82F6"
+            recommended_action = "Gentle Guide check-in on venture milestones or DPR progress."
+        else:
+            category = "ACTIVE_ENGAGED"
+            badge_label = f"Active & Engaged ({days_quiet}d ago)"
+            badge_color = "#10B981"
+            recommended_action = "No intervention needed; venture is actively progressing."
+
+        roster.append({
+            "aspirant_id": asp_id,
+            "aspirant_name": asp.get("full_name", "Entrepreneur"),
+            "aspirant_email": asp.get("email", ""),
+            "aspirant_phone": asp.get("phone", ""),
+            "district": asp.get("district", "Tamil Nadu"),
+            "completion_pct": comp_pct,
+            "guide_id": guide_id,
+            "guide_name": guide_name,
+            "days_quiet": days_quiet,
+            "last_active_str": last_active_dt.strftime("%d %b %Y"),
+            "released_schemes_count": len(released_schemes),
+            "open_tickets_count": len(waiting_on_mentor_tickets),
+            "waiting_on_aspirant_count": len(waiting_on_aspirant_tickets),
+            "category": category,
+            "badge_label": badge_label,
+            "badge_color": badge_color,
+            "recommended_action": recommended_action
+        })
+
+    # Sort so blockers and longest quietness appear first
+    priority_order = {
+        "BLOCKED_ON_ADMIN": 0,
+        "WAITING_ON_MENTOR": 1,
+        "STALLED_ONBOARDING": 2,
+        "WAITING_ON_SCHEME_RELEASE": 3,
+        "DAY_60_DORMANT_REVIEW": 4,
+        "DAY_30_SUPPORTIVE_OUTREACH": 5,
+        "DAY_14_GENTLE_CHECKIN": 6,
+        "ACTIVE_ENGAGED": 7
+    }
+    roster.sort(key=lambda x: (priority_order.get(x["category"], 9), -x["days_quiet"]))
+    set_memo("aspirant_engagement_roster", roster, ttl_seconds=30)
+    return roster

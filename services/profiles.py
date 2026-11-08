@@ -185,6 +185,38 @@ def get_profiles_batch(user_ids: List[str]) -> Dict[str, Dict]:
             result[uid] = p
     return result
 
+def list_all_profiles() -> List[Dict]:
+    """Lists all active profiles in a single query and populates per-profile cache."""
+    cached = get_memo("all_profiles")
+    if cached is not None:
+        return cached
+
+    backend = get_data_backend()
+    if backend == "supabase":
+        client = _get_admin_client() or _get_user_client()
+        if client:
+            try:
+                res = client.table("profiles").select("*").neq("is_active", False).order("created_at", desc=True).execute()
+                rows = res.data or []
+                for r in rows:
+                    r["completion_pct"] = calculate_completion(r)
+                    if r.get("id"):
+                        set_memo(f"profile:{r['id']}", r, ttl_seconds=60)
+                set_memo("all_profiles", rows, ttl_seconds=60)
+                return rows
+            except Exception as e:
+                print(f"[Profiles] list_all_profiles error: {e}")
+                return []
+        return []
+
+    rows = get_local_db().list_all_profiles()
+    for r in rows:
+        r["completion_pct"] = calculate_completion(r)
+        if r.get("id"):
+            set_memo(f"profile:{r['id']}", r, ttl_seconds=60)
+    set_memo("all_profiles", rows, ttl_seconds=60)
+    return rows
+
 def list_profiles_by_role(role: str) -> List[Dict]:
     """Lists profiles holding a specific role from active backend.
     In Multi-Role architecture, a user holds a role if:
@@ -193,6 +225,11 @@ def list_profiles_by_role(role: str) -> List[Dict]:
       3. For 'aspirant', any user who has an enterprise roadmap in journeys (excluding admins).
     Users are deduplicated by ID so each distinct user is returned exactly once.
     """
+    cache_key = f"list_profiles_by_role:{role}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -241,6 +278,9 @@ def list_profiles_by_role(role: str) -> List[Dict]:
                 profile_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
                 for r in profile_rows:
                     r["completion_pct"] = calculate_completion(r)
+                    if r.get("id"):
+                        set_memo(f"profile:{r['id']}", r, ttl_seconds=60)
+                set_memo(cache_key, profile_rows, ttl_seconds=60)
                 return profile_rows
             except Exception as e:
                 print(f"[Profiles] list_profiles_by_role error: {e}")
@@ -251,6 +291,9 @@ def list_profiles_by_role(role: str) -> List[Dict]:
     rows = get_local_db().list_profiles_by_role(role)
     for r in rows:
         r["completion_pct"] = calculate_completion(r)
+        if r.get("id"):
+            set_memo(f"profile:{r['id']}", r, ttl_seconds=60)
+    set_memo(cache_key, rows, ttl_seconds=60)
     return rows
 
 def update_aspirant_profile(
@@ -393,6 +436,11 @@ def update_aspirant_profile(
 
     updated_record["completion_pct"] = calculate_completion(updated_record)
     set_memo(f"profile:{user_id}", updated_record, ttl_seconds=60)
+    invalidate_memo("all_profiles")
+    invalidate_memo("list_profiles_by_role:")
+    invalidate_memo("active_profiles_for_role:")
+    invalidate_memo("multi_role_users")
+    invalidate_memo(f"scheme_matches_ai:{user_id}")
     return updated_record, None
 
 def update_mentor_profile(
@@ -462,6 +510,12 @@ def update_mentor_profile(
     except Exception:
         pass
 
+    updated_record["completion_pct"] = calculate_completion(updated_record)
+    set_memo(f"profile:{user_id}", updated_record, ttl_seconds=60)
+    invalidate_memo("all_profiles")
+    invalidate_memo("list_profiles_by_role:")
+    invalidate_memo("active_profiles_for_role:")
+    invalidate_memo("multi_role_users")
     return updated_record, None
 
 def update_profile(user_id: str, updates: Dict) -> Tuple[Optional[Dict], Optional[str]]:
@@ -490,11 +544,16 @@ def update_profile(user_id: str, updates: Dict) -> Tuple[Optional[Dict], Optiona
                 client.table("profiles").update(db_payload).eq("id", user_id).execute()
             except Exception as e:
                 return None, f"Supabase update error: {e}"
-        return merged, None
     else:
         # SQLite mode ONLY (when DATA_BACKEND=sqlite)
         get_local_db().upsert_profile(merged)
 
+    merged["completion_pct"] = calculate_completion(merged)
+    set_memo(f"profile:{user_id}", merged, ttl_seconds=60)
+    invalidate_memo("all_profiles")
+    invalidate_memo("list_profiles_by_role:")
+    invalidate_memo("active_profiles_for_role:")
+    invalidate_memo("multi_role_users")
     return merged, None
 
 

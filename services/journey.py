@@ -365,6 +365,7 @@ def toggle_event_roadmap_inclusion(
         actor_role=effective_actor_role
     )
     if success:
+        invalidate_memo(f"journey:{aspirant_id}")
         return True, None
     return False, err_msg or "Failed to update journey event in local database."
 
@@ -404,6 +405,7 @@ def add_manual_aspirant_entry(
                 "event_data": event_payload,
                 "event_date": date_str
             }).execute()
+            invalidate_memo(f"journey:{aspirant_id}")
             if res.data and len(res.data) > 0:
                 ev = res.data[0]
                 ev["title"] = title.strip()
@@ -423,6 +425,7 @@ def add_manual_aspirant_entry(
                         "event_data": event_payload,
                         "event_date": date_str
                     }).execute()
+                    invalidate_memo(f"journey:{aspirant_id}")
                     if res.data and len(res.data) > 0:
                         ev = res.data[0]
                         ev["title"] = title.strip()
@@ -443,6 +446,7 @@ def add_manual_aspirant_entry(
         event_data=event_payload,
         event_date=date_str
     )
+    invalidate_memo(f"journey:{aspirant_id}")
     return ev, None
 
 def add_guide_contribution(
@@ -482,6 +486,7 @@ def add_guide_contribution(
                 "event_data": event_payload,
                 "event_date": date_str
             }).execute()
+            invalidate_memo(f"journey:{aspirant_id}")
             if res.data and len(res.data) > 0:
                 ev = res.data[0]
                 ev["title"] = title.strip()
@@ -501,6 +506,7 @@ def add_guide_contribution(
                         "event_data": event_payload,
                         "event_date": date_str
                     }).execute()
+                    invalidate_memo(f"journey:{aspirant_id}")
                     if res.data and len(res.data) > 0:
                         ev = res.data[0]
                         ev["title"] = title.strip()
@@ -521,6 +527,7 @@ def add_guide_contribution(
         event_data=event_payload,
         event_date=date_str
     )
+    invalidate_memo(f"journey:{aspirant_id}")
     return ev, None
 
 def add_admin_journey_entry(
@@ -560,6 +567,7 @@ def add_admin_journey_entry(
                 "event_data": event_payload,
                 "event_date": date_str
             }).execute()
+            invalidate_memo(f"journey:{aspirant_id}")
             if res.data and len(res.data) > 0:
                 ev = res.data[0]
                 ev["title"] = title.strip()
@@ -579,6 +587,7 @@ def add_admin_journey_entry(
         event_data=event_payload,
         event_date=date_str
     )
+    invalidate_memo(f"journey:{aspirant_id}")
     return ev, None
 
 def add_sme_contribution(
@@ -620,6 +629,7 @@ def add_sme_contribution(
                 "event_data": event_payload,
                 "event_date": date_str
             }).execute()
+            invalidate_memo(f"journey:{aspirant_id}")
             if res.data and len(res.data) > 0:
                 ev = res.data[0]
                 ev["title"] = title.strip()
@@ -639,6 +649,7 @@ def add_sme_contribution(
                         "event_data": event_payload,
                         "event_date": date_str
                     }).execute()
+                    invalidate_memo(f"journey:{aspirant_id}")
                     if res.data and len(res.data) > 0:
                         ev = res.data[0]
                         ev["title"] = title.strip()
@@ -659,6 +670,7 @@ def add_sme_contribution(
         event_data=event_payload,
         event_date=date_str
     )
+    invalidate_memo(f"journey:{aspirant_id}")
     return ev, None
 
 def log_meaningful_event(

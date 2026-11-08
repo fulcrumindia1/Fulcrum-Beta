@@ -26,6 +26,17 @@ def _get_user_client():
     return get_supabase_client()
 
 
+def _invalidate_role_caches(user_id: str) -> None:
+    """Invalidates all per-user and directory role caches upon role grant/status mutation."""
+    invalidate_memo(f"user_roles:{user_id}")
+    invalidate_memo(f"guide_aspirants:{user_id}")
+    invalidate_memo(f"sme_aspirants:{user_id}")
+    invalidate_memo("multi_role_users")
+    invalidate_memo("active_profiles_for_role:")
+    invalidate_memo("list_profiles_by_role:")
+    invalidate_memo("mentors:")
+
+
 def get_user_roles(user_id: str) -> List[Dict]:
     """Retrieves all role grant records for a user."""
     if not user_id:
@@ -94,7 +105,7 @@ def get_user_roles(user_id: str) -> List[Dict]:
                     "activated_at": p.get("created_at")
                 })
 
-    set_memo(cache_key, roles, ttl_seconds=60)
+    set_memo(cache_key, roles, ttl_seconds=5)
     return roles
 
 
@@ -163,19 +174,29 @@ def grant_role(
             admin.table("user_roles").upsert(record, on_conflict="user_id, role").execute()
         except Exception as e:
             return False, f"Supabase error granting role: {e}"
-        invalidate_memo(f"user_roles:{user_id}")
-        invalidate_memo(f"guide_aspirants:{user_id}")
-        invalidate_memo(f"sme_aspirants:{user_id}")
-        return True, None
+        _invalidate_role_caches(user_id)
+    else:
+        # SQLite Mode ONLY
+        db = get_local_db()
+        if hasattr(db, "upsert_user_role"):
+            db.upsert_user_role(record)
+        _invalidate_role_caches(user_id)
 
-    # SQLite Mode ONLY
-    db = get_local_db()
-    if hasattr(db, "upsert_user_role"):
-        db.upsert_user_role(record)
+    try:
+        from services.notifications import create_notification
+        from services.governance import get_primary_admin_id
+        role_display = "Guide" if role == "guide" else ("Domain SME" if role == "sme" else role.capitalize())
+        nda_msg = " Please switch to your new workspace and accept the Confidentiality & Non-Disclosure Agreement (NDA) to activate access." if initial_status == "pending_nda" else ""
+        create_notification(
+            user_id=user_id,
+            title=f"New Role Granted: {role_display}",
+            message=f"You have been granted the {role_display} role on Fulcrum.{nda_msg}",
+            notification_type="role_granted",
+            actor_id=granted_by or get_primary_admin_id()
+        )
+    except Exception as e:
+        print(f"[Roles] Grant notification notice: {e}")
 
-    invalidate_memo(f"user_roles:{user_id}")
-    invalidate_memo(f"guide_aspirants:{user_id}")
-    invalidate_memo(f"sme_aspirants:{user_id}")
     return True, None
 
 
@@ -196,18 +217,14 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
             }).eq("user_id", user_id).eq("role", role).execute()
         except Exception as e:
             return False, f"Failed to activate role in Supabase: {e}"
-        invalidate_memo(f"user_roles:{user_id}")
-        invalidate_memo(f"guide_aspirants:{user_id}")
-        invalidate_memo(f"sme_aspirants:{user_id}")
+        _invalidate_role_caches(user_id)
         return True, None
 
     db = get_local_db()
     if hasattr(db, "update_role_status"):
         db.update_role_status(user_id, role, "active", activated_at=now_iso)
 
-    invalidate_memo(f"user_roles:{user_id}")
-    invalidate_memo(f"guide_aspirants:{user_id}")
-    invalidate_memo(f"sme_aspirants:{user_id}")
+    _invalidate_role_caches(user_id)
     return True, None
 
 
@@ -227,12 +244,22 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("user_roles").update({
+            u_res = admin.table("user_roles").update({
                 "status": "revoked",
                 "revoked_at": now_iso,
                 "revocation_reason": reason or "Revoked by Administration",
                 "updated_at": now_iso
             }).eq("user_id", user_id).eq("role", role).execute()
+            if not u_res.data:
+                admin.table("user_roles").upsert({
+                    "user_id": user_id,
+                    "role": role,
+                    "status": "revoked",
+                    "granted_at": now_iso,
+                    "revoked_at": now_iso,
+                    "revocation_reason": reason or "Revoked by Administration",
+                    "updated_at": now_iso
+                }, on_conflict="user_id, role").execute()
         except Exception as e:
             return False, f"Failed to revoke role in Supabase: {e}"
     else:
@@ -264,9 +291,20 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
         except Exception as e:
             print(f"[Roles] Advisory unassignment notice for revoked SME {user_id}: {e}")
 
-    invalidate_memo(f"user_roles:{user_id}")
-    invalidate_memo(f"guide_aspirants:{user_id}")
-    invalidate_memo(f"sme_aspirants:{user_id}")
+    _invalidate_role_caches(user_id)
+    try:
+        from services.notifications import create_notification
+        from services.governance import get_primary_admin_id
+        role_display = "Guide" if role == "guide" else ("Domain SME" if role == "sme" else role.capitalize())
+        create_notification(
+            user_id=user_id,
+            title=f"Role Grant Concluded: {role_display}",
+            message=f"Your {role_display} role grant has been revoked. Reason: {reason or 'Administrative update'}.",
+            notification_type="role_revoked",
+            actor_id=revoked_by or get_primary_admin_id()
+        )
+    except Exception:
+        pass
     return True, None
 
 
@@ -288,6 +326,16 @@ def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optio
                     "revocation_reason": reason or "Suspended by Administration",
                     "updated_at": now_iso
                 }).eq("user_id", user_id).eq("role", role).execute()
+                if not res.data:
+                    admin.table("user_roles").upsert({
+                        "user_id": user_id,
+                        "role": role,
+                        "status": "suspended",
+                        "granted_at": now_iso,
+                        "suspended_at": now_iso,
+                        "revocation_reason": reason or "Suspended by Administration",
+                        "updated_at": now_iso
+                    }, on_conflict="user_id, role").execute()
             except Exception as e:
                 err_str = str(e)
                 print(f"[Roles] Supabase suspend notice: {err_str}")
@@ -298,9 +346,20 @@ def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optio
     if hasattr(db, "update_role_status"):
         db.update_role_status(user_id, role, "suspended", revocation_reason=reason)
 
-    invalidate_memo(f"user_roles:{user_id}")
-    invalidate_memo(f"guide_aspirants:{user_id}")
-    invalidate_memo(f"sme_aspirants:{user_id}")
+    _invalidate_role_caches(user_id)
+    try:
+        from services.notifications import create_notification
+        from services.governance import get_primary_admin_id
+        role_display = "Guide" if role == "guide" else ("Domain SME" if role == "sme" else role.capitalize())
+        create_notification(
+            user_id=user_id,
+            title=f"Role Temporarily Suspended: {role_display}",
+            message=f"Your {role_display} workspace access has been temporarily suspended. Note: {reason or 'Administrative review'}.",
+            notification_type="role_suspended",
+            actor_id=get_primary_admin_id()
+        )
+    except Exception:
+        pass
     return True, None
 
 
@@ -329,9 +388,20 @@ def reinstate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
     if hasattr(db, "update_role_status"):
         db.update_role_status(user_id, role, "active")
 
-    invalidate_memo(f"user_roles:{user_id}")
-    invalidate_memo(f"guide_aspirants:{user_id}")
-    invalidate_memo(f"sme_aspirants:{user_id}")
+    _invalidate_role_caches(user_id)
+    try:
+        from services.notifications import create_notification
+        from services.governance import get_primary_admin_id
+        role_display = "Guide" if role == "guide" else ("Domain SME" if role == "sme" else role.capitalize())
+        create_notification(
+            user_id=user_id,
+            title=f"Role Reinstated: {role_display}",
+            message=f"Your {role_display} role grant has been reinstated to active status.",
+            notification_type="role_reinstated",
+            actor_id=get_primary_admin_id()
+        )
+    except Exception:
+        pass
     return True, None
 
 
@@ -357,32 +427,80 @@ def cancel_grant(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
     elif hasattr(db, "update_role_status"):
         db.update_role_status(user_id, role, "revoked", revocation_reason="Pending grant cancelled by admin")
 
-    invalidate_memo(f"user_roles:{user_id}")
-    invalidate_memo(f"guide_aspirants:{user_id}")
-    invalidate_memo(f"sme_aspirants:{user_id}")
+    _invalidate_role_caches(user_id)
     return True, None
 
 
 def list_users_with_multi_roles() -> List[Dict]:
-    """Lists all non-admin users with their full role grants roster for Admin Console."""
-    from services.profiles import list_profiles_by_role
+    """Lists all non-admin users with their full role grants roster for Admin Console (Batched & Memoized)."""
+    cached = get_memo("multi_role_users")
+    if cached is not None:
+        return cached
+
+    from services.profiles import list_profiles_by_role, calculate_completion
     from services.governance import get_primary_admin_id
     backend = get_data_backend()
-    profiles_map = {}
+    profiles_map: Dict[str, Dict] = {}
     primary_admin_id = str(get_primary_admin_id() or "")
 
-    # Gather all non-admin profiles
-    for r in ("aspirant", "guide", "sme"):
-        for p in list_profiles_by_role(r):
-            p_id = str(p.get("id", ""))
-            p_email = str(p.get("email", "")).strip().lower()
-            if p_email == "fulcrumindia1@gmail.com" or (primary_admin_id and p_id == primary_admin_id) or p.get("role") == "admin":
-                continue
-            profiles_map[p["id"]] = p
+    all_role_rows: List[Dict] = []
+
+    if backend == "supabase":
+        client = _get_admin_client() or _get_user_client()
+        if client:
+            try:
+                # 1. Single batched fetch of all active profiles
+                p_res = client.table("profiles").select("*").neq("is_active", False).execute()
+                for p in (p_res.data or []):
+                    p_id = str(p.get("id", ""))
+                    p_email = str(p.get("email", "")).strip().lower()
+                    if p_email == "fulcrumindia1@gmail.com" or (primary_admin_id and p_id == primary_admin_id) or p.get("role") == "admin":
+                        continue
+                    p["completion_pct"] = calculate_completion(p)
+                    set_memo(f"profile:{p_id}", p, ttl_seconds=60)
+                    profiles_map[p_id] = p
+
+                # 2. Single batched fetch of all user_roles rows
+                ur_res = client.table("user_roles").select("*").execute()
+                all_role_rows = ur_res.data or []
+            except Exception as e:
+                print(f"[Roles] Batched multi-role fetch fallback: {e}")
+
+    if not profiles_map:
+        for r in ("aspirant", "guide", "sme"):
+            for p in list_profiles_by_role(r):
+                p_id = str(p.get("id", ""))
+                p_email = str(p.get("email", "")).strip().lower()
+                if p_email == "fulcrumindia1@gmail.com" or (primary_admin_id and p_id == primary_admin_id) or p.get("role") == "admin":
+                    continue
+                profiles_map[p_id] = p
+
+    roles_by_uid: Dict[str, List[Dict]] = {}
+    if all_role_rows:
+        for r_row in all_role_rows:
+            uid_key = str(r_row.get("user_id", ""))
+            if uid_key:
+                roles_by_uid.setdefault(uid_key, []).append(dict(r_row))
 
     results = []
     for uid, prof in profiles_map.items():
-        roles = get_user_roles(uid)
+        if all_role_rows:
+            roles = [dict(r) for r in roles_by_uid.get(str(uid), [])]
+            base_role = prof.get("role", "aspirant")
+            existing_base = next((r for r in roles if r.get("role") == base_role), None)
+            if not existing_base:
+                roles.append({
+                    "id": f"role_{uid}_{base_role}",
+                    "user_id": uid,
+                    "role": base_role,
+                    "status": "active",
+                    "granted_at": prof.get("created_at"),
+                    "activated_at": prof.get("created_at")
+                })
+            set_memo(f"user_roles:{uid}", roles, ttl_seconds=60)
+        else:
+            roles = get_user_roles(uid)
+
         active_r = [g["role"] for g in roles if g.get("status") == "active"]
         pending_r = [g["role"] for g in roles if g.get("status") == "pending_nda"]
         suspended_r = [g["role"] for g in roles if g.get("status") == "suspended"]
@@ -402,6 +520,7 @@ def list_users_with_multi_roles() -> List[Dict]:
         })
 
     results.sort(key=lambda x: x["full_name"])
+    set_memo("multi_role_users", results, ttl_seconds=60)
     return results
 
 
@@ -412,6 +531,11 @@ def list_active_profiles_for_role(target_role: str) -> List[Dict]:
     Excludes users whose grant is suspended, revoked, or pending NDA.
     Strictly excludes the Platform Administrator from candidate lists.
     """
+    cache_key = f"active_profiles_for_role:{target_role}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
+
     from services.profiles import list_profiles_by_role, get_profile
     from services.governance import get_primary_admin_id
     primary_admin_id = str(get_primary_admin_id() or "")
@@ -444,4 +568,5 @@ def list_active_profiles_for_role(target_role: str) -> List[Dict]:
 
     results = list(profiles_by_id.values())
     results.sort(key=lambda x: str(x.get("full_name", "")))
+    set_memo(cache_key, results, ttl_seconds=60)
     return results

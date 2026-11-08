@@ -39,10 +39,11 @@ def list_schemes(
     """Retrieves schemes from the active backend."""
     backend = get_data_backend()
 
-    # Fast in-memory cache check for active schemes
-    cached_active = get_global_cache("schemes:all_active") if active_only else None
-    if cached_active is not None:
-        schemes_data = cached_active
+    # Fast in-memory cache check for active or all schemes
+    cache_key = "schemes:all_active" if active_only else "schemes:all"
+    cached_schemes = get_global_cache(cache_key)
+    if cached_schemes is not None:
+        schemes_data = cached_schemes
     elif backend == "supabase":
         client = _get_user_client()
         admin = _get_admin_client()
@@ -70,16 +71,19 @@ def list_schemes(
                         res_admin = q_admin.order("name", desc=False).execute()
                     schemes_data = res_admin.data or []
 
-                if active_only and schemes_data:
-                    set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
+                if schemes_data:
+                    set_global_cache(cache_key, schemes_data, ttl_seconds=300)
             except Exception as e:
                 print(f"[Schemes] Supabase list error: {e}")
                 if admin and admin != reader:
                     try:
-                        res_admin = admin.table("schemes").select("*").eq("is_active", True).execute()
+                        q_adm = admin.table("schemes").select("*")
+                        if active_only:
+                            q_adm = q_adm.eq("is_active", True)
+                        res_admin = q_adm.execute()
                         schemes_data = res_admin.data or []
-                        if active_only and schemes_data:
-                            set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
+                        if schemes_data:
+                            set_global_cache(cache_key, schemes_data, ttl_seconds=300)
                     except Exception:
                         schemes_data = []
                 else:
@@ -92,8 +96,8 @@ def list_schemes(
     else:
         schemes_data = get_local_db().list_schemes(active_only=active_only)
 
-    if active_only and schemes_data:
-        set_global_cache("schemes:all_active", schemes_data, ttl_seconds=300)
+    if schemes_data:
+        set_global_cache(cache_key, schemes_data, ttl_seconds=300)
 
     # In-memory filtering (instant execution without extra round-trips)
     filtered = []
@@ -172,6 +176,8 @@ def upsert_scheme(scheme: Dict, admin_id: str) -> Tuple[bool, Optional[str]]:
             return False, "Supabase client not available."
         try:
             client.table("schemes").upsert(scheme, on_conflict="id").execute()
+            invalidate_global_cache("schemes")
+            invalidate_memo("scheme_matches_ai:")
             return True, None
         except Exception as e:
             return False, f"Failed to save scheme to Supabase: {e}"
@@ -179,6 +185,8 @@ def upsert_scheme(scheme: Dict, admin_id: str) -> Tuple[bool, Optional[str]]:
     # SQLite mode
     get_local_db().upsert_scheme(scheme)
     get_local_db().log_activity(admin_id, "upsert_scheme", "schemes", scheme["id"], {"name": scheme["name"]})
+    invalidate_global_cache("schemes")
+    invalidate_memo("scheme_matches_ai:")
 
     return True, None
 
@@ -203,6 +211,8 @@ def toggle_archive_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional
                 "status": new_status,
                 "updated_at": now_iso
             }).eq("id", scheme_id).execute()
+            invalidate_global_cache("schemes")
+            invalidate_memo("scheme_matches_ai:")
             return True, None
         except Exception as e:
             return False, f"Failed to toggle archive state in Supabase: {e}"
@@ -212,6 +222,8 @@ def toggle_archive_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional
     s["status"] = new_status
     get_local_db().upsert_scheme(s)
     get_local_db().log_activity(admin_id, f"set_{new_status}", "schemes", scheme_id)
+    invalidate_global_cache("schemes")
+    invalidate_memo("scheme_matches_ai:")
     return True, None
 
 def delete_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional[str]]:
@@ -224,6 +236,8 @@ def delete_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional[str]]:
             return False, "Supabase client not available."
         try:
             client.table("schemes").delete().eq("id", scheme_id).execute()
+            invalidate_global_cache("schemes")
+            invalidate_memo("scheme_matches_ai:")
             return True, None
         except Exception as e:
             return False, f"Failed to delete scheme in Supabase: {e}"
@@ -231,6 +245,8 @@ def delete_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional[str]]:
     # SQLite mode
     get_local_db().delete_scheme(scheme_id)
     get_local_db().log_activity(admin_id, "delete_scheme", "schemes", scheme_id)
+    invalidate_global_cache("schemes")
+    invalidate_memo("scheme_matches_ai:")
     return True, None
 
 def match_schemes_for_aspirant(
@@ -381,13 +397,16 @@ def release_scheme_to_aspirant(
     from services.relationships import get_aspirant_mentors
     from services.journey import log_meaningful_event
 
-    # 1. Authorization check: Assigned Guide or Admin
+    # 1. Authorization check: Assigned Guide (Primary or Co-Guide) or Admin
     mentors = get_aspirant_mentors(aspirant_id)
     assigned_guide = mentors.get("guide")
+    all_assigned_guide_ids = [str(g.get("id")) for g in mentors.get("guides", []) if g and g.get("id")]
+    if assigned_guide and assigned_guide.get("id") and str(assigned_guide["id"]) not in all_assigned_guide_ids:
+        all_assigned_guide_ids.append(str(assigned_guide["id"]))
     from services.profiles import get_profile
     actor_prof = get_profile(guide_id)
     is_admin = (actor_prof.get("role") == "admin") if actor_prof else False
-    if not is_admin and (not assigned_guide or str(assigned_guide.get("id")) != str(guide_id)):
+    if not is_admin and str(guide_id) not in all_assigned_guide_ids:
         return False, "You are not authorized to release schemes to this Aspirant."
 
     scheme = get_scheme(scheme_id)
@@ -395,8 +414,20 @@ def release_scheme_to_aspirant(
         return False, "Scheme record not found."
     scheme_name = scheme.get("name", "Funding Opportunity")
 
-    # Evaluate summary
+    # Evaluate summary & check if Fulcrum Support already approved a Scheme Support Review override
     eval_res = evaluate_scheme_for_aspirant(aspirant_id, scheme)
+    if eval_res.get("is_disqualified") and not allow_disqualified_override:
+        try:
+            from services.scheme_reviews import list_scheme_support_reviews
+            reviews = list_scheme_support_reviews(aspirant_id=aspirant_id)
+            has_approved_review = any(
+                str(r.get("scheme_id")) == str(scheme_id) and r.get("status") == "APPROVED"
+                for r in reviews
+            )
+            if has_approved_review:
+                allow_disqualified_override = True
+        except Exception:
+            pass
     if eval_res.get("is_disqualified") and not allow_disqualified_override:
         disq_reasons = "; ".join(eval_res.get("potential_concerns", [])) or "Statutory eligibility criteria not met"
         return False, f"Gatekeeper Restriction: Scheme does not meet mandatory criteria for this founder ({disq_reasons}). Please confirm verification override to proceed." 
@@ -508,10 +539,13 @@ def withdraw_scheme_release(
 
     mentors = get_aspirant_mentors(aspirant_id)
     assigned_guide = mentors.get("guide")
+    all_assigned_guide_ids = [str(g.get("id")) for g in mentors.get("guides", []) if g and g.get("id")]
+    if assigned_guide and assigned_guide.get("id") and str(assigned_guide["id"]) not in all_assigned_guide_ids:
+        all_assigned_guide_ids.append(str(assigned_guide["id"]))
     from services.profiles import get_profile
     actor_prof = get_profile(guide_id)
     is_admin = (actor_prof.get("role") == "admin") if actor_prof else False
-    if not is_admin and (not assigned_guide or str(assigned_guide.get("id")) != str(guide_id)):
+    if not is_admin and str(guide_id) not in all_assigned_guide_ids:
         return False, "You are not authorized to release schemes to this Aspirant."
 
     scheme = get_scheme(scheme_id)
@@ -650,6 +684,7 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
                     s_clean["guide_note"] = r.get("guide_note")
                     s_clean["released_at"] = r.get("released_at")
                     s_clean["eligibility_summary"] = r.get("eligibility_summary")
+                    s_clean["application_stage"] = _extract_application_stage(r)
                     # STRICT PRIVATE INTELLIGENCE STRIPPING
                     s_clean.pop("hidden_agenda", None)
                     s_clean.pop("red_flags", None)
@@ -663,12 +698,144 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
         return []
 
     local_res = get_local_db().get_released_schemes_for_aspirant(aspirant_id)
+    for item in (local_res or []):
+        item["application_stage"] = _extract_application_stage(item)
     set_memo(cache_key, local_res, ttl_seconds=60)
     return local_res
+
+SCHEME_APPLICATION_STAGES = (
+    "Recommended",
+    "Preparing DPR / Documents",
+    "Applied on Portal",
+    "Sanctioned / Funded",
+    "Rejected / Not Pursuing"
+)
+
+def _extract_application_stage(release_row: Dict) -> str:
+    """Extracts the post-release application stage from a scheme_releases row."""
+    if not release_row:
+        return "Recommended"
+    if release_row.get("application_stage") in SCHEME_APPLICATION_STAGES:
+        return release_row["application_stage"]
+    for field in ("eligibility_summary", "guide_note"):
+        txt = str(release_row.get(field) or "")
+        if "[AppStage:" in txt:
+            try:
+                part = txt.split("[AppStage:", 1)[1].split("]", 1)[0].strip()
+                if part in SCHEME_APPLICATION_STAGES:
+                    return part
+            except Exception:
+                pass
+    return "Recommended"
+
+def update_scheme_application_stage(
+    aspirant_id: str,
+    scheme_id: str,
+    actor_id: str,
+    actor_role: str,
+    stage: str,
+    note: str = ""
+) -> Tuple[bool, Optional[str]]:
+    """
+    Updates the post-release application tracking stage for a released scheme
+    (Recommended -> Preparing DPR / Documents -> Applied on Portal -> Sanctioned / Funded / Rejected / Not Pursuing)
+    and logs a Journey milestone event.
+    """
+    if stage not in SCHEME_APPLICATION_STAGES:
+        return False, f"Invalid application stage. Must be one of: {', '.join(SCHEME_APPLICATION_STAGES)}"
+    if not aspirant_id or not scheme_id:
+        return False, "Aspirant ID and Scheme ID are required."
+
+    # Authorization: Aspirant owner, assigned Guide (primary or Co-Guide), or Admin
+    from services.relationships import get_aspirant_mentors
+    from services.profiles import get_profile
+    actor_prof = get_profile(actor_id) or {}
+    is_admin = (actor_prof.get("role") == "admin") or (actor_role == "admin")
+    is_owner = (str(actor_id) == str(aspirant_id))
+    mentors = get_aspirant_mentors(aspirant_id) or {}
+    guide_ids = [str(g.get("id")) for g in mentors.get("guides", []) if g and g.get("id")]
+    if mentors.get("guide") and mentors["guide"].get("id"):
+        guide_ids.append(str(mentors["guide"]["id"]))
+    is_assigned_guide = str(actor_id) in guide_ids
+
+    if not (is_admin or is_owner or is_assigned_guide):
+        return False, "Unauthorized: Only the entrepreneur or their assigned Guide may update application progress."
+
+    scheme = get_scheme(scheme_id) or {}
+    scheme_name = scheme.get("name", "Funding Opportunity")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        admin = _get_admin_client()
+        client = _get_user_client()
+        writer = admin or client
+        if not writer:
+            return False, "Database client unavailable."
+        try:
+            r_res = writer.table("scheme_releases").select("*").eq("aspirant_id", aspirant_id).eq("scheme_id", scheme_id).execute()
+            if not r_res.data:
+                return False, "Scheme release record not found."
+            row = r_res.data[0]
+            curr_elig = str(row.get("eligibility_summary") or "Potentially Eligible")
+            if "[AppStage:" in curr_elig:
+                base_elig = curr_elig.split("[AppStage:", 1)[0].strip()
+            else:
+                base_elig = curr_elig.strip()
+            new_elig = f"{base_elig} [AppStage: {stage}]".strip()
+            upd_payload = {
+                "eligibility_summary": new_elig,
+                "updated_at": now_iso
+            }
+            if note and note.strip():
+                curr_note = str(row.get("guide_note") or "").strip()
+                upd_payload["guide_note"] = f"{curr_note} | [{stage}] {note.strip()}".strip(" |")
+            writer.table("scheme_releases").update(upd_payload).eq("aspirant_id", aspirant_id).eq("scheme_id", scheme_id).execute()
+        except Exception as e:
+            return False, f"Failed to update scheme application stage: {e}"
+    else:
+        db = get_local_db()
+        conn = db._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT eligibility_summary, guide_note FROM scheme_releases WHERE aspirant_id = ? AND scheme_id = ?", (aspirant_id, scheme_id))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return False, "Scheme release record not found."
+        curr_elig = str(row["eligibility_summary"] or "Potentially Eligible")
+        base_elig = curr_elig.split("[AppStage:", 1)[0].strip() if "[AppStage:" in curr_elig else curr_elig.strip()
+        new_elig = f"{base_elig} [AppStage: {stage}]".strip()
+        curr_note = str(row["guide_note"] or "").strip()
+        new_note = f"{curr_note} | [{stage}] {note.strip()}".strip(" |") if (note and note.strip()) else curr_note
+        cur.execute("""
+            UPDATE scheme_releases
+            SET eligibility_summary = ?, guide_note = ?, updated_at = ?
+            WHERE aspirant_id = ? AND scheme_id = ?
+        """, (new_elig, new_note, now_iso, aspirant_id, scheme_id))
+        conn.commit()
+        conn.close()
+
+    from services.journey import log_meaningful_event
+    desc = f"Scheme application progress for '{scheme_name}' updated to: {stage}."
+    if note and note.strip():
+        desc += f" Note: {note.strip()}"
+    log_meaningful_event(
+        aspirant_id=aspirant_id,
+        actor_id=actor_id,
+        actor_role=actor_role,
+        event_type="scheme_stage_updated",
+        title=f"Scheme Progress ({stage}): {scheme_name}",
+        description=desc,
+        metadata={"scheme_id": scheme_id, "scheme_name": scheme_name, "application_stage": stage}
+    )
+
+    invalidate_memo(f"released_schemes:{aspirant_id}")
+    return True, None
 
 def get_guide_scheme_releases(guide_id: str, aspirant_id: Optional[str] = None) -> List[Dict]:
     """
     Returns complete release history (RELEASED and WITHDRAWN) for Guide view.
+    When aspirant_id is provided, returns all releases for that aspirant so Co-Guides have shared visibility.
     """
     backend = get_data_backend()
 
@@ -681,18 +848,20 @@ def get_guide_scheme_releases(guide_id: str, aspirant_id: Optional[str] = None) 
                 res = None
                 try:
                     q = reader.table("scheme_releases").select("*, schemes(name, agency, amount), profiles:aspirant_id(full_name, email)")
-                    q = q.eq("guide_id", guide_id)
                     if aspirant_id:
                         q = q.eq("aspirant_id", aspirant_id)
+                    else:
+                        q = q.eq("guide_id", guide_id)
                     res = q.order("updated_at", desc=True).execute()
                 except Exception:
                     pass
                 if (not res or not res.data) and admin and admin != reader:
                     try:
                         q = admin.table("scheme_releases").select("*, schemes(name, agency, amount), profiles:aspirant_id(full_name, email)")
-                        q = q.eq("guide_id", guide_id)
                         if aspirant_id:
                             q = q.eq("aspirant_id", aspirant_id)
+                        else:
+                            q = q.eq("guide_id", guide_id)
                         res = q.order("updated_at", desc=True).execute()
                     except Exception:
                         pass
@@ -706,6 +875,7 @@ def get_guide_scheme_releases(guide_id: str, aspirant_id: Optional[str] = None) 
                         r["scheme_amount"] = sc.get("amount") or ""
                         r["aspirant_name"] = ap.get("full_name") or "Entrepreneur"
                         r["aspirant_email"] = ap.get("email") or ""
+                        r["application_stage"] = _extract_application_stage(r)
                         rows.append(r)
                     return rows
                 return []
@@ -714,4 +884,7 @@ def get_guide_scheme_releases(guide_id: str, aspirant_id: Optional[str] = None) 
                 return []
         return []
 
-    return get_local_db().get_scheme_releases_for_guide(guide_id, aspirant_id)
+    rows = get_local_db().get_scheme_releases_for_guide(guide_id, aspirant_id)
+    for r in (rows or []):
+        r["application_stage"] = _extract_application_stage(r)
+    return rows

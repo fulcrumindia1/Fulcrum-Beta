@@ -13,6 +13,9 @@ from typing import Any, Optional, Dict, Callable
 
 # Global in-memory cache for shared, non-sensitive static data (e.g., active scheme catalogue)
 _GLOBAL_CACHE: Dict[str, Dict[str, Any]] = {}
+# Process-wide invalidation timestamps so mutations in one user's session (e.g. Admin revoking a role)
+# immediately invalidate stale memo entries in another user's open browser session.
+_INVALIDATION_TIMESTAMPS: Dict[str, float] = {}
 
 
 def get_global_cache(key: str) -> Optional[Any]:
@@ -61,29 +64,38 @@ def _get_session_store() -> Dict[str, Any]:
 
 
 def get_memo(key: str, default: Any = None) -> Any:
-    """Retrieves a cached value from the current request/session."""
+    """Retrieves a cached value from the current request/session, respecting cross-session invalidations."""
     store = _get_session_store()
     entry = store.get(key)
     if not entry:
         return default
-    if entry.get("expires_at") and time.time() > entry["expires_at"]:
+    now = time.time()
+    if entry.get("expires_at") and now > entry["expires_at"]:
         store.pop(key, None)
         return default
+    stored_at = entry.get("stored_at", 0.0)
+    for prefix, inv_ts in list(_INVALIDATION_TIMESTAMPS.items()):
+        if (not prefix or key.startswith(prefix)) and inv_ts >= stored_at:
+            store.pop(key, None)
+            return default
     return entry["value"]
 
 
 def set_memo(key: str, value: Any, ttl_seconds: Optional[int] = 60) -> Any:
     """Stores a value in the current request/session cache."""
+    now = time.time()
     store = _get_session_store()
     store[key] = {
         "value": value,
-        "expires_at": (time.time() + ttl_seconds) if ttl_seconds else None
+        "stored_at": now,
+        "expires_at": (now + ttl_seconds) if ttl_seconds else None
     }
     return value
 
 
 def invalidate_memo(key_prefix: str = "") -> None:
-    """Invalidates session memo entries matching a key prefix."""
+    """Invalidates session memo entries matching a key prefix across all active sessions."""
+    _INVALIDATION_TIMESTAMPS[key_prefix] = time.time()
     store = _get_session_store()
     if not key_prefix:
         store.clear()

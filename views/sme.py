@@ -38,6 +38,12 @@ def render_sme_portal(user_profile: dict):
     sme_name = user_profile.get("full_name", "Specialist")
     domain_focus = user_profile.get("profile_data", {}).get("expertise") or "Domain Advisory"
 
+    from services.roles import user_has_active_role
+    if not user_has_active_role(sme_id, "sme"):
+        st.error("🚫 Your SME role grant is no longer active. Access to the SME Workspace and assigned entrepreneur cases has been revoked.")
+        st.session_state["active_workspace"] = "aspirant"
+        return
+
     st.markdown(f"""
     <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1.5rem; padding-bottom:1rem; border-bottom:1px solid #E2E8F0;">
         <div>
@@ -65,14 +71,25 @@ def render_sme_portal(user_profile: dict):
     # TAB 1: MY ASSIGNED CASES (CASELOAD WORKSPACE)
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
+      if is_tab_active(tabs[0]):
         assigned_aspirants = get_assigned_aspirants_for_sme(sme_id)
         if not assigned_aspirants:
             st.info("No cases currently assigned to you. When the Admin assigns an entrepreneur to your advisory roster, or when an entrepreneur submits a domain consultation query, they will appear here.")
         else:
-            asp_options = {
-                a["id"]: f"{a['full_name']} — {a.get('profile_data',{}).get('business',{}).get('business_name','Enterprise')} ({a.get('district', 'Tamil Nadu')})"
-                for a in assigned_aspirants
-            }
+            all_sme_tickets = list_sme_requests(sme_id) or []
+            open_tickets_by_asp = {}
+            for _t in all_sme_tickets:
+                if _t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"):
+                    _aid = _t.get("aspirant_id")
+                    open_tickets_by_asp[_aid] = open_tickets_by_asp.get(_aid, 0) + 1
+
+            asp_options = {}
+            for a in assigned_aspirants:
+                _open_n = open_tickets_by_asp.get(a["id"], 0)
+                _badge = f"[🔴 {_open_n} Open]" if _open_n > 0 else "[🟢 Active]"
+                _bname = a.get("profile_data", {}).get("business", {}).get("business_name", "Enterprise")
+                asp_options[a["id"]] = f"{_badge} {a['full_name']} — {_bname} ({a.get('district', 'Tamil Nadu')})"
+
             default_idx = 0
             if st.session_state.get("sme_selected_aspirant") in asp_options:
                 default_idx = list(asp_options.keys()).index(st.session_state["sme_selected_aspirant"])
@@ -91,9 +108,8 @@ def render_sme_portal(user_profile: dict):
                 st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
 
                 # Calculate direct consultations from this mentee directed to this SME
-                all_sme_tickets = list_sme_requests(sme_id) or []
                 asp_tickets = [t for t in all_sme_tickets if t.get("aspirant_id") == selected_asp_id]
-                open_cnt = sum(1 for t in asp_tickets if t.get("status") in ["OPEN", "IN_PROGRESS", "ACTION_REQUIRED"])
+                open_cnt = sum(1 for t in asp_tickets if t.get("status") in ["OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"])
 
                 # 4 Dedicated Navigation Sections for Selected Aspirant (No Scheme Matches for SME)
                 consult_label = f"💬 Consultations ({open_cnt})" if open_cnt > 0 else "💬 Consultations"
@@ -219,11 +235,8 @@ def render_sme_portal(user_profile: dict):
                                     "Technical Architecture",
                                     "Other / Specialized Compliance (Specify)"
                                 ])
-                                s_domain = s_domain_sel
-                                if s_domain_sel == "Other / Specialized Compliance (Specify)":
-                                    s_domain_custom = st.text_input("Specify Advisory Domain *", placeholder="e.g. Environmental Clearance (PCB)", key="sme_custom_domain_sub")
-                                    if s_domain_custom and s_domain_custom.strip():
-                                        s_domain = s_domain_custom.strip()
+                                s_domain_custom = st.text_input("Custom Advisory Domain (if 'Other' selected above)", placeholder="e.g. Environmental Clearance (PCB)", key="sme_custom_domain_sub")
+                                s_domain = s_domain_custom.strip() if (s_domain_sel == "Other / Specialized Compliance (Specify)" and s_domain_custom and s_domain_custom.strip()) else s_domain_sel
                             with col_sm2:
                                 s_date = st.date_input("Advisory Date", value=date.today())
                             s_desc = st.text_area("Detailed Recommendation / Deliverable", placeholder="Explained GST threshold exemptions, set up HSN codes for millet flour, and verified bank statement reconciliation.")
@@ -307,14 +320,24 @@ def render_sme_portal(user_profile: dict):
                                         if st.button("✏️", key=f"sme_edit_{event['id']}", help="Edit your advisory contribution"):
                                             render_edit_journey_dialog(event, sme_id, "sme")
                                     with col_sd:
-                                        if st.button("🗑️", key=f"sme_del_sub_{event['id']}", help="Delete your contribution"):
-                                            ok, err = soft_delete_event(event["id"], sme_id, "sme")
-                                            st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "journey"
-                                            if ok:
-                                                st.session_state["del_event_success"] = "Domain contribution deleted."
-                                            else:
-                                                st.session_state["del_event_err"] = err or "Could not delete contribution."
-                                            st.rerun()
+                                        confirm_skey = f"confirm_sme_del_{event['id']}"
+                                        if st.session_state.get(confirm_skey):
+                                            if st.button("✓ Yes", key=f"yes_sme_del_{event['id']}", type="primary", help="Confirm delete"):
+                                                st.session_state.pop(confirm_skey, None)
+                                                ok, err = soft_delete_event(event["id"], sme_id, "sme")
+                                                st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "journey"
+                                                if ok:
+                                                    st.session_state["del_event_success"] = "Domain contribution deleted."
+                                                else:
+                                                    st.session_state["del_event_err"] = err or "Could not delete contribution."
+                                                st.rerun()
+                                            if st.button("✕", key=f"no_sme_del_{event['id']}", help="Cancel delete"):
+                                                st.session_state.pop(confirm_skey, None)
+                                                st.rerun()
+                                        else:
+                                            if st.button("🗑️", key=f"sme_del_sub_{event['id']}", help="Delete your contribution"):
+                                                st.session_state[confirm_skey] = True
+                                                st.rerun()
 
                 # ─────────────────────────────────────────────────────────
                 # SUBTAB 3: GUIDANCE TEAM
@@ -323,7 +346,7 @@ def render_sme_portal(user_profile: dict):
                     st.markdown(f"### Guidance Team for {curr_asp['full_name']}")
                     st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Institutional mentors and specialized domain experts collaborating on this entrepreneur's advisory roadmap.</p>", unsafe_allow_html=True)
                     mentors = get_aspirant_mentors(selected_asp_id)
-                    m_guide = mentors.get("guide")
+                    m_guides = mentors.get("guides") or ([mentors.get("guide")] if mentors.get("guide") else [])
                     m_sme = mentors.get("sme")
                     m_smes = mentors.get("smes", [])
                     if not m_smes and m_sme:
@@ -331,17 +354,23 @@ def render_sme_portal(user_profile: dict):
 
                     col_mg1, col_mg2 = st.columns(2)
                     with col_mg1:
-                        st.markdown("#### 🧭 Assigned Guide")
-                        if m_guide:
-                            gp = m_guide.get("profile_data", {})
-                            st.markdown(f"""
-                            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:12px; padding:1.2rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                                <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{m_guide.get('full_name')}</div>
-                                <div style="color:#059669; font-weight:600; font-size:0.85rem; margin-bottom:0.5rem;">Dedicated Enterprise Mentor · {m_guide.get('district', 'Tamil Nadu')}</div>
-                                <p style="font-size:0.88rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {gp.get('expertise', 'Enterprise Guidance')}</p>
-                                <p style="font-size:0.82rem; color:#64748B; margin-top:0.5rem;"><em>"{gp.get('bio', 'Assigned by Administrator')}"</em></p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                        g_hdr = f"🧭 Assigned Guides ({len(m_guides)})" if len(m_guides) > 1 else "🧭 Assigned Guide"
+                        st.markdown(f"#### {g_hdr}")
+                        if m_guides:
+                            for g_idx, g_item in enumerate(m_guides):
+                                gp = g_item.get("profile_data", {})
+                                g_role_badge = "PRIMARY GUIDE" if g_idx == 0 else f"CO-GUIDE #{g_idx + 1}"
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:12px; padding:1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{_safe_esc(g_item.get('full_name'))}</div>
+                                        <span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:6px;">{g_role_badge}</span>
+                                    </div>
+                                    <div style="color:#059669; font-weight:600; font-size:0.85rem; margin-bottom:0.5rem;">Dedicated Enterprise Mentor · {_safe_esc(g_item.get('district', 'Tamil Nadu'))}</div>
+                                    <p style="font-size:0.88rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {_safe_esc(gp.get('expertise', 'Enterprise Guidance'))}</p>
+                                    <p style="font-size:0.82rem; color:#64748B; margin-top:0.5rem;"><em>"{_safe_esc(gp.get('bio', 'Assigned by Administrator'))}"</em></p>
+                                </div>
+                                """, unsafe_allow_html=True)
                         else:
                             st.info("No Guide assigned.")
 
@@ -428,7 +457,7 @@ def render_sme_portal(user_profile: dict):
                     else:
                         for t in asp_tickets:
                             t_status = t.get("status", "OPEN")
-                            st_color = "#f59e0b" if t_status == "OPEN" else "#3b82f6" if t_status in ["IN_PROGRESS", "REPLIED"] else "#10b981" if t_status == "RESOLVED" else "#ef4444"
+                            st_color = "#f59e0b" if t_status in ("OPEN", "WAITING_ON_ASPIRANT") else "#dc2626" if t_status == "WAITING_ON_GUIDE_SME" else "#3b82f6" if t_status in ["IN_PROGRESS", "REPLIED"] else "#10b981" if t_status == "RESOLVED" else "#ef4444"
                             is_mentor_init = (t.get("request_type") == "mentor_initiated" or t.get("requester_role") == "sme")
 
                             escaped_subject = _safe_esc(t.get('subject', 'Advisory Request'))
@@ -446,13 +475,13 @@ def render_sme_portal(user_profile: dict):
                             sme_resp_html = ""
                             if t.get('sme_response'):
                                 r_text = t.get('sme_response') or ""
-                                sme_resp_html = f'<div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:3px solid #f59e0b; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#92400E; margin-top:0.5rem;"><strong>Your Specialist Advisory Note:</strong> {_safe_esc(r_text)}</div>'
+                                sme_resp_html = f'<div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:3px solid #f59e0b; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#92400E; margin-top:0.5rem; white-space:pre-wrap;"><strong>Your Specialist Advisory Note:</strong> {_safe_esc(r_text)}</div>'
 
                             asp_resp_html = ""
                             asp_reply = t.get('aspirant_response') or (t.get('admin_response', '').replace('Aspirant Reply: ', '') if str(t.get('admin_response', '')).startswith('Aspirant Reply: ') else '')
                             if asp_reply:
                                 a_resp = _safe_esc(asp_reply).replace('\n', '<br>')
-                                asp_resp_html = f'<div style="background:#EFF6FF; border:1px solid #BFDBFE; border-left:3px solid #3B82F6; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#1E40AF; margin-top:0.5rem;"><strong>🌱 Founder Response / Updates:</strong> {a_resp}</div>'
+                                asp_resp_html = f'<div style="background:#EFF6FF; border:1px solid #BFDBFE; border-left:3px solid #3B82F6; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#1E40AF; margin-top:0.5rem; white-space:pre-wrap;"><strong>🌱 Founder Response / Updates:</strong> {a_resp}</div>'
 
                             card_html = (
                                 f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 12px 12px 0; padding:1.2rem; margin-bottom:0.8rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
@@ -472,12 +501,17 @@ def render_sme_portal(user_profile: dict):
                             )
                             st.markdown(card_html, unsafe_allow_html=True)
 
-                            if t_status in ["OPEN", "IN_PROGRESS", "REPLIED"]:
+                            if t_status in ["OPEN", "IN_PROGRESS", "REPLIED", "WAITING_ON_GUIDE_SME", "WAITING_ON_ASPIRANT", "ACTION_REQUIRED"]:
                                 with st.expander(f"💬 Provide Advisory Guidance / Update Status for '{t.get('subject')}'", expanded=False):
                                     with st.form(f"form_sme_resp_sub_{t['id']}"):
                                         c_sr1, c_sr2 = st.columns([1, 2])
                                         with c_sr1:
-                                            new_sme_st = st.selectbox("Update Status", ["IN_PROGRESS", "RESOLVED"], key=f"sel_sme_st_sub_{t['id']}")
+                                            new_sme_st = st.selectbox(
+                                                "Update Status",
+                                                ["WAITING_ON_ASPIRANT", "IN_PROGRESS", "RESOLVED"],
+                                                format_func=lambda x: "Awaiting Founder Action / Documents" if x == "WAITING_ON_ASPIRANT" else ("In Progress (Ongoing Advisory)" if x == "IN_PROGRESS" else "Resolved (Complete)"),
+                                                key=f"sel_sme_st_sub_{t['id']}"
+                                            )
                                         with c_sr2:
                                             sme_resp_text = st.text_area("Advisory Guidance / Technical Memorandum *", placeholder="Provide technical recommendations, statutory compliance steps, or confirm resolution...", height=80, key=f"txt_sme_resp_sub_{t['id']}")
 
@@ -493,9 +527,50 @@ def render_sme_portal(user_profile: dict):
                                                 else:
                                                     st.error(err or "Failed to record response.")
 
+                    # ── CASE DISCUSSIONS & PRIVATE MENTOR NOTES (SME COLLABORATION) ──
+                    st.markdown("---")
+                    st.subheader(f"💬 Case Discussions & Private Advisory Notes ({curr_asp['full_name']})")
+                    st.caption("Collaborate with the assigned Guide and entrepreneur. Notes flagged as Private are shared only with the Guide & Program Directorate.")
+                    from services.collaboration import list_case_messages, create_case_message
+                    sme_case_msgs = list_case_messages(selected_asp_id, requesting_role="sme", viewer_id=sme_id)
+                    with st.expander(f"📋 View / Post Case Discussion Messages ({len(sme_case_msgs)} messages)", expanded=False):
+                        if not sme_case_msgs:
+                            st.info("No case discussion messages logged yet for this venture.")
+                        else:
+                            for m in sme_case_msgs:
+                                is_priv = m.get("is_private_mentor_note")
+                                border_color = "#DC2626" if is_priv else "#D97706"
+                                badge_text = "🔒 PRIVATE MENTOR NOTE (Hidden from Founder)" if is_priv else "🌐 OPEN CASE DISCUSSION"
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:10px; padding:0.9rem; margin-bottom:0.6rem;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <div style="font-weight:700; color:#1E293B;">{_safe_esc(m.get('title'))}</div>
+                                        <div style="font-size:0.72rem; font-weight:700; color:{border_color};">{badge_text}</div>
+                                    </div>
+                                    <div style="font-size:0.75rem; color:#64748B; margin-top:2px;">by {_safe_esc(m.get('author_name', 'Mentor'))} ({_safe_esc(m.get('author_role', '').upper())}) · {m.get('created_at', '')[:10]}</div>
+                                    <div style="font-size:0.85rem; color:#334155; margin-top:6px;">{_safe_esc(m.get('message'))}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                        with st.form(f"form_sme_case_msg_{selected_asp_id}"):
+                            s_msg_title = st.text_input("Note / Discussion Subject*", placeholder="e.g. Technical compliance observation or lab testing note")
+                            s_msg_body = st.text_area("Detailed Note / Message*", placeholder="Write technical note or co-mentor coordination message...")
+                            s_priv_check = st.checkbox("🔒 Mark as Private Mentor Advisory Note (Visible to Guide, SME & Admin only; hidden from entrepreneur)", value=False)
+                            if st.form_submit_button("Post Case Message", type="primary"):
+                                if not s_msg_title.strip() or not s_msg_body.strip():
+                                    st.warning("Please provide title and message.")
+                                else:
+                                    ok_cm, err_cm = create_case_message(selected_asp_id, sme_id, "sme", s_msg_title, s_msg_body, is_private_mentor_note=s_priv_check)
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                    if ok_cm:
+                                        st.session_state[f"sme_consult_msg_{selected_asp_id}"] = "Case message posted successfully!"
+                                        st.rerun()
+                                    else:
+                                        st.error(err_cm or "Failed to post case message.")
+
                     # ── INSTITUTIONAL ROADBLOCKS & ADMIN DIRECTIVES ──
                     st.markdown("---")
-                    st.subheader("🏛️ Institutional Roadblocks & Directorate Directives")
+                    st.subheader("🏛️ Institutional Roadblocks & Governance Declarations")
                     st.markdown(f"<p style='color:#64748B; font-size:0.9rem;'>Encountering statutory hurdles, testing lab certification blocks, or requiring administrative intervention for <strong>{curr_asp['full_name']}</strong>? Request an official administrative directive from the Program Directorate. <em>(Strictly invisible to the entrepreneur)</em></p>", unsafe_allow_html=True)
 
                     sme_admin_queries = list_mentor_admin_queries(mentor_id=sme_id, aspirant_id=selected_asp_id)
@@ -566,27 +641,66 @@ def render_sme_portal(user_profile: dict):
                                     else:
                                         st.error(q_err or "Failed to submit request.")
 
+                    with st.expander(f"⚖️ Declare Conflict of Interest for {curr_asp['full_name']}", expanded=False):
+                        st.caption("If you discover a financial, commercial, or personal conflict of interest with this venture, declare it here for Program Directorate review and reassignment.")
+                        from services.governance import declare_sme_conflict
+                        with st.form(f"form_sme_coi_{selected_asp_id}"):
+                            coi_type = st.radio(
+                                "Conflict Status",
+                                options=[False, True],
+                                format_func=lambda v: "✅ No Conflict of Interest (Independent Advisory)" if not v else "⚠️ Conflict of Interest Identified (Request Reassignment)",
+                                horizontal=True,
+                                key=f"sme_coi_radio_{selected_asp_id}"
+                            )
+                            coi_details = st.text_area(
+                                "Declaration Details / Context",
+                                placeholder="Provide details if a conflict exists, or optional attestation note...",
+                                height=70,
+                                key=f"sme_coi_det_{selected_asp_id}"
+                            )
+                            if st.form_submit_button("Record Conflict of Interest Declaration"):
+                                if coi_type and not coi_details.strip():
+                                    st.warning("Please describe the conflict of interest so Administration can reassign the case.")
+                                else:
+                                    ok_coi, err_coi = declare_sme_conflict(sme_id, selected_asp_id, bool(coi_type), coi_details.strip())
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                    if ok_coi:
+                                        st.session_state[f"sme_consult_msg_{selected_asp_id}"] = "Conflict of Interest declaration recorded with Program Directorate."
+                                        st.rerun()
+                                    else:
+                                        st.error(err_coi or "Failed to record declaration.")
+
     # ─────────────────────────────────────────────────────────────
     # TAB 2: SME ALL CONSULTATIONS OVERVIEW
     # ─────────────────────────────────────────────────────────────
     with tabs[1]:
+      if is_tab_active(tabs[1]):
         st.subheader("💬 All Domain Consultations Overview")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Specialized consultation queries submitted by entrepreneurs requiring your domain expertise across your entire caseload.</p>", unsafe_allow_html=True)
 
         col_sf1, col_sf2 = st.columns([3, 1])
         with col_sf2:
-            sme_status_filter = st.selectbox("Filter Status", ["ALL", "OPEN", "IN_PROGRESS", "RESOLVED"], key="sme_hr_status_filter")
+            sme_status_filter = st.selectbox(
+                "Filter Status",
+                ["ALL", "AWAITING_ACTION", "IN_PROGRESS", "RESOLVED"],
+                format_func=lambda x: "All Consultations" if x == "ALL" else ("⚡ Awaiting Action" if x == "AWAITING_ACTION" else ("🔄 In Progress / Awaiting Founder" if x == "IN_PROGRESS" else "✅ Resolved")),
+                key="sme_hr_status_filter"
+            )
 
-        sme_tickets = list_sme_requests(sme_id)
-        if sme_status_filter != "ALL":
-            sme_tickets = [t for t in (sme_tickets or []) if t.get("status") == sme_status_filter]
+        sme_tickets = list_sme_requests(sme_id) or []
+        if sme_status_filter == "AWAITING_ACTION":
+            sme_tickets = [t for t in sme_tickets if t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED")]
+        elif sme_status_filter == "IN_PROGRESS":
+            sme_tickets = [t for t in sme_tickets if t.get("status") in ("IN_PROGRESS", "WAITING_ON_ASPIRANT")]
+        elif sme_status_filter == "RESOLVED":
+            sme_tickets = [t for t in sme_tickets if t.get("status") == "RESOLVED"]
 
         if not sme_tickets:
             st.info("No domain advisory requests currently pending for your specialization.")
         else:
             for t in sme_tickets:
                 t_status = t.get("status", "OPEN")
-                st_color = "#f59e0b" if t_status == "OPEN" else "#3b82f6" if t_status == "IN_PROGRESS" else "#10b981" if t_status == "RESOLVED" else "#ef4444"
+                st_color = "#f59e0b" if t_status in ("OPEN", "WAITING_ON_ASPIRANT") else "#dc2626" if t_status == "WAITING_ON_GUIDE_SME" else "#3b82f6" if t_status == "IN_PROGRESS" else "#10b981" if t_status == "RESOLVED" else "#ef4444"
 
                 escaped_subject = _safe_esc(t.get('subject', 'Advisory Request'))
                 escaped_asp_name = _safe_esc(t.get('aspirant_name') or 'Entrepreneur')
@@ -596,7 +710,12 @@ def render_sme_portal(user_profile: dict):
                 sme_resp_html = ""
                 if t.get('sme_response'):
                     r_text = t.get('sme_response') or ""
-                    sme_resp_html = f'<div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:3px solid #f59e0b; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#92400E; margin-top:0.5rem;"><strong>Specialist Advisory Note:</strong> {_safe_esc(r_text)}</div>'
+                    sme_resp_html = f'<div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:3px solid #f59e0b; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#92400E; margin-top:0.5rem; white-space:pre-wrap;"><strong>Specialist Advisory Note:</strong> {_safe_esc(r_text)}</div>'
+
+                asp_reply_html = ""
+                if t.get('aspirant_response'):
+                    a_resp = _safe_esc(t.get('aspirant_response') or '').replace('\n', '<br>')
+                    asp_reply_html = f'<div style="background:#EFF6FF; border:1px solid #BFDBFE; border-left:3px solid #3B82F6; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#1E40AF; margin-top:0.5rem; white-space:pre-wrap;"><strong>Founder Reply:</strong> {a_resp}</div>'
 
                 card_html = (
                     f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 12px 12px 0; padding:1.2rem; margin-bottom:0.8rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
@@ -609,6 +728,7 @@ def render_sme_portal(user_profile: dict):
                     f'</div>'
                     f'<div style="font-size:0.85rem; color:#64748B; margin:4px 0;">From: <strong style="color:#0F172A;">{escaped_asp_name}</strong> ({escaped_asp_email})</div>'
                     f'<div style="font-size:0.9rem; color:#334155; margin-top:0.4rem; line-height:1.45;">{escaped_message}</div>'
+                    f'{asp_reply_html}'
                     f'{sme_resp_html}'
                     f'</div>'
                 )
@@ -620,12 +740,17 @@ def render_sme_portal(user_profile: dict):
                         st.session_state["sme_selected_aspirant"] = t.get("aspirant_id")
                         st.rerun()
 
-                if t_status in ["OPEN", "IN_PROGRESS"]:
+                if t_status != "RESOLVED":
                     with st.expander(f"💬 Provide Advisory Guidance for '{t.get('subject')}'", expanded=False):
                         with st.form(f"form_sme_resp_ov_{t['id']}"):
                             c_sr1, c_sr2 = st.columns([1, 2])
                             with c_sr1:
-                                new_sme_st = st.selectbox("Update Status", ["IN_PROGRESS", "RESOLVED"], key=f"sel_sme_st_ov_{t['id']}")
+                                new_sme_st = st.selectbox(
+                                    "Update Status",
+                                    ["WAITING_ON_ASPIRANT", "IN_PROGRESS", "RESOLVED"],
+                                    format_func=lambda x: "Awaiting Founder Action / Documents" if x == "WAITING_ON_ASPIRANT" else ("In Progress (Ongoing Advisory)" if x == "IN_PROGRESS" else "Resolved (Complete)"),
+                                    key=f"sel_sme_st_ov_{t['id']}"
+                                )
                             with c_sr2:
                                 sme_resp_text = st.text_area("Advisory Guidance / Technical Memorandum *", placeholder="Provide technical recommendations, statutory compliance steps, or confirm resolution...", height=80, key=f"txt_sme_resp_ov_{t['id']}")
 
@@ -644,6 +769,7 @@ def render_sme_portal(user_profile: dict):
     # TAB 3: SME PROFILE & ASSIGNMENT HISTORY
     # ─────────────────────────────────────────────────────────────
     with tabs[2]:
+      if is_tab_active(tabs[2]):
         st.subheader("👤 My SME Specialist Profile")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Manage your domain advisory credentials, industry specializations, and view your case assignment transitions.</p>", unsafe_allow_html=True)
 

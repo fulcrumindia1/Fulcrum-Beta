@@ -14,6 +14,19 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
+from services.cache import get_memo, set_memo, invalidate_memo
+
+def _invalidate_help_requests_cache() -> None:
+    invalidate_memo("help_requests:")
+
+def _append_threaded_reply(existing_text: Optional[str], new_reply: str) -> str:
+    """Appends a new reply to an existing consultation response column to preserve multi-turn history."""
+    clean_new = (new_reply or "").strip()
+    clean_old = (existing_text or "").strip()
+    if not clean_old or clean_old == clean_new or clean_new in clean_old:
+        return clean_new
+    ts_label = datetime.now(timezone.utc).strftime("%d %b %Y %H:%M UTC")
+    return f"{clean_old}\n\n— [{ts_label}] Follow-up —\n{clean_new}"
 
 # Consultation Statuses
 STATUS_OPEN = "OPEN"
@@ -115,17 +128,19 @@ def create_request(
             assigned_guide_id = guide["id"]
         if all_smes:
             assigned_sme_id = all_smes[0]["id"]
+        all_guides = mentors.get("guides", [])
     except Exception:
-        pass
+        all_guides = []
 
-    # Targeted mentor routing
+    # Targeted mentor routing (supports Primary Guide, Co-Guides, and Multiple SMEs)
     if target_mentor_id:
-        matching_sme = next((s for s in all_smes if s.get("id") == target_mentor_id), None)
+        matching_sme = next((s for s in all_smes if s and str(s.get("id")) == str(target_mentor_id)), None)
+        matching_guide = next((g for g in all_guides if g and str(g.get("id")) == str(target_mentor_id)), None)
         if matching_sme:
             target_role = "sme"
             actual_guide_id = None
             actual_sme_id = target_mentor_id
-        elif assigned_guide_id and target_mentor_id == assigned_guide_id:
+        elif matching_guide or (assigned_guide_id and str(target_mentor_id) == str(assigned_guide_id)):
             target_role = "guide"
             actual_guide_id = target_mentor_id
             actual_sme_id = None
@@ -253,10 +268,15 @@ def create_request(
             actor_id=aspirant_id
         )
 
+    _invalidate_help_requests_cache()
     return req, None
 
 def list_requests(aspirant_id: Optional[str] = None) -> List[Dict]:
     """Retrieves tickets for an Aspirant or all tickets for Admin from active backend."""
+    cache_key = f"help_requests:list:{aspirant_id or 'ALL'}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -277,7 +297,9 @@ def list_requests(aspirant_id: Optional[str] = None) -> List[Dict]:
                     r["aspirant_email"] = p.get("email") or ""
                     rows.append(r)
                 if rows:
-                    return _enrich_mentor_names(rows, client)
+                    enriched = _enrich_mentor_names(rows, client)
+                    set_memo(cache_key, enriched, ttl_seconds=15)
+                    return enriched
                 # If rows is empty and an admin client exists, check if unauthenticated user client was filtered by RLS
                 admin_client = _get_admin_client()
                 if admin_client and admin_client != client:
@@ -293,8 +315,12 @@ def list_requests(aspirant_id: Optional[str] = None) -> List[Dict]:
                         r["aspirant_name"] = p.get("full_name") or "Entrepreneur"
                         r["aspirant_email"] = p.get("email") or ""
                         rows_admin.append(r)
-                    return _enrich_mentor_names(rows_admin, admin_client)
-                return _enrich_mentor_names(rows, client)
+                    enriched_adm = _enrich_mentor_names(rows_admin, admin_client)
+                    set_memo(cache_key, enriched_adm, ttl_seconds=15)
+                    return enriched_adm
+                enriched_empty = _enrich_mentor_names(rows, client)
+                set_memo(cache_key, enriched_empty, ttl_seconds=15)
+                return enriched_empty
             except Exception as e:
                 # If user client failed with RLS, try admin client
                 admin_client = _get_admin_client()
@@ -312,17 +338,25 @@ def list_requests(aspirant_id: Optional[str] = None) -> List[Dict]:
                             r["aspirant_name"] = p.get("full_name") or "Entrepreneur"
                             r["aspirant_email"] = p.get("email") or ""
                             rows.append(r)
-                        return _enrich_mentor_names(rows, admin_client)
+                        enriched_fb = _enrich_mentor_names(rows, admin_client)
+                        set_memo(cache_key, enriched_fb, ttl_seconds=15)
+                        return enriched_fb
                     except Exception as e2:
                         print(f"[HelpRequests] Admin fallback error: {e2}")
                 print(f"[HelpRequests] Supabase list error: {e}")
                 return []
         return []
 
-    return get_local_db().list_help_requests(aspirant_id=aspirant_id)
+    local_rows = get_local_db().list_help_requests(aspirant_id=aspirant_id)
+    set_memo(cache_key, local_rows, ttl_seconds=15)
+    return local_rows
 
 def list_guide_requests(guide_id: str) -> List[Dict]:
-    """Retrieves tickets assigned to a specific Guide."""
+    """Retrieves tickets assigned to a specific Guide (with 15s session memoization)."""
+    cache_key = f"help_requests:guide:{guide_id}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -343,7 +377,9 @@ def list_guide_requests(guide_id: str) -> List[Dict]:
                     r["aspirant_email"] = p.get("email") or ""
                     rows.append(r)
                 if rows:
-                    return _enrich_mentor_names(rows, client)
+                    enriched = _enrich_mentor_names(rows, client)
+                    set_memo(cache_key, enriched, ttl_seconds=15)
+                    return enriched
                 admin_client = _get_admin_client()
                 if admin_client and admin_client != client:
                     res_admin = admin_client.table("help_requests")\
@@ -359,8 +395,12 @@ def list_guide_requests(guide_id: str) -> List[Dict]:
                         r["aspirant_name"] = p.get("full_name") or "Entrepreneur"
                         r["aspirant_email"] = p.get("email") or ""
                         rows_admin.append(r)
-                    return _enrich_mentor_names(rows_admin, admin_client)
-                return _enrich_mentor_names(rows, client)
+                    enriched_adm = _enrich_mentor_names(rows_admin, admin_client)
+                    set_memo(cache_key, enriched_adm, ttl_seconds=15)
+                    return enriched_adm
+                enriched_empty = _enrich_mentor_names(rows, client)
+                set_memo(cache_key, enriched_empty, ttl_seconds=15)
+                return enriched_empty
             except Exception as e:
                 admin_client = _get_admin_client()
                 if admin_client and admin_client != client:
@@ -378,14 +418,18 @@ def list_guide_requests(guide_id: str) -> List[Dict]:
                             r["aspirant_name"] = p.get("full_name") or "Entrepreneur"
                             r["aspirant_email"] = p.get("email") or ""
                             rows.append(r)
-                        return _enrich_mentor_names(rows, admin_client)
+                        enriched_fb = _enrich_mentor_names(rows, admin_client)
+                        set_memo(cache_key, enriched_fb, ttl_seconds=15)
+                        return enriched_fb
                     except Exception as e2:
                         print(f"[HelpRequests] Guide requests admin fallback error: {e2}")
                 print(f"[HelpRequests] Supabase list_guide_requests error: {e}")
                 return []
         return []
 
-    return get_local_db().list_help_requests(guide_id=guide_id)
+    local_rows = get_local_db().list_help_requests(guide_id=guide_id)
+    set_memo(cache_key, local_rows, ttl_seconds=15)
+    return local_rows
 
 def guide_respond_request(request_id: str, guide_id: str, new_status: str, response: str) -> Tuple[bool, Optional[str]]:
     """Guide responds to an assigned ticket and updates status."""
@@ -419,15 +463,21 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
             if not t_res.data or len(t_res.data) == 0:
                 return False, "Help request not found."
             req = t_res.data[0]
-            if req.get("assigned_guide_id") and str(req.get("assigned_guide_id")) != str(guide_id):
-                return False, "You are not authorized to respond to this request."
-
             aspirant_id = req["aspirant_id"]
+            if req.get("assigned_guide_id") and str(req.get("assigned_guide_id")) != str(guide_id):
+                # Also allow assigned Co-Guides for this aspirant
+                from services.relationships import get_aspirant_mentors
+                m_info = get_aspirant_mentors(aspirant_id) or {}
+                co_guide_ids = [str(g.get("id")) for g in m_info.get("guides", []) if g and g.get("id")]
+                if str(guide_id) not in co_guide_ids:
+                    return False, "You are not authorized to respond to this request."
+
             subject = req["subject"]
+            threaded_guide_resp = _append_threaded_reply(req.get("guide_response"), response)
 
             update_payload = {
                 "status": new_status,
-                "guide_response": response.strip(),
+                "guide_response": threaded_guide_resp,
                 "last_handled_at": now_iso,
                 "last_mentor_response_at": now_iso,
                 "last_interaction_actor_id": guide_id,
@@ -463,13 +513,19 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
             return False, "Help request not found."
 
         req = dict(row)
-        if req.get("assigned_guide_id") and req.get("assigned_guide_id") != guide_id:
-            return False, "You are not authorized to respond to this request."
-
         aspirant_id = req["aspirant_id"]
-        subject = req["subject"]
-        local_db.guide_respond_help_request(request_id, guide_id, new_status, response.strip())
+        if req.get("assigned_guide_id") and req.get("assigned_guide_id") != guide_id:
+            from services.relationships import get_aspirant_mentors
+            m_info = get_aspirant_mentors(aspirant_id) or {}
+            co_guide_ids = [str(g.get("id")) for g in m_info.get("guides", []) if g and g.get("id")]
+            if str(guide_id) not in co_guide_ids:
+                return False, "You are not authorized to respond to this request."
 
+        subject = req["subject"]
+        threaded_guide_resp = _append_threaded_reply(req.get("guide_response"), response)
+        local_db.guide_respond_help_request(request_id, guide_id, new_status, threaded_guide_resp)
+
+    _invalidate_help_requests_cache()
     # Dispatch notification to Aspirant
     from services.notifications import create_notification
     create_notification(
@@ -483,7 +539,11 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
     return True, None
 
 def list_sme_requests(sme_id: str) -> List[Dict]:
-    """Retrieves tickets assigned to a specific SME or for their assigned aspirants."""
+    """Retrieves tickets assigned to a specific SME or for their assigned aspirants (with 15s session memoization)."""
+    cache_key = f"help_requests:sme:{sme_id}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -503,7 +563,9 @@ def list_sme_requests(sme_id: str) -> List[Dict]:
                     r["aspirant_email"] = p.get("email") or ""
                     rows.append(r)
                 if rows:
-                    return _enrich_mentor_names(rows, client)
+                    enriched = _enrich_mentor_names(rows, client)
+                    set_memo(cache_key, enriched, ttl_seconds=15)
+                    return enriched
                 admin_client = _get_admin_client()
                 if admin_client and admin_client != client:
                     res_admin = admin_client.table("help_requests")\
@@ -518,8 +580,12 @@ def list_sme_requests(sme_id: str) -> List[Dict]:
                         r["aspirant_name"] = p.get("full_name") or "Entrepreneur"
                         r["aspirant_email"] = p.get("email") or ""
                         rows_admin.append(r)
-                    return _enrich_mentor_names(rows_admin, admin_client)
-                return _enrich_mentor_names(rows, client)
+                    enriched_adm = _enrich_mentor_names(rows_admin, admin_client)
+                    set_memo(cache_key, enriched_adm, ttl_seconds=15)
+                    return enriched_adm
+                enriched_empty = _enrich_mentor_names(rows, client)
+                set_memo(cache_key, enriched_empty, ttl_seconds=15)
+                return enriched_empty
             except Exception as e:
                 admin_client = _get_admin_client()
                 if admin_client and admin_client != client:
@@ -536,14 +602,18 @@ def list_sme_requests(sme_id: str) -> List[Dict]:
                             r["aspirant_name"] = p.get("full_name") or "Entrepreneur"
                             r["aspirant_email"] = p.get("email") or ""
                             rows.append(r)
-                        return _enrich_mentor_names(rows, admin_client)
+                        enriched_fb = _enrich_mentor_names(rows, admin_client)
+                        set_memo(cache_key, enriched_fb, ttl_seconds=15)
+                        return enriched_fb
                     except Exception as e2:
                         print(f"[HelpRequests] Admin fallback error: {e2}")
                 print(f"[HelpRequests] Supabase list_sme_requests error: {e}")
                 return []
         return []
 
-    return get_local_db().list_help_requests(sme_id=sme_id)
+    local_rows = get_local_db().list_help_requests(sme_id=sme_id)
+    set_memo(cache_key, local_rows, ttl_seconds=15)
+    return local_rows
 
 def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None, arg4: Optional[str] = None, new_status: Optional[str] = None, response: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """SME responds to an assigned advisory ticket and updates status."""
@@ -553,7 +623,7 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
     elif arg4 is None:
         new_status = "IN_PROGRESS"
         response = arg3 or ""
-    elif arg3 in ("OPEN", "IN_PROGRESS", "RESOLVED", "ESCALATED"):
+    elif arg3 in ("OPEN", "IN_PROGRESS", "WAITING_ON_ASPIRANT", "WAITING_ON_GUIDE_SME", "RESOLVED", "ESCALATED"):
         new_status = arg3
         response = arg4
     else:
@@ -589,15 +659,20 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
             if not t_res.data or len(t_res.data) == 0:
                 return False, "Help request not found."
             req = t_res.data[0]
-            if req.get("assigned_sme_id") and str(req.get("assigned_sme_id")) != str(sme_id):
-                return False, "You are not authorized to respond to this request."
-
             aspirant_id = req["aspirant_id"]
+            if req.get("assigned_sme_id") and str(req.get("assigned_sme_id")) != str(sme_id):
+                from services.relationships import get_aspirant_mentors
+                m_info = get_aspirant_mentors(aspirant_id) or {}
+                panel_sme_ids = [str(s.get("id")) for s in m_info.get("smes", []) if s and s.get("id")]
+                if str(sme_id) not in panel_sme_ids:
+                    return False, "You are not authorized to respond to this request."
+
             subject = req["subject"]
+            threaded_sme_resp = _append_threaded_reply(req.get("sme_response"), response)
 
             update_payload = {
                 "status": new_status,
-                "sme_response": response.strip(),
+                "sme_response": threaded_sme_resp,
                 "responded_by": sme_id,
                 "last_handled_at": now_iso,
                 "last_mentor_response_at": now_iso,
@@ -634,13 +709,19 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
             return False, "Help request not found."
 
         req = dict(row)
-        if req.get("assigned_sme_id") and req.get("assigned_sme_id") != sme_id:
-            return False, "You are not authorized to respond to this request."
-
         aspirant_id = req["aspirant_id"]
-        subject = req["subject"]
-        local_db.sme_respond_help_request(request_id, sme_id, new_status, response.strip())
+        if req.get("assigned_sme_id") and req.get("assigned_sme_id") != sme_id:
+            from services.relationships import get_aspirant_mentors
+            m_info = get_aspirant_mentors(aspirant_id) or {}
+            panel_sme_ids = [str(s.get("id")) for s in m_info.get("smes", []) if s and s.get("id")]
+            if str(sme_id) not in panel_sme_ids:
+                return False, "You are not authorized to respond to this request."
 
+        subject = req["subject"]
+        threaded_sme_resp = _append_threaded_reply(req.get("sme_response"), response)
+        local_db.sme_respond_help_request(request_id, sme_id, new_status, threaded_sme_resp)
+
+    _invalidate_help_requests_cache()
     # Dispatch notification to Aspirant
     from services.notifications import create_notification
     create_notification(
@@ -697,6 +778,7 @@ def resolve_request(request_id: str, new_status: str, admin_response: str, admin
         subject = req["subject"]
         local_db.update_help_request_status(request_id, new_status, admin_response.strip(), admin_id)
 
+    _invalidate_help_requests_cache()
     # Dispatch notification to Aspirant
     from services.notifications import create_notification
     create_notification(
@@ -807,6 +889,7 @@ def create_mentor_admin_query(
     except Exception as ne:
         print(f"[HelpRequests] Admin notification warning: {ne}")
 
+    _invalidate_help_requests_cache()
     return req, None
 
 def list_mentor_admin_queries(
@@ -817,6 +900,10 @@ def list_mentor_admin_queries(
     Retrieves institutional queries submitted by mentors (Guides/SMEs) to Admin.
     Can be filtered by mentor_id, aspirant_id, or listed globally for Admin.
     """
+    cache_key = f"help_requests:mentor_admin:{mentor_id or 'ALL'}:{aspirant_id or 'ALL'}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -840,6 +927,7 @@ def list_mentor_admin_queries(
                     r["requester_name"] = req_p.get("full_name") or "Mentor"
                     r["requester_role_actual"] = req_p.get("role") or r.get("requester_role", "guide")
                     rows.append(r)
+                set_memo(cache_key, rows, ttl_seconds=15)
                 return rows
             except Exception as e:
                 print(f"[HelpRequests] Supabase list_mentor_admin_queries error: {e}")
@@ -857,6 +945,7 @@ def list_mentor_admin_queries(
             if mp:
                 r["requester_name"] = mp.get("full_name") or "Mentor"
                 r["requester_role_actual"] = mp.get("role") or r.get("requester_role", "guide")
+    set_memo(cache_key, local_rows, ttl_seconds=15)
     return local_rows
 
 def admin_respond_to_mentor(
@@ -962,6 +1051,7 @@ def admin_respond_to_mentor(
         except Exception as ne:
             print(f"[HelpRequests] Mentor notification warning: {ne}")
 
+    _invalidate_help_requests_cache()
     return True, None
 
 
@@ -1068,6 +1158,7 @@ def create_mentor_consultation(
     except Exception as e:
         print(f"[HelpRequests] Notification dispatch error: {e}")
 
+    _invalidate_help_requests_cache()
     return req, None
 
 
@@ -1104,11 +1195,12 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
 
             subject = req.get("subject", "Consultation")
             mentor_recipient_id = req.get("requester_id") or req.get("assigned_guide_id") or req.get("assigned_sme_id")
+            threaded_asp_resp = _append_threaded_reply(req.get("aspirant_response"), response)
 
             # Set status to WAITING_ON_GUIDE_SME and track aspirant response without touching last_mentor_response_at
             update_payload = {
                 "status": STATUS_WAITING_ON_GUIDE_SME,
-                "aspirant_response": response.strip(),
+                "aspirant_response": threaded_asp_resp,
                 "last_handled_at": now_iso,
                 "last_aspirant_response_at": now_iso,
                 "last_interaction_actor_id": aspirant_id,
@@ -1122,7 +1214,7 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
                 update_payload.pop("last_aspirant_response_at", None)
                 update_payload.pop("last_interaction_actor_id", None)
                 update_payload.pop("last_interaction_actor_role", None)
-                update_payload["admin_response"] = f"Aspirant Reply: {response.strip()}"
+                update_payload["admin_response"] = f"Aspirant Reply: {threaded_asp_resp}"
                 client.table("help_requests").update(update_payload).eq("id", request_id).execute()
 
         except Exception as e:
@@ -1156,8 +1248,10 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
 
         subject = req.get("subject", "Consultation")
         mentor_recipient_id = req.get("requester_id") or req.get("assigned_guide_id") or req.get("assigned_sme_id")
-        local_db.aspirant_respond_help_request(request_id, aspirant_id, response.strip())
+        threaded_asp_resp = _append_threaded_reply(req.get("aspirant_response"), response)
+        local_db.aspirant_respond_help_request(request_id, aspirant_id, threaded_asp_resp)
 
+    _invalidate_help_requests_cache()
     # Dispatch notification to mentor
     if mentor_recipient_id:
         try:

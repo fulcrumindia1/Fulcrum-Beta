@@ -18,12 +18,18 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.logger import app_logger
+from services.cache import get_memo, set_memo, invalidate_memo
 
 def _get_user_client():
     return get_supabase_client()
 
 def _get_admin_client():
     return get_supabase_admin_client()
+
+def _invalidate_user_notifications(user_id: str) -> None:
+    if user_id:
+        invalidate_memo(f"notif_count:{user_id}")
+        invalidate_memo(f"notif_list:{user_id}:")
 
 def is_notification_allowed(actor_id: Optional[str], target_user_id: str, notification_type: str) -> bool:
     """
@@ -122,6 +128,7 @@ def create_notification(
             return None, "Supabase client unavailable."
         try:
             res = client.table("notifications").insert(notif_data).execute()
+            _invalidate_user_notifications(user_id)
             if res.data and len(res.data) > 0:
                 app_logger.info("notifications", "create_notification", f"Notification created for {user_id}", actor_id=actor_id)
                 return res.data[0], None
@@ -141,12 +148,20 @@ def create_notification(
             actor_id=actor_id,
             link=link
         )
+        _invalidate_user_notifications(user_id)
         return rec, None
     except Exception as e:
         return None, f"Local DB notification error: {e}"
 
 def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
-    """Retrieves notifications for a user."""
+    """Retrieves notifications for a user (with 30s session memoization)."""
+    if not user_id:
+        return []
+    cache_key = f"notif_list:{user_id}:{bool(unread_only)}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return cached
+
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -162,6 +177,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                     q = q.eq("is_read", False)
                 res = q.order("created_at", desc=True).limit(50).execute()
                 if res.data is not None and len(res.data) > 0:
+                    set_memo(cache_key, res.data, ttl_seconds=30)
                     return res.data
                 if admin and admin != reader:
                     q2 = admin.table("notifications").select("*").eq("user_id", user_id)
@@ -169,8 +185,11 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                         q2 = q2.eq("is_read", False)
                     res2 = q2.order("created_at", desc=True).limit(50).execute()
                     if res2.data is not None:
+                        set_memo(cache_key, res2.data, ttl_seconds=30)
                         return res2.data
-                return res.data if res.data is not None else []
+                out = res.data if res.data is not None else []
+                set_memo(cache_key, out, ttl_seconds=30)
+                return out
             except Exception as e:
                 app_logger.error("notifications", "list_notifications", f"Supabase list error for {user_id}: {e}", error=e, actor_id=user_id)
                 if admin and admin != reader:
@@ -180,6 +199,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                             q2 = q2.eq("is_read", False)
                         res2 = q2.order("created_at", desc=True).limit(50).execute()
                         if res2.data is not None:
+                            set_memo(cache_key, res2.data, ttl_seconds=30)
                             return res2.data
                     except Exception:
                         pass
@@ -188,7 +208,9 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
     # SQLite local mode ONLY
     from services.local_db import get_local_db
     try:
-        return get_local_db().list_notifications(user_id=user_id, unread_only=unread_only)
+        rows = get_local_db().list_notifications(user_id=user_id, unread_only=unread_only)
+        set_memo(cache_key, rows, ttl_seconds=30)
+        return rows
     except Exception as e:
         print(f"[Notifications] Local DB query error: {e}")
         return []
@@ -204,12 +226,14 @@ def mark_as_read(notification_id: str, user_id: str) -> bool:
             try:
                 res = user_client.table("notifications").update({"is_read": True}).eq("id", notification_id).eq("user_id", user_id).execute()
                 if res.data:
+                    _invalidate_user_notifications(user_id)
                     return True
             except Exception:
                 pass
         if admin:
             try:
                 res = admin.table("notifications").update({"is_read": True}).eq("id", notification_id).eq("user_id", user_id).execute()
+                _invalidate_user_notifications(user_id)
                 return bool(res.data)
             except Exception as e:
                 app_logger.error("notifications", "mark_as_read", f"Supabase mark_as_read error: {e}", error=e, actor_id=user_id)
@@ -218,7 +242,9 @@ def mark_as_read(notification_id: str, user_id: str) -> bool:
 
     from services.local_db import get_local_db
     try:
-        return get_local_db().mark_notification_as_read(notification_id, user_id)
+        ok = get_local_db().mark_notification_as_read(notification_id, user_id)
+        _invalidate_user_notifications(user_id)
+        return ok
     except Exception:
         return False
 
@@ -233,12 +259,14 @@ def mark_all_as_read(user_id: str) -> bool:
             try:
                 res = user_client.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("is_read", False).execute()
                 if res.data is not None:
+                    _invalidate_user_notifications(user_id)
                     return True
             except Exception:
                 pass
         if admin:
             try:
                 res = admin.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("is_read", False).execute()
+                _invalidate_user_notifications(user_id)
                 return res.data is not None
             except Exception as e:
                 app_logger.error("notifications", "mark_all_as_read", f"Supabase mark_all_as_read error: {e}", error=e, actor_id=user_id)
@@ -247,12 +275,21 @@ def mark_all_as_read(user_id: str) -> bool:
 
     from services.local_db import get_local_db
     try:
-        return get_local_db().mark_all_notifications_as_read(user_id)
+        ok = get_local_db().mark_all_notifications_as_read(user_id)
+        _invalidate_user_notifications(user_id)
+        return ok
     except Exception:
         return False
 
 def get_unread_count(user_id: str) -> int:
-    """Returns the count of unread notifications for a user."""
+    """Returns the count of unread notifications for a user (with 30s session memoization)."""
+    if not user_id:
+        return 0
+    cache_key = f"notif_count:{user_id}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return int(cached)
+
     backend = get_data_backend()
 
     if backend == "supabase":
@@ -265,9 +302,14 @@ def get_unread_count(user_id: str) -> int:
             try:
                 res = reader.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).execute()
                 if hasattr(res, "count") and res.count is not None:
-                    return int(res.count)
+                    cnt = int(res.count)
+                    set_memo(cache_key, cnt, ttl_seconds=30)
+                    return cnt
                 if res.data is not None:
-                    return len(res.data)
+                    cnt = len(res.data)
+                    set_memo(cache_key, cnt, ttl_seconds=30)
+                    return cnt
+                set_memo(cache_key, 0, ttl_seconds=30)
                 return 0
             except Exception as e:
                 app_logger.error("notifications", "get_unread_count", f"Supabase unread count error: {e}", error=e, actor_id=user_id)
@@ -275,9 +317,13 @@ def get_unread_count(user_id: str) -> int:
                     try:
                         res2 = admin.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).execute()
                         if hasattr(res2, "count") and res2.count is not None:
-                            return int(res2.count)
+                            cnt = int(res2.count)
+                            set_memo(cache_key, cnt, ttl_seconds=30)
+                            return cnt
                         if res2.data is not None:
-                            return len(res2.data)
+                            cnt = len(res2.data)
+                            set_memo(cache_key, cnt, ttl_seconds=30)
+                            return cnt
                     except Exception:
                         pass
                 return 0
@@ -285,6 +331,8 @@ def get_unread_count(user_id: str) -> int:
 
     from services.local_db import get_local_db
     try:
-        return get_local_db().get_unread_notifications_count(user_id)
+        cnt = get_local_db().get_unread_notifications_count(user_id)
+        set_memo(cache_key, cnt, ttl_seconds=30)
+        return cnt
     except Exception:
         return 0

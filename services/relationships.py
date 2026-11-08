@@ -24,20 +24,29 @@ def _get_admin_client():
     """Returns the privileged admin Supabase client (bypasses RLS). Use sparingly."""
     return get_supabase_admin_client()
 
+ACTIVE_TICKET_STATUSES = ("OPEN", "IN_PROGRESS", "WAITING_ON_ASPIRANT", "WAITING_ON_GUIDE_SME")
+
 def get_all_relationships() -> List[Dict]:
-    """Retrieves all active relationship records."""
+    """Retrieves all active relationship records (memoized for 60s)."""
+    cached = get_memo("all_relationships")
+    if cached is not None:
+        return cached
     backend = get_data_backend()
     if backend == "supabase":
         client = _get_admin_client() or _get_user_client()
         if client:
             try:
                 res = client.table("relationships").select("*").eq("status", "active").execute()
-                return res.data or []
+                rows = res.data or []
+                set_memo("all_relationships", rows, ttl_seconds=60)
+                return rows
             except Exception:
                 pass
     db = get_local_db()
     if hasattr(db, "list_all_relationships"):
-        return db.list_all_relationships()
+        rows = db.list_all_relationships()
+        set_memo("all_relationships", rows, ttl_seconds=60)
+        return rows
     return []
 
 def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
@@ -95,7 +104,15 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
             for gid in guide_ids:
                 gp = mentor_profiles.get(gid)
                 if gp and not any(existing["id"] == gp["id"] for existing in guides):
-                    guides.append(gp)
+                    gp_copy = dict(gp)
+                    try:
+                        from services.roles import get_user_roles
+                        g_roles = get_user_roles(gid)
+                        g_rec = next((r for r in g_roles if r.get("role") == "guide"), None)
+                        gp_copy["role_status"] = g_rec.get("status", "active") if g_rec else "active"
+                    except Exception:
+                        gp_copy["role_status"] = "active"
+                    guides.append(gp_copy)
             if guides:
                 guide = guides[0]
             if len(guides) > 1:
@@ -104,7 +121,15 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
             for sid in sme_ids:
                 sp = mentor_profiles.get(sid)
                 if sp and not any(existing["id"] == sp["id"] for existing in smes):
-                    smes.append(sp)
+                    sp_copy = dict(sp)
+                    try:
+                        from services.roles import get_user_roles
+                        s_roles = get_user_roles(sid)
+                        s_rec = next((r for r in s_roles if r.get("role") == "sme"), None)
+                        sp_copy["role_status"] = s_rec.get("status", "active") if s_rec else "active"
+                    except Exception:
+                        sp_copy["role_status"] = "active"
+                    smes.append(sp_copy)
             if smes:
                 sme = smes[0]
 
@@ -151,7 +176,15 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
         for gid in guide_ids:
             gp = mentor_profiles.get(gid)
             if gp and not any(existing["id"] == gp["id"] for existing in guides):
-                guides.append(gp)
+                gp_copy = dict(gp)
+                try:
+                    from services.roles import get_user_roles
+                    g_roles = get_user_roles(gid)
+                    g_rec = next((r for r in g_roles if r.get("role") == "guide"), None)
+                    gp_copy["role_status"] = g_rec.get("status", "active") if g_rec else "active"
+                except Exception:
+                    gp_copy["role_status"] = "active"
+                guides.append(gp_copy)
         if guides:
             guide = guides[0]
         if len(guides) > 1:
@@ -160,7 +193,15 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
         for sid in sme_ids:
             sp = mentor_profiles.get(sid)
             if sp and not any(existing["id"] == sp["id"] for existing in smes):
-                smes.append(sp)
+                sp_copy = dict(sp)
+                try:
+                    from services.roles import get_user_roles
+                    s_roles = get_user_roles(sid)
+                    s_rec = next((r for r in s_roles if r.get("role") == "sme"), None)
+                    sp_copy["role_status"] = s_rec.get("status", "active") if s_rec else "active"
+                except Exception:
+                    sp_copy["role_status"] = "active"
+                smes.append(sp_copy)
         if smes:
             sme = smes[0]
 
@@ -260,13 +301,13 @@ def assign_guide(
                 "created_at": now_iso
             }).execute()
 
-            # Transfer open/in-progress tickets to the new Guide if replaced
+            # Transfer open/in-progress/waiting tickets to the new Guide if replaced
             if is_replacement:
                 try:
                     client.table("help_requests").update({
                         "assigned_guide_id": guide_id,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                    }).eq("aspirant_id", aspirant_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
                 except Exception:
                     pass
         except Exception as e:
@@ -316,7 +357,7 @@ def assign_guide(
             try:
                 conn = get_local_db()._get_conn()
                 cur = conn.cursor()
-                cur.execute("UPDATE help_requests SET assigned_guide_id = ? WHERE aspirant_id = ? AND status IN ('OPEN', 'IN_PROGRESS')", (guide_id, aspirant_id))
+                cur.execute("UPDATE help_requests SET assigned_guide_id = ? WHERE aspirant_id = ? AND status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME')", (guide_id, aspirant_id))
                 conn.commit()
                 conn.close()
             except Exception:
@@ -391,6 +432,7 @@ def assign_guide(
             metadata={"guide_id": guide_id, "guide_name": guide_name, "notes": notes}
         )
 
+    invalidate_memo("all_relationships")
     invalidate_memo(f"mentors:{aspirant_id}")
     invalidate_memo(f"guide_aspirants:{guide_id}")
     if primary_guide_id and primary_guide_id != guide_id:
@@ -481,6 +523,14 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
                 "notes": hist_notes,
                 "created_at": now_iso
             }).execute()
+            if is_replacement:
+                try:
+                    client.table("help_requests").update({
+                        "assigned_sme_id": sme_id,
+                        "updated_at": now_iso
+                    }).eq("aspirant_id", aspirant_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
+                except Exception:
+                    pass
         except Exception as e:
             return False, f"Failed to record SME assignment in Supabase: {e}"
     else:
@@ -496,6 +546,15 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
             previous_mentor_id=old_sme_id if is_replacement else None,
             notes=hist_notes
         )
+        if is_replacement:
+            try:
+                conn = get_local_db()._get_conn()
+                cur = conn.cursor()
+                cur.execute("UPDATE help_requests SET assigned_sme_id = ? WHERE aspirant_id = ? AND status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME')", (sme_id, aspirant_id))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
 
     sme_name = sme.get("full_name") or "Specialist"
     prof_data = sme.get("profile_data") if isinstance(sme.get("profile_data"), dict) else {}
@@ -567,6 +626,7 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
             metadata={"sme_id": sme_id, "sme_name": sme_name, "domain": sme_domain, "notes": notes}
         )
 
+    invalidate_memo("all_relationships")
     invalidate_memo(f"mentors:{aspirant_id}")
     invalidate_memo(f"sme_aspirants:{sme_id}")
     if old_sme_id:
@@ -630,12 +690,12 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
                     client.table("help_requests").update({
                         "assigned_guide_id": new_primary_guide_id,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
                 else:
                     client.table("help_requests").update({
                         "assigned_guide_id": None,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
             except Exception:
                 pass
         except Exception as e:
@@ -656,13 +716,13 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
                 cur.execute("""
                 UPDATE help_requests
                 SET assigned_guide_id = ?, updated_at = ?
-                WHERE aspirant_id = ? AND assigned_guide_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                WHERE aspirant_id = ? AND assigned_guide_id = ? AND status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME')
                 """, (new_primary_guide_id, now_iso, aspirant_id, guide_id))
             else:
                 cur.execute("""
                 UPDATE help_requests
                 SET assigned_guide_id = NULL, updated_at = ?
-                WHERE aspirant_id = ? AND assigned_guide_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                WHERE aspirant_id = ? AND assigned_guide_id = ? AND status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME')
                 """, (now_iso, aspirant_id, guide_id))
             conn.commit()
         except Exception:
@@ -679,6 +739,7 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
             notes=f"Unassigned by Admin. Reason: {reason or 'Administrative rebalance'}"
         )
 
+    invalidate_memo("all_relationships")
     invalidate_memo(f"mentors:{aspirant_id}")
     invalidate_memo(f"guide_aspirants:{guide_id}")
     if new_primary_guide_id:
@@ -771,12 +832,12 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
                     client.table("help_requests").update({
                         "assigned_sme_id": new_primary_sme_id,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
                 else:
                     client.table("help_requests").update({
                         "assigned_sme_id": None,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", ["OPEN", "IN_PROGRESS"]).execute()
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
             except Exception:
                 pass
         except Exception as e:
@@ -797,13 +858,13 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
                 cur.execute("""
                 UPDATE help_requests
                 SET assigned_sme_id = ?, updated_at = ?
-                WHERE aspirant_id = ? AND assigned_sme_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                WHERE aspirant_id = ? AND assigned_sme_id = ? AND status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME')
                 """, (new_primary_sme_id, now_iso, aspirant_id, sme_id))
             else:
                 cur.execute("""
                 UPDATE help_requests
                 SET assigned_sme_id = NULL, updated_at = ?
-                WHERE aspirant_id = ? AND assigned_sme_id = ? AND status IN ('OPEN', 'IN_PROGRESS')
+                WHERE aspirant_id = ? AND assigned_sme_id = ? AND status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME')
                 """, (now_iso, aspirant_id, sme_id))
             conn.commit()
         except Exception:
@@ -820,6 +881,7 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
             notes=f"Specialist unassigned by Admin. Reason: {reason or 'Advisory concluded'}"
         )
 
+    invalidate_memo("all_relationships")
     invalidate_memo(f"mentors:{aspirant_id}")
     invalidate_memo(f"sme_aspirants:{sme_id}")
     if new_primary_sme_id:

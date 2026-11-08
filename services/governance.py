@@ -12,7 +12,10 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
-from services.cache import get_memo, set_memo, invalidate_memo
+from services.cache import (
+    get_memo, set_memo, invalidate_memo,
+    get_global_cache, set_global_cache
+)
 
 # Governance Masking Names
 ADMIN_MASKED_NAME = "Fulcrum Support"
@@ -24,17 +27,25 @@ PRIMARY_ADMIN_FALLBACK_UUID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
 
 
 def get_primary_admin_id() -> str:
-    """Dynamically resolves the single primary platform administrator UUID."""
+    """Dynamically resolves the single primary platform administrator UUID (cached globally)."""
+    cached = get_global_cache("primary_admin_id")
+    if cached:
+        return str(cached)
     try:
         from services.profiles import list_profiles_by_role
         admins = list_profiles_by_role("admin")
         for p in admins:
             if p.get("email") == PRIMARY_ADMIN_EMAIL:
-                return str(p["id"])
+                resolved = str(p["id"])
+                set_global_cache("primary_admin_id", resolved, ttl_seconds=3600)
+                return resolved
         if admins:
-            return str(admins[0]["id"])
+            resolved = str(admins[0]["id"])
+            set_global_cache("primary_admin_id", resolved, ttl_seconds=3600)
+            return resolved
     except Exception:
         pass
+    set_global_cache("primary_admin_id", PRIMARY_ADMIN_FALLBACK_UUID, ttl_seconds=3600)
     return PRIMARY_ADMIN_FALLBACK_UUID
 
 
@@ -148,6 +159,14 @@ def list_guide_complaints(status: Optional[str] = None) -> List[Dict]:
     return records
 
 
+def list_aspirant_complaints(aspirant_id: str) -> List[Dict]:
+    """Retrieves confidential complaints submitted by a specific Aspirant for their own status tracking."""
+    if not aspirant_id:
+        return []
+    all_records = list_guide_complaints()
+    return [r for r in all_records if str(r.get("aspirant_id")) == str(aspirant_id)]
+
+
 def resolve_guide_complaint(
     complaint_id: str,
     status: str,
@@ -160,6 +179,7 @@ def resolve_guide_complaint(
 
     now_iso = datetime.now(timezone.utc).isoformat()
     backend = get_data_backend()
+    target_aspirant_id = None
 
     if backend == "supabase":
         admin = get_supabase_admin_client()
@@ -174,12 +194,36 @@ def resolve_guide_complaint(
             }).eq("id", complaint_id).execute()
             if not res.data:
                 return False, "Database error: Complaint record not found or could not be updated."
+            target_aspirant_id = res.data[0].get("aspirant_id")
         except Exception as e:
             return False, f"Database error updating complaint: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_guide_complaint"):
         db.update_guide_complaint(complaint_id, status, resolution_notes, admin_id)
+        if not target_aspirant_id and hasattr(db, "list_guide_complaints"):
+            for c in db.list_guide_complaints():
+                if str(c.get("id")) == str(complaint_id):
+                    target_aspirant_id = c.get("aspirant_id")
+                    break
+
+    if target_aspirant_id:
+        try:
+            from services.notifications import create_notification
+            status_label = status.replace("_", " ").title()
+            note_snippet = (resolution_notes or "").strip()
+            msg_body = f"Fulcrum Support updated your confidential report status to '{status_label}'."
+            if note_snippet:
+                msg_body += f" Note: {note_snippet}"
+            create_notification(
+                user_id=str(target_aspirant_id),
+                title=f"Confidential Support Report: {status_label}",
+                message=msg_body,
+                notification_type="CONFIDENTIAL_COMPLAINT_UPDATE",
+                actor_id=admin_id
+            )
+        except Exception as e:
+            print(f"[Governance] Complaint resolution notification error: {e}")
 
     return True, None
 

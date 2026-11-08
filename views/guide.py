@@ -42,7 +42,9 @@ from services.schemes import (
     evaluate_scheme_for_aspirant,
     release_scheme_to_aspirant,
     withdraw_scheme_release,
-    get_guide_scheme_releases
+    get_guide_scheme_releases,
+    SCHEME_APPLICATION_STAGES,
+    update_scheme_application_stage,
 )
 from services.constants import MASTER_CATEGORY_TYPES, MASTER_STAGES, MASTER_DISTRICTS_TN
 from services.help_requests import (
@@ -58,6 +60,12 @@ from services.scheme_reviews import submit_scheme_support_review, list_scheme_su
 def render_guide_portal(user_profile: dict):
     guide_id = user_profile["id"]
     guide_name = user_profile.get("full_name", "Mentor")
+
+    from services.roles import user_has_active_role
+    if not user_has_active_role(guide_id, "guide"):
+        st.error("🚫 Your Guide role grant is no longer active. Access to the Guide Workspace and assigned entrepreneur dossiers has been revoked.")
+        st.session_state["active_workspace"] = "aspirant"
+        return
 
     st.markdown(f"""
     <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1.5rem; padding-bottom:1rem; border-bottom:1px solid #E2E8F0;">
@@ -82,16 +90,27 @@ def render_guide_portal(user_profile: dict):
     # TAB 1: MY ASPIRANTS WORKSPACE
     # ─────────────────────────────────────────────────────────────
     with main_tabs[0]:
+      if is_tab_active(main_tabs[0]):
         assigned_aspirants = get_assigned_aspirants_for_guide(guide_id)
 
         if not assigned_aspirants:
             st.info("No Aspirants are currently assigned to you. When the Admin assigns an entrepreneur to your roster, they will appear here.")
         else:
-            # Selector for which aspirant to advise
-            asp_options = {
-                a["id"]: f"{a['full_name']} — {a.get('profile_data',{}).get('business',{}).get('business_name','Enterprise')} ({a.get('district', 'Tamil Nadu')})"
-                for a in assigned_aspirants
-            }
+            all_guide_tickets = list_guide_requests(guide_id) or []
+            open_tickets_by_asp = {}
+            for _t in all_guide_tickets:
+                if _t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"):
+                    _aid = _t.get("aspirant_id")
+                    open_tickets_by_asp[_aid] = open_tickets_by_asp.get(_aid, 0) + 1
+
+            # Selector for which aspirant to advise (with attention badges)
+            asp_options = {}
+            for a in assigned_aspirants:
+                _open_n = open_tickets_by_asp.get(a["id"], 0)
+                _badge = f"[🔴 {_open_n} Open]" if _open_n > 0 else "[🟢 Active]"
+                _bname = a.get("profile_data", {}).get("business", {}).get("business_name", "Enterprise")
+                asp_options[a["id"]] = f"{_badge} {a['full_name']} — {_bname} ({a.get('district', 'Tamil Nadu')})"
+
             default_idx = 0
             if st.session_state.get("guide_selected_aspirant") in asp_options:
                 default_idx = list(asp_options.keys()).index(st.session_state["guide_selected_aspirant"])
@@ -110,7 +129,6 @@ def render_guide_portal(user_profile: dict):
                 st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
 
                 # Calculate direct consultations from this mentee
-                all_guide_tickets = list_guide_requests(guide_id) or []
                 asp_tickets = [t for t in all_guide_tickets if t.get("aspirant_id") == selected_asp_id]
                 open_cnt = sum(1 for t in asp_tickets if t.get("status") in ["OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"])
 
@@ -266,11 +284,8 @@ def render_guide_portal(user_profile: dict):
                                     "Operations",
                                     "Other / Specialized Advisory (Specify)"
                                 ])
-                                m_topic = m_topic_sel
-                                if m_topic_sel == "Other / Specialized Advisory (Specify)":
-                                    m_topic_custom = st.text_input("Specify Advisory Topic *", placeholder="e.g. Export Documentation", key="guide_custom_topic")
-                                    if m_topic_custom and m_topic_custom.strip():
-                                        m_topic = m_topic_custom.strip()
+                                m_topic_custom = st.text_input("Custom Advisory Topic (if 'Other' selected above)", placeholder="e.g. Export Documentation", key="guide_custom_topic")
+                                m_topic = m_topic_custom.strip() if (m_topic_sel == "Other / Specialized Advisory (Specify)" and m_topic_custom and m_topic_custom.strip()) else m_topic_sel
                             with col_g2:
                                 m_date = st.date_input("Session Date", value=date.today())
                             m_desc = st.text_area("Guidance Notes / What was achieved?", placeholder="Reviewed DPR proposal, verified eligibility criteria, and recommended applying for subsidy.")
@@ -354,14 +369,24 @@ def render_guide_portal(user_profile: dict):
                                         if st.button("✏️", key=f"guide_edit_{event['id']}", help="Edit your mentorship contribution"):
                                             render_edit_journey_dialog(event, guide_id, "guide")
                                     with col_gd:
-                                        if st.button("🗑️", key=f"guide_del_{event['id']}", help="Delete your contribution"):
-                                            ok, err = soft_delete_event(event["id"], guide_id, "guide")
-                                            st.session_state[f"guide_subtab_pending_{selected_asp_id}"] = "journey"
-                                            if ok:
-                                                st.session_state["del_event_success"] = "Mentorship contribution deleted."
-                                            else:
-                                                st.session_state["del_event_err"] = err or "Could not delete contribution."
-                                            st.rerun()
+                                        confirm_gkey = f"confirm_guide_del_{event['id']}"
+                                        if st.session_state.get(confirm_gkey):
+                                            if st.button("✓ Yes", key=f"yes_guide_del_{event['id']}", type="primary", help="Confirm delete"):
+                                                st.session_state.pop(confirm_gkey, None)
+                                                ok, err = soft_delete_event(event["id"], guide_id, "guide")
+                                                st.session_state[f"guide_subtab_pending_{selected_asp_id}"] = "journey"
+                                                if ok:
+                                                    st.session_state["del_event_success"] = "Mentorship contribution deleted."
+                                                else:
+                                                    st.session_state["del_event_err"] = err or "Could not delete contribution."
+                                                st.rerun()
+                                            if st.button("✕", key=f"no_guide_del_{event['id']}", help="Cancel delete"):
+                                                st.session_state.pop(confirm_gkey, None)
+                                                st.rerun()
+                                        else:
+                                            if st.button("🗑️", key=f"guide_del_{event['id']}", help="Delete your contribution"):
+                                                st.session_state[confirm_gkey] = True
+                                                st.rerun()
 
                 # ─────────────────────────────────────────────────────────
                 # SUBTAB 3: ASSIGNED MENTORS
@@ -370,7 +395,7 @@ def render_guide_portal(user_profile: dict):
                     st.markdown(f"### Guidance Team for {curr_asp['full_name']}")
                     st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Institutional mentors and specialized domain experts assigned to collaborate on this entrepreneur's scaling journey.</p>", unsafe_allow_html=True)
                     mentors = get_aspirant_mentors(selected_asp_id)
-                    m_guide = mentors.get("guide")
+                    m_guides = mentors.get("guides") or ([mentors.get("guide")] if mentors.get("guide") else [])
                     m_sme = mentors.get("sme")
                     m_smes = mentors.get("smes", [])
                     if not m_smes and m_sme:
@@ -378,17 +403,23 @@ def render_guide_portal(user_profile: dict):
 
                     col_mg1, col_mg2 = st.columns(2)
                     with col_mg1:
-                        st.markdown("#### 🧭 Assigned Guide")
-                        if m_guide:
-                            gp = m_guide.get("profile_data", {})
-                            st.markdown(f"""
-                            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:12px; padding:1.2rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                                <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{m_guide.get('full_name')}</div>
-                                <div style="color:#059669; font-weight:600; font-size:0.85rem; margin-bottom:0.5rem;">Dedicated Enterprise Mentor · {m_guide.get('district', 'Tamil Nadu')}</div>
-                                <p style="font-size:0.88rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {gp.get('expertise', 'Enterprise Guidance')}</p>
-                                <p style="font-size:0.82rem; color:#64748B; margin-top:0.5rem;"><em>"{gp.get('bio', 'Assigned by Administrator')}"</em></p>
-                            </div>
-                            """, unsafe_allow_html=True)
+                        g_hdr = f"🧭 Assigned Guides ({len(m_guides)})" if len(m_guides) > 1 else "🧭 Assigned Guide"
+                        st.markdown(f"#### {g_hdr}")
+                        if m_guides:
+                            for g_idx, g_item in enumerate(m_guides):
+                                gp = g_item.get("profile_data", {})
+                                g_role_badge = "PRIMARY GUIDE" if g_idx == 0 else f"CO-GUIDE #{g_idx + 1}"
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:12px; padding:1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{_safe_esc(g_item.get('full_name'))}</div>
+                                        <span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:6px;">{g_role_badge}</span>
+                                    </div>
+                                    <div style="color:#059669; font-weight:600; font-size:0.85rem; margin-bottom:0.5rem;">Dedicated Enterprise Mentor · {_safe_esc(g_item.get('district', 'Tamil Nadu'))}</div>
+                                    <p style="font-size:0.88rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {_safe_esc(gp.get('expertise', 'Enterprise Guidance'))}</p>
+                                    <p style="font-size:0.82rem; color:#64748B; margin-top:0.5rem;"><em>"{_safe_esc(gp.get('bio', 'Assigned by Administrator'))}"</em></p>
+                                </div>
+                                """, unsafe_allow_html=True)
                         else:
                             st.info("No Guide assigned.")
 
@@ -458,10 +489,14 @@ def render_guide_portal(user_profile: dict):
                         with st.expander(f"📋 View Active Releases for {curr_asp['full_name']} ({len(active_releases)})", expanded=True):
                             for rel in active_releases:
                                 c_r1, c_r2 = st.columns([3.5, 1.2])
+                                cur_rel_stage = rel.get("application_stage") or "Released"
                                 with c_r1:
                                     st.markdown(f"""
                                     <div style="background:#FFFFFF; border:1px solid #BBF7D0; border-left:4px solid #10B981; border-radius:0 10px 10px 0; padding:0.9rem 1.1rem; margin-bottom:0.6rem;">
-                                        <div style="font-weight:800; font-size:1rem; color:#0F172A;">{_safe_esc(rel.get('scheme_name'), default='Scheme')}</div>
+                                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                                            <div style="font-weight:800; font-size:1rem; color:#0F172A;">{_safe_esc(rel.get('scheme_name'), default='Scheme')}</div>
+                                            <span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:6px;">STAGE: {_safe_esc(cur_rel_stage.upper())}</span>
+                                        </div>
                                         <div style="font-size:0.82rem; color:#64748B; margin:2px 0 4px 0;">
                                             {_safe_esc(rel.get('scheme_agency'), default='')} · Released: {str(rel.get('released_at',''))[:10]}
                                         </div>
@@ -471,7 +506,30 @@ def render_guide_portal(user_profile: dict):
                                     </div>
                                     """, unsafe_allow_html=True)
                                 with c_r2:
-                                    st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
+                                    st.markdown("<div style='height:0.3rem;'></div>", unsafe_allow_html=True)
+                                    rel_stg_idx = SCHEME_APPLICATION_STAGES.index(cur_rel_stage) if cur_rel_stage in SCHEME_APPLICATION_STAGES else 0
+                                    new_rel_stg = st.selectbox(
+                                        "Progress Stage",
+                                        options=SCHEME_APPLICATION_STAGES,
+                                        index=rel_stg_idx,
+                                        key=f"guide_stg_sel_{rel.get('scheme_id')}_{rel.get('id')}",
+                                        label_visibility="collapsed"
+                                    )
+                                    if new_rel_stg != cur_rel_stage:
+                                        if st.button("💾 Save Stage", key=f"guide_stg_btn_{rel.get('scheme_id')}_{rel.get('id')}", use_container_width=True):
+                                            ok_st, msg_st = update_scheme_application_stage(
+                                                aspirant_id=selected_asp_id,
+                                                scheme_id=rel.get("scheme_id"),
+                                                actor_id=guide_id,
+                                                actor_role="guide",
+                                                new_stage=new_rel_stg,
+                                            )
+                                            st.session_state[f"guide_subtab_pending_{selected_asp_id}"] = "schemes"
+                                            if ok_st:
+                                                st.session_state[f"guide_release_success_{selected_asp_id}"] = msg_st
+                                                st.rerun()
+                                            else:
+                                                st.error(msg_st)
                                     if st.button("📦 Withdraw Release", key=f"top_withd_{rel.get('scheme_id')}_{rel.get('id')}", use_container_width=True):
                                         ok, w_err = withdraw_scheme_release(guide_id, selected_asp_id, rel.get("scheme_id"))
                                         st.session_state[f"guide_subtab_pending_{selected_asp_id}"] = "schemes"
@@ -882,12 +940,17 @@ def render_guide_portal(user_profile: dict):
                             )
                             st.markdown(card_html, unsafe_allow_html=True)
 
-                            if t_status in ["OPEN", "IN_PROGRESS", "REPLIED"]:
+                            if t_status in ["OPEN", "IN_PROGRESS", "REPLIED", "WAITING_ON_GUIDE_SME", "WAITING_ON_ASPIRANT", "ACTION_REQUIRED"]:
                                 with st.expander(f"💬 Provide Advisory Guidance / Update Status for '{t.get('subject')}'", expanded=False):
                                     with st.form(f"form_guide_resp_sub_{t['id']}"):
                                         c_r1, c_r2 = st.columns([1, 2])
                                         with c_r1:
-                                            new_st = st.selectbox("Update Status", ["IN_PROGRESS", "RESOLVED"], key=f"sel_st_sub_{t['id']}")
+                                            new_st = st.selectbox(
+                                                "Update Status",
+                                                ["WAITING_ON_ASPIRANT", "IN_PROGRESS", "RESOLVED"],
+                                                format_func=lambda x: "Awaiting Founder Action / Documents" if x == "WAITING_ON_ASPIRANT" else ("In Progress (Ongoing Mentorship)" if x == "IN_PROGRESS" else "Resolved (Complete)"),
+                                                key=f"sel_st_sub_{t['id']}"
+                                            )
                                         with c_r2:
                                             resp_text = st.text_area("Guidance / Recommendation *", placeholder="Enter specific instructions or confirm resolution...", height=80, key=f"txt_resp_sub_{t['id']}")
 
@@ -981,7 +1044,7 @@ def render_guide_portal(user_profile: dict):
                     st.markdown(f"#### 💬 Case Discussions & Private Advisory Notes for {curr_asp['full_name']}")
                     st.caption("Collaborate with the entrepreneur and assigned Subject Matter Experts. Notes flagged as Private are concealed from the entrepreneur.")
                     from services.collaboration import list_case_messages, create_case_message
-                    msgs = list_case_messages(selected_asp_id, requesting_role="guide")
+                    msgs = list_case_messages(selected_asp_id, requesting_role="guide", viewer_id=guide_id)
                     if not msgs:
                         st.info("No case discussion messages logged yet.")
                     else:
@@ -1019,9 +1082,11 @@ def render_guide_portal(user_profile: dict):
     # TAB 2: GUIDE CONSULTATIONS QUEUE
     # ─────────────────────────────────────────────────────────────
     with main_tabs[1]:
+      if is_tab_active(main_tabs[1]):
         st.subheader("Assigned Mentee Consultations")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Consultation requests submitted by your assigned entrepreneurs requiring your mentorship and guidance.</p>", unsafe_allow_html=True)
 
+        assigned_aspirants = get_assigned_aspirants_for_guide(guide_id)
         all_guide_tickets_raw = list_guide_requests(guide_id) or []
         assigned_asp_ids = {a["id"] for a in (assigned_aspirants or [])}
         guide_tickets = [t for t in all_guide_tickets_raw if t.get("aspirant_id") in assigned_asp_ids]
@@ -1140,6 +1205,7 @@ def render_guide_portal(user_profile: dict):
     # TAB 3: GUIDE PROFILE & TRANSITION HISTORY
     # ─────────────────────────────────────────────────────────────
     with main_tabs[2]:
+      if is_tab_active(main_tabs[2]):
         st.subheader("👤 My Guide Profile")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Manage your contact information, advisory credentials, and view your mentorship assignment transitions.</p>", unsafe_allow_html=True)
 

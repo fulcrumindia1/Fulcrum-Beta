@@ -926,7 +926,7 @@ def main():
                     ws_options.append(("admin", "🏛️ Admin Dashboard"))
 
                 if not ws_options:
-                    ws_options.append((base_p_role, f"{base_p_role.title()} Dashboard"))
+                    ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
 
             if "active_workspace" not in st.session_state:
                 st.session_state["active_workspace"] = base_p_role
@@ -1021,14 +1021,14 @@ def main():
             # ─────────────────────────────────────────────────────────────────
             # IN-APP NOTIFICATION CENTER (Universal & Mobile-Friendly)
             # ─────────────────────────────────────────────────────────────────
-            from services.notifications import get_unread_count, list_notifications, mark_as_read, mark_all_as_read
-            unread_count = get_unread_count(user_id) if user_id else 0
+            from services.notifications import list_notifications, mark_as_read, mark_all_as_read
+            user_notifs = list_notifications(user_id) if user_id else []
+            unread_count = sum(1 for n in user_notifs if not n.get("is_read"))
             st.session_state["_current_unread_count"] = unread_count
 
             notif_expander_title = f"🔔 Notifications ({unread_count} New)" if unread_count > 0 else "🔔 Notifications"
             with st.expander(notif_expander_title, expanded=(unread_count > 0)):
                 if user_id:
-                    user_notifs = list_notifications(user_id)
                     if not user_notifs:
                         st.caption("No notifications yet.")
                     else:
@@ -1052,53 +1052,6 @@ def main():
                                 if st.button("✓ Dismiss", key=f"btn_dismiss_{n['id']}", help="Mark as read", use_container_width=True):
                                     mark_as_read(n["id"], user_id)
                                     st.rerun()
-
-            # Role-Specific Navigation Links
-            st.markdown("<div style='font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin-top: 0.5rem; margin-bottom: 0.5rem;'>Navigation</div>", unsafe_allow_html=True)
-
-            effective_role = st.session_state.get("active_workspace", role)
-
-            if effective_role == "aspirant":
-                nav_items = [
-                    "📊 Dashboard Overview",
-                    "👤 My Profile",
-                    "🎬 My Journey",
-                    "🤝 My Mentors",
-                    "🏦 Scheme Matches",
-                    "🤝 Consult a Guide or SME"
-                ]
-            elif effective_role == "guide":
-                nav_items = [
-                    "👥 My Aspirants",
-                    "💬 All Consultations Overview",
-                    "👤 My Profile"
-                ]
-            elif effective_role == "sme":
-                nav_items = [
-                    "👥 My Assigned Cases",
-                    "💬 All Consultations Overview",
-                    "👤 My Profile"
-                ]
-            elif effective_role in ("admin", "district_admin", "operational_admin"):
-                nav_items = [
-                    "📊 Command Metrics",
-                    "👥 Aspirants Directory",
-                    "🧭 Guides Management",
-                    "🔬 SMEs Management",
-                    "🤝 Mentorship Assignments",
-                    "🏛️ Mentor Inquiries & Directives",
-                    "🏛️ Scheme Catalogue",
-                    "🔑 Multi-Role Grants",
-                    "📜 Legal & NDA Records",
-                    "🛡️ Confidential Complaints",
-                    "⏱️ Inactivity Monitor",
-                    "⚖️ SME Conflict Governance"
-                ]
-            else:
-                nav_items = ["Dashboard"]
-
-            for item in nav_items:
-                st.markdown(f"<div style='font-size: 0.85rem; color: #cbd5e1; padding: 6px 10px; border-radius: 6px; margin-bottom: 3px; background: rgba(255,255,255,0.03);'>✓ {item}</div>", unsafe_allow_html=True)
 
             st.write("")
             if st.button("🚪 Logout", use_container_width=True, key="btn_sidebar_logout"):

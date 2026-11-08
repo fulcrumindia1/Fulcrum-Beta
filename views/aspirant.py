@@ -26,7 +26,7 @@ from services.profiles import get_profile, update_aspirant_profile
 from services.relationships import get_aspirant_mentors
 from services.journey import get_journey_timeline, add_manual_aspirant_entry, soft_delete_event, get_standard_role_label, toggle_event_roadmap_inclusion
 from views.journey_edit_dialog import render_edit_journey_dialog
-from services.schemes import get_released_schemes_for_aspirant
+from services.schemes import get_released_schemes_for_aspirant, SCHEME_APPLICATION_STAGES, update_scheme_application_stage
 from services.schemes_ui import render_fund_explorer_card
 from services.help_requests import create_request, list_requests, aspirant_respond_request
 from services.constants import (
@@ -89,6 +89,7 @@ def render_aspirant_portal(user_profile: dict):
     # TAB 1: OVERVIEW
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
+      if is_tab_active(tabs[0]):
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
@@ -99,7 +100,8 @@ def render_aspirant_portal(user_profile: dict):
             </div>
             """, unsafe_allow_html=True)
         with c2:
-            g_text = guide.get("full_name") if guide else "Pending Admin Assignment"
+            all_guides_ov = mentors.get("guides") or ([guide] if guide else [])
+            g_text = ", ".join([g.get("full_name", "Guide") for g in all_guides_ov if g]) if all_guides_ov else "Pending Admin Assignment"
             st.markdown(f"""
             <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #10b981; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
                 <div style="font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px;">My Dedicated Guide</div>
@@ -200,13 +202,14 @@ def render_aspirant_portal(user_profile: dict):
     # TAB 2: MY PROFILE (Naukri/LinkedIn Style)
     # ─────────────────────────────────────────────────────────────
     with tabs[1]:
+      if is_tab_active(tabs[1]):
         st.markdown("### 📋 Entrepreneur Profile")
         st.markdown("<p style='color:#475569; font-size:0.9rem;'>Keep this profile updated. Changes automatically recalculate your recommended funding schemes and record journey updates.</p>", unsafe_allow_html=True)
 
         # ── ASPIRANT PROFILE PHOTO MANAGEMENT (Isolated from Journey/Schemes) ──
         from services.aspirant_photos import get_aspirant_photo, upload_aspirant_photo, delete_aspirant_photo
         user_asp_id = profile["id"]
-        current_photo = get_aspirant_photo(user_asp_id)
+        current_photo = get_aspirant_photo(user_asp_id, viewer_id=user_asp_id, viewer_role="aspirant")
 
         with st.container(border=True):
             col_ph1, col_ph2, col_ph3 = st.columns([1.2, 3.8, 2.5])
@@ -270,11 +273,8 @@ def render_aspirant_portal(user_profile: dict):
                 cur_gen = cur_personal.get("gender", "Male")
                 gen_idx, gen_custom = resolve_field_choice(cur_gen, MASTER_GENDERS, "Other / Prefer Not to Say")
                 f_gender_sel = st.selectbox("Gender", MASTER_GENDERS, index=gen_idx)
-                f_gender = f_gender_sel
-                if f_gender_sel == "Other / Prefer Not to Say":
-                    f_gen_c = st.text_input("Specify Gender (Optional)", value=gen_custom, key="prof_custom_gender")
-                    if f_gen_c and f_gen_c.strip():
-                        f_gender = f_gen_c.strip()
+                f_gen_c = st.text_input("Custom Gender (if 'Other' selected)", value=gen_custom, key="prof_custom_gender", placeholder="Optional")
+                f_gender = f_gen_c.strip() if (f_gender_sel == "Other / Prefer Not to Say" and f_gen_c and f_gen_c.strip()) else f_gender_sel
             with col_p3:
                 f_dob = st.text_input("Date of Birth (DD-MM-YYYY)", value=cur_personal.get("dob", "15-08-1995"))
                 f_address = st.text_input("Address", value=cur_personal.get("address", ""))
@@ -297,11 +297,8 @@ def render_aspirant_portal(user_profile: dict):
                 cur_btype = cur_biz.get("business_type", "Manufacturing")
                 btype_idx, btype_custom = resolve_field_choice(cur_btype, MASTER_BUSINESS_TYPES, "Other / Hybrid (Specify)")
                 b_type_sel = st.selectbox("Business Type *", MASTER_BUSINESS_TYPES, index=btype_idx)
-                b_type = b_type_sel
-                if b_type_sel == "Other / Hybrid (Specify)":
-                    b_type_custom_in = st.text_input("Specify Business Type *", value=btype_custom, placeholder="e.g. Contract R&D / Hybrid Studio", key="prof_custom_btype")
-                    if b_type_custom_in and b_type_custom_in.strip():
-                        b_type = b_type_custom_in.strip()
+                b_type_custom_in = st.text_input("Custom Business Type (if 'Other' selected)", value=btype_custom, placeholder="e.g. Contract R&D / Hybrid Studio", key="prof_custom_btype")
+                b_type = b_type_custom_in.strip() if (b_type_sel == "Other / Hybrid (Specify)" and b_type_custom_in and b_type_custom_in.strip()) else b_type_sel
 
                 activity_options = [
                     "Manufacturing / Production",
@@ -319,11 +316,8 @@ def render_aspirant_portal(user_profile: dict):
                 cur_sec = cur_biz.get("sector", "Food Processing & Agribusiness")
                 sec_idx, sec_custom = resolve_field_choice(cur_sec, MASTER_SECTORS, "Other / Not Listed (Specify)")
                 b_sector_sel = st.selectbox("Industry Sector *", MASTER_SECTORS, index=sec_idx)
-                b_sector = b_sector_sel
-                if b_sector_sel == "Other / Not Listed (Specify)":
-                    b_sec_custom_in = st.text_input("Specify Custom Industry Sector *", value=sec_custom, placeholder="e.g. SpaceTech, Marine Biotechnology", key="prof_custom_sec")
-                    if b_sec_custom_in and b_sec_custom_in.strip():
-                        b_sector = b_sec_custom_in.strip()
+                b_sec_custom_in = st.text_input("Custom Industry Sector (if 'Other' selected)", value=sec_custom, placeholder="e.g. SpaceTech, Marine Biotechnology", key="prof_custom_sec")
+                b_sector = b_sec_custom_in.strip() if (b_sector_sel == "Other / Not Listed (Specify)" and b_sec_custom_in and b_sec_custom_in.strip()) else b_sector_sel
 
                 b_subsector = st.text_input(
                     "Subsector / Specific Activity (optional)",
@@ -336,11 +330,8 @@ def render_aspirant_portal(user_profile: dict):
                 stg_idx, stg_custom = resolve_field_choice(cur_stg, MASTER_STAGES, "Other / Multi-Stage (Specify)", default_index=1)
                 b_stage_sel = st.selectbox("Development Stage *", MASTER_STAGES, index=stg_idx)
                 st.caption(f"ℹ️ {STAGE_DESCRIPTIONS.get(b_stage_sel, '')}")
-                b_stage = b_stage_sel
-                if b_stage_sel == "Other / Multi-Stage (Specify)":
-                    b_stg_custom_in = st.text_input("Specify Development Stage *", value=stg_custom, placeholder="e.g. Commercialization Phase", key="prof_custom_stg")
-                    if b_stg_custom_in and b_stg_custom_in.strip():
-                        b_stage = b_stg_custom_in.strip()
+                b_stg_custom_in = st.text_input("Custom Development Stage (if 'Other' selected)", value=stg_custom, placeholder="e.g. Commercialization Phase", key="prof_custom_stg")
+                b_stage = b_stg_custom_in.strip() if (b_stage_sel == "Other / Multi-Stage (Specify)" and b_stg_custom_in and b_stg_custom_in.strip()) else b_stage_sel
             with col_b3:
                 b_revenue = st.text_input("Annual Revenue / MRR", value=cur_biz.get("revenue", ""), placeholder="e.g. ₹10,00,000 / year")
                 b_team = st.number_input("Employee Count", min_value=0, max_value=500, value=int(cur_biz.get("employee_count", 1)))
@@ -354,11 +345,8 @@ def render_aspirant_portal(user_profile: dict):
                 cur_dist = profile.get("district") or cur_demo.get("district") or "Chennai"
                 dist_idx, dist_custom = resolve_field_choice(cur_dist, MASTER_DISTRICTS_TN, "Other District / Non-TN (Specify)", default_index=1)
                 d_dist_sel = st.selectbox("District *", MASTER_DISTRICTS_TN, index=dist_idx)
-                d_final_district = d_dist_sel
-                if d_dist_sel == "Other District / Non-TN (Specify)":
-                    d_other_dist = st.text_input("Specify District / City / State *", value=dist_custom, placeholder="e.g. Bengaluru (Karnataka), Mumbai (Maharashtra)", key="profile_other_district")
-                    if d_other_dist and d_other_dist.strip():
-                        d_final_district = d_other_dist.strip()
+                d_other_dist = st.text_input("Custom District / State (if 'Other' selected)", value=dist_custom, placeholder="e.g. Bengaluru (Karnataka), Mumbai (Maharashtra)", key="profile_other_district")
+                d_final_district = d_other_dist.strip() if (d_dist_sel == "Other District / Non-TN (Specify)" and d_other_dist and d_other_dist.strip()) else d_dist_sel
                 is_tn = d_dist_sel != "Other District / Non-TN (Specify)"
                 d_state = st.text_input("State", value="Tamil Nadu" if is_tn else "Other State", disabled=True)
             with col_d2:
@@ -366,11 +354,8 @@ def render_aspirant_portal(user_profile: dict):
                 cat_idx, cat_custom = resolve_field_choice(cur_cat, MASTER_SOCIAL_CATEGORIES, "Other / Prefer Not to Disclose", default_index=0)
                 d_cat_sel = st.selectbox("Founder Category (for Subsidies)", MASTER_SOCIAL_CATEGORIES, index=cat_idx)
                 st.caption("ℹ️ Used for statutory affirmative quotas (e.g. Special capital subsidies for SC/ST/OBC).")
-                d_cat = d_cat_sel
-                if d_cat_sel == "Other / Prefer Not to Disclose":
-                    d_cat_custom_in = st.text_input("Specify Category (Optional)", value=cat_custom, placeholder="e.g. Special Category", key="prof_custom_cat")
-                    if d_cat_custom_in and d_cat_custom_in.strip():
-                        d_cat = d_cat_custom_in.strip()
+                d_cat_custom_in = st.text_input("Custom Founder Category (if 'Other' selected)", value=cat_custom, placeholder="e.g. Special Category", key="prof_custom_cat")
+                d_cat = d_cat_custom_in.strip() if (d_cat_sel == "Other / Prefer Not to Disclose" and d_cat_custom_in and d_cat_custom_in.strip()) else d_cat_sel
             with col_d3:
                 st.markdown("<p style='font-size:0.85rem; font-weight:600; margin-bottom:0.3rem;'>Statutory Registrations & Quotas</p>", unsafe_allow_html=True)
                 d_udyam = st.checkbox("Udyam (MSME) Registered", value=bool(cur_demo.get("is_udyam_registered", False)))
@@ -453,6 +438,7 @@ def render_aspirant_portal(user_profile: dict):
     # TAB 3: MY JOURNEY (The Core Movie / Timeline)
     # ─────────────────────────────────────────────────────────────
     with tabs[2]:
+      if is_tab_active(tabs[2]):
         st.markdown("### 🎬 The Entrepreneur's Journey")
         st.markdown("<p style='color:#475569; font-size:0.9rem;'>The living story of your venture. Every milestone, mentor session, and operational breakthrough is preserved here.</p>", unsafe_allow_html=True)
 
@@ -602,13 +588,23 @@ def render_aspirant_portal(user_profile: dict):
                             if st.button("✏️", key=f"edit_ev_{event['id']}", help="Edit this journey entry"):
                                 render_edit_journey_dialog(event, user_id, "aspirant")
                         with c_dl:
-                            if st.button("🗑️", key=f"del_ev_{event['id']}", help="Delete your entry"):
-                                ok, err = soft_delete_event(event["id"], user_id, "aspirant")
-                                if ok:
-                                    st.session_state["del_event_success"] = "Entry deleted from your journey."
-                                else:
-                                    st.session_state["del_event_err"] = err or "Could not delete entry."
-                                st.rerun()
+                            confirm_key = f"confirm_del_ev_{event['id']}"
+                            if st.session_state.get(confirm_key):
+                                if st.button("✓ Yes", key=f"yes_del_ev_{event['id']}", type="primary", help="Confirm delete"):
+                                    st.session_state.pop(confirm_key, None)
+                                    ok, err = soft_delete_event(event["id"], user_id, "aspirant")
+                                    if ok:
+                                        st.session_state["del_event_success"] = "Entry deleted from your journey."
+                                    else:
+                                        st.session_state["del_event_err"] = err or "Could not delete entry."
+                                    st.rerun()
+                                if st.button("✕", key=f"no_del_ev_{event['id']}", help="Cancel delete"):
+                                    st.session_state.pop(confirm_key, None)
+                                    st.rerun()
+                            else:
+                                if st.button("🗑️", key=f"del_ev_{event['id']}", help="Delete your entry"):
+                                    st.session_state[confirm_key] = True
+                                    st.rerun()
                     else:
                         # For contributions by Guide, SME, or Admin, the founder can curate their roadmap
                         if is_included:
@@ -631,26 +627,37 @@ def render_aspirant_portal(user_profile: dict):
     # ─────────────────────────────────────────────────────────────
     # TAB 4: MY MENTORS
     # ─────────────────────────────────────────────────────────────
-    # ─────────────────────────────────────────────────────────────
-    # TAB 4: MY MENTORS
-    # ─────────────────────────────────────────────────────────────
     with tabs[3]:
+      if is_tab_active(tabs[3]):
         st.markdown("### 🤝 Dedicated Guidance Team")
         col_m1, col_m2 = st.columns(2)
 
         with col_m1:
-            st.markdown("#### 🧭 Your Assigned Guide")
-            if guide:
-                g_p = guide.get("profile_data", {})
-                st.markdown(f"""
-                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:14px; padding:1.5rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-                    <div style="font-size:1.3rem; font-weight:800; color:#0F172A;">{guide.get('full_name')}</div>
-                    <div style="color:#059669; font-size:0.85rem; font-weight:600; margin-bottom:0.75rem;">Dedicated Enterprise Mentor</div>
-                    <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {g_p.get('expertise', 'Business Guidance & Planning')}</p>
-                    <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Location:</strong> {guide.get('district', 'Tamil Nadu')}</p>
-                    <p style="font-size:0.85rem; color:#64748B; margin-top:0.75rem;"><em>"{g_p.get('bio', 'Dedicated enterprise mentor assigned to assist in strategy and loan execution.')}"</em></p>
-                </div>
-                """, unsafe_allow_html=True)
+            guides_list = mentors.get("guides") or ([guide] if guide else [])
+            g_header = f"🧭 Your Assigned Guides ({len(guides_list)})" if len(guides_list) > 1 else "🧭 Your Assigned Guide"
+            st.markdown(f"#### {g_header}")
+            if guides_list:
+                for g_idx, g_item in enumerate(guides_list):
+                    g_p = g_item.get("profile_data", {})
+                    g_label = "Primary Dedicated Guide" if g_idx == 0 else f"Co-Guide #{g_idx + 1}"
+                    g_role_status = g_item.get("role_status", "active")
+                    status_pill = (
+                        '<span style="background:#FEF3C7; color:#92400E; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">⏸️ Temporarily Unavailable</span>'
+                        if g_role_status == "suspended" else
+                        '<span style="background:#ECFDF5; color:#065F46; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">● Active</span>'
+                    )
+                    st.markdown(f"""
+                    <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:14px; padding:1.5rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="font-size:1.3rem; font-weight:800; color:#0F172A;">{_safe_esc(g_item.get('full_name'))}</div>
+                            {status_pill}
+                        </div>
+                        <div style="color:#059669; font-size:0.85rem; font-weight:600; margin-bottom:0.75rem;">{g_label} · Dedicated Enterprise Mentor</div>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {_safe_esc(g_p.get('expertise', 'Business Guidance & Planning'))}</p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Location:</strong> {_safe_esc(g_item.get('district', 'Tamil Nadu'))}</p>
+                        <p style="font-size:0.85rem; color:#64748B; margin-top:0.75rem;"><em>"{_safe_esc(g_p.get('bio', 'Dedicated enterprise mentor assigned to assist in strategy and loan execution.'))}"</em></p>
+                    </div>
+                    """, unsafe_allow_html=True)
             else:
                 st.info("🧭 No Dedicated Guide assigned yet. A dedicated enterprise mentor will be assigned shortly.")
 
@@ -668,16 +675,23 @@ def render_aspirant_portal(user_profile: dict):
                     s_exp = s_p.get("expertise") or s_p.get("industry") or "Technical & Compliance Advisory"
                     s_ind = s_p.get("industry") or "Specialized Domain"
                     s_bio = s_p.get("bio") or "Assigned to provide specialized technical audit and compliance guidance."
+                    s_role_status = s_item.get("role_status", "active")
+                    s_status_pill = (
+                        '<span style="background:#FEF3C7; color:#92400E; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">⏸️ Temporarily Unavailable</span>'
+                        if s_role_status == "suspended" else
+                        '<span style="background:#ECFDF5; color:#065F46; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">● Active</span>'
+                    )
                     st.markdown(f"""
                     <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:14px; padding:1.25rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
                         <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{s_name}</div>
+                            <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{_safe_esc(s_name)}</div>
+                            {s_status_pill}
                         </div>
                         <div style="color:#D97706; font-size:0.85rem; font-weight:600; margin-bottom:0.75rem;">Subject Matter Expert · Specialist #{idx+1}</div>
-                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Specialization:</strong> {s_exp}</p>
-                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Location:</strong> {s_item.get('district', 'Tamil Nadu')}</p>
-                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Industry:</strong> {s_ind}</p>
-                        <p style="font-size:0.85rem; color:#64748B; margin-top:0.75rem;"><em>"{s_bio}"</em></p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Specialization:</strong> {_safe_esc(s_exp)}</p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Location:</strong> {_safe_esc(s_item.get('district', 'Tamil Nadu'))}</p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Industry:</strong> {_safe_esc(s_ind)}</p>
+                        <p style="font-size:0.85rem; color:#64748B; margin-top:0.75rem;"><em>"{_safe_esc(s_bio)}"</em></p>
                     </div>
                     """, unsafe_allow_html=True)
             else:
@@ -709,13 +723,35 @@ def render_aspirant_portal(user_profile: dict):
                     ok, res = submit_guide_complaint(user_id, target_guide_id, complaint_reason[0], complaint_details)
                     if ok:
                         st.success("Your request has been submitted confidentially to Fulcrum Support for immediate review.")
+                        st.rerun()
                     else:
                         st.error(res or "Failed to submit request.")
+
+            from services.governance import list_aspirant_complaints
+            my_complaints = list_aspirant_complaints(user_id)
+            if my_complaints:
+                st.markdown("##### 📋 Your Submitted Confidential Support Reports")
+                for mc in my_complaints:
+                    mc_status = str(mc.get("status", "open")).upper()
+                    mc_badge_bg = "#10B981" if mc_status == "RESOLVED" else "#3B82F6" if mc_status == "REVIEWED" else "#F59E0B"
+                    mc_note = mc.get("resolution_notes") or ""
+                    mc_note_html = f'<div style="margin-top:4px; font-size:0.82rem; color:#1E40AF;"><strong>Fulcrum Support Update:</strong> {_safe_esc(mc_note)}</div>' if mc_note else ""
+                    st.markdown(f"""
+                    <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.75rem 1rem; margin-bottom:0.5rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-size:0.85rem; font-weight:700; color:#0F172A;">Reason: {_safe_esc(str(mc.get('reason_category', '')).replace('_', ' ').title())} · {str(mc.get('created_at', ''))[:10]}</span>
+                            <span style="background:{mc_badge_bg}; color:#ffffff; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:6px;">{mc_status}</span>
+                        </div>
+                        <div style="font-size:0.82rem; color:#475569; margin-top:4px;">{_safe_esc(mc.get('details', ''))}</div>
+                        {mc_note_html}
+                    </div>
+                    """, unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────────────────────
     # TAB 5: SCHEME MATCHES (Curated & Released by Guide)
     # ─────────────────────────────────────────────────────────────
     with tabs[4]:
+      if is_tab_active(tabs[4]):
         st.markdown("### 🏦 Funding Intelligence & Scheme Recommendations")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Review officially verified and released scheme dossiers curated for your venture by your dedicated Guide using AI scheme intelligence.</p>", unsafe_allow_html=True)
 
@@ -740,31 +776,62 @@ def render_aspirant_portal(user_profile: dict):
                 for j, s in enumerate(row_schemes):
                     with cols[j]:
                         render_fund_explorer_card(s, user_id=user_id, is_aspirant=True, key_prefix=f"asp_rel_{i}_{j}")
+                        cur_stage = s.get("application_stage") or "Released"
+                        stage_idx = SCHEME_APPLICATION_STAGES.index(cur_stage) if cur_stage in SCHEME_APPLICATION_STAGES else 0
+                        with st.expander(f"📈 Application Stage: {cur_stage}", expanded=False):
+                            new_stg = st.selectbox(
+                                "Current Application Progress",
+                                options=SCHEME_APPLICATION_STAGES,
+                                index=stage_idx,
+                                key=f"sel_stg_{s['id']}_{i}_{j}"
+                            )
+                            stg_note = st.text_input(
+                                "Milestone / Reference Note (optional)",
+                                placeholder="e.g., Submitted DIC application ref #104",
+                                key=f"note_stg_{s['id']}_{i}_{j}"
+                            )
+                            if st.button("Save Progress Stage", key=f"btn_stg_{s['id']}_{i}_{j}", use_container_width=True):
+                                ok_s, msg_s = update_scheme_application_stage(
+                                    aspirant_id=user_id,
+                                    scheme_id=s["id"],
+                                    actor_id=user_id,
+                                    actor_role="aspirant",
+                                    new_stage=new_stg,
+                                    stage_note=stg_note,
+                                )
+                                if ok_s:
+                                    st.success(msg_s)
+                                    st.rerun()
+                                else:
+                                    st.error(msg_s)
 
     # ─────────────────────────────────────────────────────────────
     # TAB 6: CONSULT A GUIDE OR SME (Strictly Guides and SMEs)
     # ─────────────────────────────────────────────────────────────
     with tabs[5]:
+      if is_tab_active(tabs[5]):
         st.markdown("### 🤝 Consult a Guide or SME")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Need guidance on scheme applications, DPR preparation, GST compliance, or technical mentoring? Submit a consultation request directly to your assigned Guide or Domain SME.</p>", unsafe_allow_html=True)
 
         mentors = get_aspirant_mentors(user_id)
-        g_assigned = mentors.get("guide")
+        guides_assigned = mentors.get("guides") or ([mentors.get("guide")] if mentors.get("guide") else [])
         smes_assigned = mentors.get("smes") or ([mentors.get("sme")] if mentors.get("sme") else [])
 
-        # Build dynamic mentor recipient options
+        # Build dynamic mentor recipient options (including Co-Guides and multiple SMEs)
         mentor_choices = []
-        if g_assigned:
-            g_name = g_assigned.get("full_name") or "Dedicated Guide"
-            g_exp = g_assigned.get("profile_data", {}).get("expertise", "Business Guidance & Planning")
-            mentor_choices.append({
-                "key": f"guide_{g_assigned['id']}",
-                "role": "guide",
-                "mentor_id": g_assigned["id"],
-                "name": g_name,
-                "label": f"🧭 Dedicated Guide — {g_name} ({g_exp})",
-                "available": True
-            })
+        if guides_assigned:
+            for g_idx, g_item in enumerate(guides_assigned):
+                g_name = g_item.get("full_name") or "Dedicated Guide"
+                g_exp = g_item.get("profile_data", {}).get("expertise", "Business Guidance & Planning")
+                g_prefix = "Dedicated Guide" if g_idx == 0 else f"Co-Guide #{g_idx + 1}"
+                mentor_choices.append({
+                    "key": f"guide_{g_item['id']}",
+                    "role": "guide",
+                    "mentor_id": g_item["id"],
+                    "name": g_name,
+                    "label": f"🧭 {g_prefix} — {g_name} ({g_exp})",
+                    "available": g_item.get("role_status", "active") != "suspended"
+                })
         else:
             mentor_choices.append({
                 "key": "guide_none",
@@ -786,7 +853,7 @@ def render_aspirant_portal(user_profile: dict):
                     "mentor_id": s["id"],
                     "name": s_name,
                     "label": f"🔬 Domain SME — {s_name} ({s_exp})",
-                    "available": True
+                    "available": s.get("role_status", "active") != "suspended"
                 })
         else:
             mentor_choices.append({
@@ -811,22 +878,17 @@ def render_aspirant_portal(user_profile: dict):
                 selected_mentor = mentor_choices[sel_mentor_idx]
 
             with col_hp_cat:
-                if selected_mentor["role"] == "guide":
-                    cat_options = {
-                        "GENERAL": "General Mentorship & Strategic Planning",
-                        "BANKING_DPR": "Banking, DPR & Project Report Review",
-                        "SCHEMES_SUBSIDIES": "Government Scheme Matching & Subsidies",
-                        "SCALING_OPERATIONS": "Venture Scaling & Operational Guidance",
-                        "OTHERS": "Others (Specify Below)"
-                    }
-                else:
-                    cat_options = {
-                        "GST_TAXATION": "GST, Taxation & Direct Tax Compliance",
-                        "LEGAL_COMPLIANCE": "Company Law, Contracts & Statutory Legal",
-                        "FSSAI_FOOD": "FSSAI Certification, Lab Testing & Food Standards",
-                        "PATENTS_IPR": "Patents, Trademarks & IP Protection",
-                        "OTHERS": "Others (Specify Below)"
-                    }
+                cat_options = {
+                    "GENERAL": "General Mentorship & Strategic Planning",
+                    "BANKING_DPR": "Banking, DPR & Project Report Review",
+                    "SCHEMES_SUBSIDIES": "Government Scheme Matching & Subsidies",
+                    "SCALING_OPERATIONS": "Venture Scaling & Operational Guidance",
+                    "GST_TAXATION": "GST, Taxation & Direct Tax Compliance",
+                    "LEGAL_COMPLIANCE": "Company Law, Contracts & Statutory Legal",
+                    "FSSAI_FOOD": "FSSAI Certification, Lab Testing & Food Standards",
+                    "PATENTS_IPR": "Patents, Trademarks & IP Protection",
+                    "OTHERS": "Others (Specify Below)"
+                }
 
                 h_cat_key = st.selectbox(
                     "Help Topic / Category *",
@@ -835,14 +897,11 @@ def render_aspirant_portal(user_profile: dict):
                     help="Select the category that best describes your inquiry."
                 )
 
-            # Dynamic custom topic input when 'OTHERS' is selected
-            h_cat_detail = ""
-            if h_cat_key == "OTHERS":
-                h_cat_detail = st.text_input(
-                    "Specify Topic / Issue Details *",
-                    placeholder="e.g., Export License, Machinery Import Clearance, Angel Tax, Pollution Board NOC",
-                    help="Provide a brief description of the specific topic or issue you need assistance with."
-                )
+            h_cat_detail = st.text_input(
+                "Custom Topic / 'Others' Details (if 'Others' selected above)",
+                placeholder="e.g., Export License, Machinery Import Clearance, Angel Tax, Pollution Board NOC",
+                help="Required when 'Others (Specify Below)' is selected as the Help Topic / Category."
+            )
 
             h_subj = st.text_input("Subject *", placeholder="e.g., DPR Quotations Review, GST Audit Notice, PMEGP Subsidy Query")
 
@@ -867,19 +926,19 @@ def render_aspirant_portal(user_profile: dict):
                 """, unsafe_allow_html=True)
             else:
                 if target_role == "guide":
-                    st.warning("⚠️ A Dedicated Guide has not yet been assigned to your venture. Please select an assigned Domain Specialist, or check back once a Guide has been allocated.")
+                    st.warning("⚠️ A Dedicated Guide is not currently available or assigned. Please select an active Domain Specialist, or check back once a Guide is active.")
                 else:
-                    st.info("ℹ️ No Domain SME is assigned yet. You may direct your consultation request to your Dedicated Guide.")
+                    st.info("ℹ️ No active Domain SME is assigned yet. You may direct your consultation request to your Dedicated Guide.")
 
             if st.form_submit_button("SUBMIT CONSULTATION REQUEST", type="primary"):
                 if not is_available:
-                    st.error(f"Cannot submit request: {target_person} is not yet assigned. Please select an active mentor.")
+                    st.error(f"Cannot submit request: {target_person} is not currently available. Please select an active mentor.")
                 elif not h_subj.strip():
                     st.error("Please provide a Subject for your inquiry.")
                 elif not h_msg.strip():
                     st.error("Please provide a Message / Description.")
                 elif h_cat_key == "OTHERS" and not h_cat_detail.strip():
-                    st.error("Please specify your topic or issue details in the 'Specify Topic / Issue Details' field.")
+                    st.error("Please specify your topic or issue details in the 'Custom Topic / Others Details' field.")
                 else:
                     req, err = create_request(
                         aspirant_id=user_id,
@@ -903,7 +962,7 @@ def render_aspirant_portal(user_profile: dict):
             st.info("No consultation requests submitted yet.")
         else:
             for r in my_reqs:
-                st_color = "#f59e0b" if r["status"] == "OPEN" else "#3b82f6" if r["status"] in ["IN_PROGRESS", "REPLIED"] else "#10b981"
+                st_color = "#f59e0b" if r["status"] in ("OPEN", "WAITING_ON_ASPIRANT") else "#3b82f6" if r["status"] in ("IN_PROGRESS", "REPLIED", "WAITING_ON_GUIDE_SME") else "#10b981"
                 if r.get("category") == "OTHERS" and r.get("category_detail"):
                     cat_badge = f"OTHERS: {r.get('category_detail')}"
                 else:
@@ -929,11 +988,11 @@ def render_aspirant_portal(user_profile: dict):
                     origin_badge = f'<span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:4px; margin-left:8px;">TARGET: {_safe_esc(target_name)}</span>'
                     border_color = "#E2E8F0"
 
-                g_resp_html = f'<div style="background:#EFF6FF; border-left:3px solid #3B82F6; border:1px solid #BFDBFE; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#1E40AF; margin-top:0.5rem;"><strong>🧭 Guide Response:</strong> {_safe_esc(r.get("guide_response"))}</div>' if r.get('guide_response') else ''
-                s_resp_html = f'<div style="background:#FFFBEB; border-left:3px solid #F59E0B; border:1px solid #FDE68A; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#92400E; margin-top:0.5rem;"><strong>🔬 SME Advisory Response:</strong> {_safe_esc(r.get("sme_response"))}</div>' if r.get('sme_response') else ''
+                g_resp_html = f'<div style="background:#EFF6FF; border-left:3px solid #3B82F6; border:1px solid #BFDBFE; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#1E40AF; margin-top:0.5rem; white-space:pre-wrap;"><strong>🧭 Guide Response:</strong> {_safe_esc(r.get("guide_response"))}</div>' if r.get('guide_response') else ''
+                s_resp_html = f'<div style="background:#FFFBEB; border-left:3px solid #F59E0B; border:1px solid #FDE68A; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#92400E; margin-top:0.5rem; white-space:pre-wrap;"><strong>🔬 SME Advisory Response:</strong> {_safe_esc(r.get("sme_response"))}</div>' if r.get('sme_response') else ''
 
                 asp_reply = r.get("aspirant_response") or (r.get("admin_response", "").replace("Aspirant Reply: ", "") if str(r.get("admin_response", "")).startswith("Aspirant Reply: ") else "")
-                asp_resp_html = f'<div style="background:#F0FDF4; border-left:3px solid #10B981; border:1px solid #BBF7D0; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#166534; margin-top:0.5rem;"><strong>🌱 Your Submitted Reply / Update:</strong> {_safe_esc(asp_reply)}</div>' if asp_reply else ''
+                asp_resp_html = f'<div style="background:#F0FDF4; border-left:3px solid #10B981; border:1px solid #BBF7D0; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#166534; margin-top:0.5rem; white-space:pre-wrap;"><strong>🌱 Your Submitted Reply / Update:</strong> {_safe_esc(asp_reply)}</div>' if asp_reply else ''
 
                 card_html = (
                     f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:12px; padding:1.25rem; margin-bottom:0.85rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">'
@@ -951,14 +1010,18 @@ def render_aspirant_portal(user_profile: dict):
                 )
                 st.markdown(card_html, unsafe_allow_html=True)
 
-                # If this ticket was initiated by a mentor and the founder hasn't replied yet, provide inline reply form
-                if is_mentor_init and r.get("status") in ["OPEN", "ACTION_REQUIRED"] and not asp_reply:
-                    mentor_author = (r.get("guide_name") or "Dedicated Guide") if req_role == "guide" else (r.get("sme_name") or "Domain Specialist")
-                    with st.expander(f"💬 Reply / Submit Updates to {mentor_author}", expanded=True):
+                # Allow Aspirant to submit a reply or follow-up update on any active ticket
+                if r.get("status") in ("OPEN", "IN_PROGRESS", "WAITING_ON_ASPIRANT", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED"):
+                    if r.get("target_role") == "sme" or req_role == "sme":
+                        mentor_author = r.get("sme_name") or "Domain Specialist"
+                    else:
+                        mentor_author = r.get("guide_name") or "Dedicated Guide"
+                    expand_by_default = (r.get("status") in ("WAITING_ON_ASPIRANT", "ACTION_REQUIRED")) or (is_mentor_init and not asp_reply)
+                    with st.expander(f"💬 Reply / Submit Follow-Up Update to {mentor_author}", expanded=expand_by_default):
                         with st.form(f"form_asp_reply_{r['id']}"):
                             asp_reply_text = st.text_area(
                                 f"Your Reply / Action Updates for {mentor_author} *",
-                                placeholder=f"Provide the requested information, clarification, or confirm action taken...",
+                                placeholder="Provide requested information, clarification, or a follow-up update...",
                                 height=80,
                                 key=f"txt_asp_reply_{r['id']}"
                             )
@@ -977,7 +1040,7 @@ def render_aspirant_portal(user_profile: dict):
         st.markdown("<div style='height:1.5rem;'></div>", unsafe_allow_html=True)
         st.markdown("### 💬 Advisory Case Discussions & Collaboration")
         from services.collaboration import list_case_messages, create_case_message
-        case_msgs = list_case_messages(user_id, requesting_role="aspirant")
+        case_msgs = list_case_messages(user_id, requesting_role="aspirant", viewer_id=user_id)
         with st.expander(f"Case Discussion Board ({len(case_msgs)} messages)", expanded=False):
             if not case_msgs:
                 st.caption("No advisory case discussion messages posted yet.")

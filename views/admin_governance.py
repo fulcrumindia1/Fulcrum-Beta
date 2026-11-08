@@ -136,21 +136,21 @@ def render_admin_role_grants_tab(admin_id: str):
         if sel_target_user:
             primary_r = sel_target_user.get("primary_role", "aspirant")
             for r in sel_target_user.get("active_roles", []):
-                if r != primary_r:
+                if r in ("guide", "sme") or r != primary_r:
                     grants.append((r, "ACTIVE"))
             for r in sel_target_user.get("pending_nda_roles", []):
-                if r != primary_r:
+                if r in ("guide", "sme") or r != primary_r:
                     grants.append((r, "PENDING NDA"))
             for r in sel_target_user.get("suspended_roles", []):
-                if r != primary_r:
+                if r in ("guide", "sme") or r != primary_r:
                     grants.append((r, "SUSPENDED"))
             for r in sel_target_user.get("revoked_roles", []):
-                if r != primary_r:
+                if r in ("guide", "sme") or r != primary_r:
                     grants.append((r, "REVOKED"))
 
         if not grants:
             p_label = sel_target_user.get('primary_role', 'user').title() if sel_target_user else "registered"
-            st.caption(f"ℹ️ This user holds only their registered primary role ({p_label}). No secondary role grants to manage.")
+            st.caption(f"ℹ️ This user holds only their base {p_label} role. Grant a Guide or SME role above to manage mentor privileges.")
         else:
             sel_grant_idx = st.selectbox(
                 "Select Role Grant to Manage",
@@ -357,13 +357,14 @@ def render_admin_complaints_tab(admin_id: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. CASELOAD INACTIVITY MONITOR (GUIDE & SME ENGAGEMENT TRACKING)
+# 4. CASELOAD INACTIVITY & FOUNDER ENGAGEMENT MONITOR
 # ─────────────────────────────────────────────────────────────────────────────
 def render_admin_inactivity_tab(admin_id: str = None):
     from services.inactivity import (
         list_inactivity_records,
         check_and_process_caseload_inactivity,
-        compute_alert_live_status
+        compute_alert_live_status,
+        evaluate_aspirant_engagement_roster,
     )
     from services.external_contact import (
         normalize_phone_number,
@@ -373,14 +374,129 @@ def render_admin_inactivity_tab(admin_id: str = None):
         generate_mailto_url,
         get_guide_inactivity_template,
         get_sme_inactivity_template,
+        get_aspirant_contact_template,
         record_external_contact
     )
     from services.governance import get_primary_admin_id
 
     effective_admin_id = admin_id or get_primary_admin_id()
 
-    st.subheader("⏱️ Mentor Caseload Inactivity Monitor")
-    st.caption("Automated tracking of Guide and Domain SME caseload engagement. Monitors elapsed time since last verified interaction and generates idempotent alerts.")
+    st.subheader("⏱️ Caseload Inactivity & Founder Engagement Monitor")
+    st.caption("Dual-lens governance: track Mentor SLA responsiveness (7 / 10 / 14 days) alongside Blocker-Aware Founder Engagement (14 / 30 / 60 days).")
+
+    monitor_mode = st.radio(
+        "Select Monitoring Lens",
+        options=[
+            "🧭 Mentor SLA Monitor (7 / 10 / 14 Days)",
+            "🌱 Founder Engagement & Blocker Monitor (14 / 30 / 60 Days)"
+        ],
+        horizontal=True,
+        key="adm_inact_monitor_mode"
+    )
+
+    if monitor_mode == "🌱 Founder Engagement & Blocker Monitor (14 / 30 / 60 Days)":
+        roster = evaluate_aspirant_engagement_roster()
+        cnt_active = sum(1 for x in roster if x.get("engagement_state") == "ACTIVE")
+        cnt_blocked = sum(1 for x in roster if x.get("is_blocked"))
+        cnt_gentle = sum(1 for x in roster if x.get("engagement_state") == "GENTLE_CHECKIN")
+        cnt_support = sum(1 for x in roster if x.get("engagement_state") in ("SUPPORT_NEEDED", "DORMANT"))
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("🟢 Active (<14d)", cnt_active)
+        k2.metric("🛑 Blocked by Mentor/Admin", cnt_blocked)
+        k3.metric("🟡 Gentle Check-In (14–29d)", cnt_gentle)
+        k4.metric("🟠 Support Needed (30d+)", cnt_support)
+
+        eng_filter = st.selectbox(
+            "Filter Entrepreneurs by Engagement State",
+            options=["ALL", "BLOCKED_ONLY", "GENTLE_CHECKIN", "SUPPORT_NEEDED", "DORMANT", "ACTIVE"],
+            format_func=lambda k: {
+                "ALL": "All Entrepreneurs",
+                "BLOCKED_ONLY": "🛑 Blocked by Unassigned Mentor / Unanswered Ticket / Pending Review",
+                "GENTLE_CHECKIN": "🟡 Gentle Check-In (14–29 Days Quiet)",
+                "SUPPORT_NEEDED": "🟠 Support Needed (30–59 Days Quiet)",
+                "DORMANT": "🔴 Stalled / Dormant (60+ Days Quiet)",
+                "ACTIVE": "🟢 Active (<14 Days)"
+            }.get(k, k),
+            key="adm_founder_eng_filter"
+        )
+
+        filtered_roster = roster
+        if eng_filter == "BLOCKED_ONLY":
+            filtered_roster = [x for x in roster if x.get("is_blocked")]
+        elif eng_filter != "ALL":
+            filtered_roster = [x for x in roster if x.get("engagement_state") == eng_filter]
+
+        if not filtered_roster:
+            st.info("No entrepreneurs match the selected engagement filter.")
+            return
+
+        for item in filtered_roster:
+            aid = item["aspirant_id"]
+            aname = html.escape(item.get("full_name") or "Entrepreneur")
+            abiz = html.escape(item.get("business_name") or "Enterprise")
+            adist = html.escape(item.get("district") or "Tamil Nadu")
+            b_color = item.get("badge_color", "#10B981")
+            s_label = html.escape(item.get("state_label", "Active"))
+            days_q = item.get("days_inactive", 0)
+            last_src = html.escape(item.get("last_activity_source") or "Registration")
+            rec_act = html.escape(item.get("recommended_action") or "")
+            g_names = ", ".join(item.get("guide_names") or []) or "Unassigned"
+            s_names = ", ".join(item.get("sme_names") or []) or "Unassigned"
+
+            st.markdown(textwrap.dedent(f"""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {b_color}; border-radius:10px; padding:0.95rem 1.1rem; margin-bottom:0.5rem; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:0.5rem;">
+                    <div>
+                        <div style="font-size:1rem; font-weight:800; color:#0F172A;">
+                            {aname} <span style="font-weight:600; color:#2563EB; font-size:0.88rem;">· {abiz}</span>
+                            <span style="font-weight:500; color:#64748B; font-size:0.8rem;">({adist})</span>
+                        </div>
+                        <div style="font-size:0.82rem; color:#475569; margin-top:3px;">
+                            <strong>Guide:</strong> {html.escape(g_names)} · <strong>SME:</strong> {html.escape(s_names)} · <strong>Last Founder Activity:</strong> {days_q}d ago ({last_src})
+                        </div>
+                        <div style="font-size:0.8rem; color:#1E293B; margin-top:4px; background:#F8FAFC; padding:4px 8px; border-radius:6px; border:1px solid #E2E8F0;">
+                            💡 <strong>Recommended Next Step:</strong> {rec_act}
+                        </div>
+                    </div>
+                    <div style="text-align:right;">
+                        <span style="background:{b_color}; color:#fff; font-size:0.74rem; font-weight:800; padding:3px 10px; border-radius:999px;">{s_label}</span>
+                    </div>
+                </div>
+            </div>
+            """).strip(), unsafe_allow_html=True)
+
+            f_phone = item.get("phone") or ""
+            f_email = item.get("email") or ""
+            subj_f, body_f = get_aspirant_contact_template(item.get("full_name", "Founder"), "Supportive Check-In & Progress Update")
+            wa_f = generate_whatsapp_url(f_phone, body_f) if f_phone else None
+            gm_f = generate_gmail_compose_url(f_email, subj_f, body_f) if f_email else None
+
+            cf1, cf2, cf3 = st.columns([1.2, 1.2, 2.6])
+            with cf1:
+                if wa_f:
+                    st.link_button("💬 WhatsApp Check-In", url=wa_f, use_container_width=True)
+                else:
+                    st.button("💬 No Phone", disabled=True, key=f"f_wa_dis_{aid}", use_container_width=True)
+            with cf2:
+                if gm_f:
+                    st.link_button("✉️ Gmail Check-In", url=gm_f, use_container_width=True)
+                else:
+                    st.button("✉️ No Email", disabled=True, key=f"f_gm_dis_{aid}", use_container_width=True)
+            with cf3:
+                if st.button("✅ Log Supportive Check-In Sent", key=f"f_log_sent_{aid}", use_container_width=True):
+                    record_external_contact(
+                        admin_id=effective_admin_id,
+                        recipient_id=aid,
+                        recipient_role="aspirant",
+                        aspirant_id=aid,
+                        channel="whatsapp" if wa_f else "email",
+                        purpose="Founder Engagement Check-In",
+                        notes=f"Supportive check-in logged from Engagement Monitor ({item.get('state_label')})."
+                    )
+                    st.success(f"Supportive check-in logged for {item.get('full_name')}!")
+                    st.rerun()
+        return
 
     c_btn1, c_btn2 = st.columns([1, 2])
     with c_btn1:
@@ -396,7 +512,7 @@ def render_admin_inactivity_tab(admin_id: str = None):
     with f_col1:
         status_filter = st.selectbox(
             "Filter by Live Status",
-            ["ALL", "Needs Attention", "Follow-up Initiated", "Mentor Active Again", "Historical Record"],
+            ["ALL", "Needs Attention", "Waiting on Entrepreneur Reply", "Follow-up Initiated", "Mentor Active Again", "Historical Record"],
             key="adm_inact_status_filter"
         )
     with f_col2:
@@ -431,6 +547,8 @@ def render_admin_inactivity_tab(admin_id: str = None):
 
         if status_filter != "ALL":
             if status_filter == "Needs Attention" and "Needs Attention" not in live_status:
+                continue
+            elif status_filter == "Waiting on Entrepreneur Reply" and live_status != "Waiting on Entrepreneur Reply":
                 continue
             elif status_filter == "Follow-up Initiated" and "Follow-up Initiated" not in live_status:
                 continue
@@ -539,7 +657,8 @@ def render_admin_sme_conflicts_tab(admin_id: str):
     st.subheader("⚖️ Subject Matter Expert (SME) Directory & Conflict Governance")
     st.caption("Domain specialist credentials and mandatory conflict-of-interest declarations.")
 
-    smes = list_profiles_by_role("sme")
+    from services.roles import list_active_profiles_for_role
+    smes = list_active_profiles_for_role("sme")
     conflicts = list_sme_conflicts()
 
     tab_dir, tab_conf = st.tabs([f"🔬 SME Directory ({len(smes)})", f"⚠️ Conflict Declarations ({len(conflicts)})"])
@@ -559,9 +678,10 @@ def render_admin_sme_conflicts_tab(admin_id: str):
         if not conflicts:
             st.info("No conflict of interest declarations on record.")
         else:
+            all_p = {p["id"]: p for p in list_all_profiles()}
             for c in conflicts:
-                sme_p = get_profile(c.get("sme_id", "")) or {}
-                asp_p = get_profile(c.get("aspirant_id", "")) or {}
+                sme_p = all_p.get(c.get("sme_id", "")) or {}
+                asp_p = all_p.get(c.get("aspirant_id", "")) or {}
                 has_conf = c.get("has_conflict", False)
 
                 color = "#DC2626" if has_conf else "#10B981"
@@ -599,7 +719,7 @@ def render_admin_contact_aspirants_tab(admin_id: str, aspirants: list):
         list_external_contacts
     )
     from services.aspirant_photos import get_aspirant_photo
-    from services.roles import get_active_roles
+    from services.roles import list_users_with_multi_roles
     from services.relationships import get_aspirant_mentors
 
     st.subheader("💬 Contact Aspirants")
@@ -635,10 +755,11 @@ def render_admin_contact_aspirants_tab(admin_id: str, aspirants: list):
         return
 
     # 2. Dropdown Selector
+    multi_roles_map = {u["id"]: u.get("active_roles", ["aspirant"]) for u in list_users_with_multi_roles()}
     def _format_contact_asp(a):
         bname = a.get("profile_data", {}).get("business", {}).get("business_name") or "Enterprise"
         dist = a.get("district") or "TN"
-        roles = get_active_roles(a["id"])
+        roles = multi_roles_map.get(a["id"], ["aspirant"])
         extra = [r.title() for r in roles if r != "aspirant"]
         extra_str = f" [{', '.join(extra)}]" if extra else ""
         return f"{a.get('full_name', 'Founder')} — {bname} ({dist}){extra_str}"
@@ -670,7 +791,7 @@ def render_admin_contact_aspirants_tab(admin_id: str, aspirants: list):
     clean_email, email_err = validate_email_address(email_val)
 
     # Photo retrieval
-    asp_photo = get_aspirant_photo(selected_id)
+    asp_photo = get_aspirant_photo(selected_id, viewer_id=admin_id, viewer_role="admin")
     photo_html = ""
     if asp_photo and asp_photo.get("url"):
         photo_html = f'<img src="{asp_photo["url"]}" alt="Aspirant Headshot" style="width:68px; height:68px; border-radius:50%; object-fit:cover; border:2px solid #2563EB; box-shadow:0 2px 6px rgba(0,0,0,0.1); margin-right:1rem;" />'

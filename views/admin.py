@@ -165,16 +165,35 @@ def render_admin_portal(admin_profile: dict):
     # TAB 1: ASPIRANTS & JOURNEYS
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
+      if is_tab_active(tabs[0]):
+        from services.roles import list_users_with_multi_roles
+        from services.governance import list_guide_complaints
+        from services.scheme_reviews import list_scheme_support_reviews
+        open_complaints_cnt = len([c for c in (list_guide_complaints() or []) if str(c.get("status", "open")).upper() in ("OPEN", "PENDING", "UNDER_REVIEW")])
+        pending_ssr_cnt = len([r for r in (list_scheme_support_reviews() or []) if r.get("status") == "PENDING"])
+        if len(pending_directives) > 0 or pending_ssr_cnt > 0 or open_complaints_cnt > 0:
+            st.markdown(f"""
+            <div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #F59E0B; border-radius:10px; padding:0.75rem 1.1rem; margin-bottom:1rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                <div style="font-size:0.88rem; font-weight:700; color:#92400E;">⚡ Pending Governance Triage Queue</div>
+                <div style="display:flex; gap:10px; font-size:0.8rem; font-weight:700;">
+                    <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">🏛️ {len(pending_directives)} Mentor Directives</span>
+                    <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">📋 {pending_ssr_cnt} Scheme Reviews</span>
+                    <span style="background:#FEE2E2; color:#991B1B; padding:3px 10px; border-radius:999px;">🛡️ {open_complaints_cnt} Open Complaints</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
         st.subheader("Entrepreneurs Directory")
         if not aspirants:
             st.info("No Aspirants have signed up yet.")
         else:
+            multi_roles_map = {u["id"]: u.get("active_roles", ["aspirant"]) for u in list_users_with_multi_roles()}
             col_sel1, col_sel2 = st.columns([2, 1])
             with col_sel1:
                 def _format_asp_label(a):
                     bname = a.get('profile_data',{}).get('business',{}).get('business_name','Enterprise')
                     dist = a.get('district','TN')
-                    roles = get_active_roles(a['id'])
+                    roles = multi_roles_map.get(a['id']) or [a.get('role', 'aspirant')]
                     extra = [r.title() for r in roles if r != 'aspirant']
                     extra_str = f" [{', '.join(extra)}]" if extra else ""
                     return f"{a['full_name']} — {bname} ({dist}){extra_str}"
@@ -214,7 +233,7 @@ def render_admin_portal(admin_profile: dict):
                 b_info = curr_asp.get("profile_data", {}).get("business", {})
 
                 from services.aspirant_photos import get_aspirant_photo
-                adm_asp_photo = get_aspirant_photo(selected_asp_id)
+                adm_asp_photo = get_aspirant_photo(selected_asp_id, viewer_id=admin_id, viewer_role="admin")
                 if adm_asp_photo and adm_asp_photo.get("url"):
                     photo_html = (
                         '<div style="text-align:center; padding:0 1.5rem;">'
@@ -364,18 +383,29 @@ def render_admin_portal(admin_profile: dict):
                                 if st.button("✏️", key=f"adm_edit_{event['id']}", help="Administrative correction"):
                                     render_edit_journey_dialog(event, admin_id, "admin")
                             with col_ad:
-                                if st.button("🗑️", key=f"adm_del_{event['id']}", help="Administrative removal (Soft Delete)"):
-                                    ok, err = soft_delete_event(event["id"], admin_id, "admin")
-                                    if ok:
-                                        st.session_state["del_event_success"] = "Journey entry removed."
-                                    else:
-                                        st.session_state["del_event_err"] = err or "Could not remove entry."
-                                    st.rerun()
+                                confirm_akey = f"confirm_adm_del_{event['id']}"
+                                if st.session_state.get(confirm_akey):
+                                    if st.button("✓ Yes", key=f"yes_adm_del_{event['id']}", type="primary", help="Confirm delete"):
+                                        st.session_state.pop(confirm_akey, None)
+                                        ok, err = soft_delete_event(event["id"], admin_id, "admin")
+                                        if ok:
+                                            st.session_state["del_event_success"] = "Journey entry removed."
+                                        else:
+                                            st.session_state["del_event_err"] = err or "Could not remove entry."
+                                        st.rerun()
+                                    if st.button("✕", key=f"no_adm_del_{event['id']}", help="Cancel delete"):
+                                        st.session_state.pop(confirm_akey, None)
+                                        st.rerun()
+                                else:
+                                    if st.button("🗑️", key=f"adm_del_{event['id']}", help="Administrative removal (Soft Delete)"):
+                                        st.session_state[confirm_akey] = True
+                                        st.rerun()
 
     # ─────────────────────────────────────────────────────────────
     # TAB 2: GUIDES MANAGEMENT & PROVISIONING
     # ─────────────────────────────────────────────────────────────
     with tabs[1]:
+      if is_tab_active(tabs[1]):
         st.subheader("Guides Roster & Account Provisioning")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Guides can ONLY be created by the Admin. Public signup is disabled.</p>", unsafe_allow_html=True)
 
@@ -395,11 +425,8 @@ def render_admin_portal(admin_profile: dict):
                     cg_phone = st.text_input("Phone Number", placeholder="9876543211")
                 with col_cg2:
                     cg_loc_sel = st.selectbox("Location / District", MASTER_DISTRICTS_TN, index=13, key="cg_loc")
-                    cg_loc = cg_loc_sel
-                    if cg_loc_sel == "Other District / Non-TN (Specify)":
-                        cg_loc_custom = st.text_input("Specify Location / State *", placeholder="e.g. Bengaluru (Karnataka)", key="cg_custom_loc")
-                        if cg_loc_custom and cg_loc_custom.strip():
-                            cg_loc = cg_loc_custom.strip()
+                    cg_loc_custom = st.text_input("Custom Location / State (if 'Other' selected above)", placeholder="e.g. Bengaluru (Karnataka)", key="cg_custom_loc")
+                    cg_loc = cg_loc_custom.strip() if (cg_loc_sel == "Other District / Non-TN (Specify)" and cg_loc_custom and cg_loc_custom.strip()) else cg_loc_sel
                     cg_exp = st.text_input("Primary Expertise *", placeholder="e.g. PMEGP Loan Specialist, Banking, Food Processing")
                     import secrets
                     gen_guide_pwd = secrets.token_urlsafe(12)
@@ -451,6 +478,7 @@ def render_admin_portal(admin_profile: dict):
     # TAB 3: SMES MANAGEMENT & PROVISIONING
     # ─────────────────────────────────────────────────────────────
     with tabs[2]:
+      if is_tab_active(tabs[2]):
         st.subheader("Subject Matter Experts Roster")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>SMEs provide specialized technical, legal, and compliance support (GST, FSSAI, Patents, Legal).</p>", unsafe_allow_html=True)
 
@@ -470,11 +498,8 @@ def render_admin_portal(admin_profile: dict):
                     cs_phone = st.text_input("Phone Number", placeholder="9876543212")
                 with col_cs2:
                     cs_loc_sel = st.selectbox("Location / District", MASTER_DISTRICTS_TN, index=13, key="cs_loc")
-                    cs_loc = cs_loc_sel
-                    if cs_loc_sel == "Other District / Non-TN (Specify)":
-                        cs_loc_custom = st.text_input("Specify Location / State *", placeholder="e.g. Mumbai (Maharashtra)", key="cs_custom_loc")
-                        if cs_loc_custom and cs_loc_custom.strip():
-                            cs_loc = cs_loc_custom.strip()
+                    cs_loc_custom = st.text_input("Custom Location / State (if 'Other' selected above)", placeholder="e.g. Mumbai (Maharashtra)", key="cs_custom_loc")
+                    cs_loc = cs_loc_custom.strip() if (cs_loc_sel == "Other District / Non-TN (Specify)" and cs_loc_custom and cs_loc_custom.strip()) else cs_loc_sel
                     cs_exp = st.text_input("Specialization Domain *", placeholder="e.g. GST Auditing, Taxation, Corporate Compliance")
                     import secrets
                     gen_sme_pwd = secrets.token_urlsafe(12)
@@ -528,6 +553,7 @@ def render_admin_portal(admin_profile: dict):
     # TAB 4: MENTOR ASSIGNMENTS (Admin Authority)
     # ─────────────────────────────────────────────────────────────
     with tabs[3]:
+      if is_tab_active(tabs[3]):
         st.subheader("🎯 Assign Mentors to Entrepreneurs")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>The Admin is the exclusive authority for pairing Aspirants with Guides and SMEs.</p>", unsafe_allow_html=True)
 
@@ -731,6 +757,7 @@ def render_admin_portal(admin_profile: dict):
     # TAB 5: MENTOR INQUIRIES & ADMINISTRATIVE DIRECTIVES
     # ─────────────────────────────────────────────────────────────
     with tabs[4]:
+      if is_tab_active(tabs[4]):
         subtab_inq, subtab_ssr = st.tabs([
             "🏛️ Mentor Directives & Inquiries",
             "📋 Scheme Support Reviews (Guide Escalations)"
@@ -740,120 +767,120 @@ def render_admin_portal(admin_profile: dict):
             st.subheader("🏛️ Mentor Inquiries & Administrative Directives")
             st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Official Program Directorate Governance: Guides and Domain SMEs submit institutional roadblocks on behalf of their assigned entrepreneurs. Review inquiries, issue binding Administrative Directives, or assign Co-Guides (Guide B) and specialized Domain SMEs. <em>(Strictly invisible to the entrepreneur)</em></p>", unsafe_allow_html=True)
 
-        col_mq1, col_mq2 = st.columns([2, 2])
-        with col_mq1:
-            st_filter = st.selectbox("Directive Status Filter", ["ALL", "PENDING_ADMIN", "DIRECTIVE_ISSUED", "RESOLVED"], key="admin_dir_st_filter")
-        with col_mq2:
-            role_filter = st.selectbox("Mentor Role Filter", ["ALL", "guide", "sme"], format_func=lambda x: "All Roles" if x == "ALL" else ("Guides Only" if x == "guide" else "Domain SMEs Only"), key="admin_dir_role_filter")
+            col_mq1, col_mq2 = st.columns([2, 2])
+            with col_mq1:
+                st_filter = st.selectbox("Directive Status Filter", ["ALL", "PENDING_ADMIN", "DIRECTIVE_ISSUED", "RESOLVED"], key="admin_dir_st_filter")
+            with col_mq2:
+                role_filter = st.selectbox("Mentor Role Filter", ["ALL", "guide", "sme"], format_func=lambda x: "All Roles" if x == "ALL" else ("Guides Only" if x == "guide" else "Domain SMEs Only"), key="admin_dir_role_filter")
 
-        all_queries = list_mentor_admin_queries()
-        if st_filter != "ALL":
-            all_queries = [q for q in all_queries if q.get("status") == st_filter]
-        if role_filter != "ALL":
-            all_queries = [q for q in all_queries if (q.get("requester_role_actual") or q.get("requester_role")) == role_filter]
+            all_queries = list_mentor_admin_queries()
+            if st_filter != "ALL":
+                all_queries = [q for q in all_queries if q.get("status") == st_filter]
+            if role_filter != "ALL":
+                all_queries = [q for q in all_queries if (q.get("requester_role_actual") or q.get("requester_role")) == role_filter]
 
-        if not all_queries:
-            st.info("No mentor administrative inquiries currently recorded matching the filter criteria.")
-        else:
-            # Build Guide and SME lookup dictionaries for co-assignment options (multi-role aware)
-            guides_list = list_active_profiles_for_role("guide")
-            smes_list = list_active_profiles_for_role("sme")
-            guide_options = {"NONE": "None (Keep Current Mentorship Team)"}
-            for g in guides_list:
-                guide_options[g["id"]] = f"{g['full_name']} ({g.get('district', 'Tamil Nadu')})"
-            sme_options = {"NONE": "None (No Additional Domain SME)"}
-            for s in smes_list:
-                sme_options[s["id"]] = f"{s['full_name']} — {s.get('profile_data',{}).get('expertise', 'Specialist')}"
+            if not all_queries:
+                st.info("No mentor administrative inquiries currently recorded matching the filter criteria.")
+            else:
+                # Build Guide and SME lookup dictionaries for co-assignment options (multi-role aware)
+                guides_list = list_active_profiles_for_role("guide")
+                smes_list = list_active_profiles_for_role("sme")
+                guide_options = {"NONE": "None (Keep Current Mentorship Team)"}
+                for g in guides_list:
+                    guide_options[g["id"]] = f"{g['full_name']} ({g.get('district', 'Tamil Nadu')})"
+                sme_options = {"NONE": "None (No Additional Domain SME)"}
+                for s in smes_list:
+                    sme_options[s["id"]] = f"{s['full_name']} — {s.get('profile_data',{}).get('expertise', 'Specialist')}"
 
-            for query in all_queries:
-                q_id = query["id"]
-                q_status = query.get("status", "PENDING_ADMIN")
-                st_color = "#f59e0b" if q_status == "PENDING_ADMIN" else "#10b981"
-                mentor_role_lbl = (query.get("requester_role_actual") or query.get("requester_role") or "guide").upper()
-                mentor_name = query.get("requester_name") or "Mentor"
-                asp_name = query.get("aspirant_name") or "Entrepreneur"
-                q_sub = _safe_esc(query.get("subject"), default="Institutional Query")
-                q_priority = query.get("priority", "MEDIUM")
+                for query in all_queries:
+                    q_id = query["id"]
+                    q_status = query.get("status", "PENDING_ADMIN")
+                    st_color = "#f59e0b" if q_status == "PENDING_ADMIN" else "#10b981"
+                    mentor_role_lbl = (query.get("requester_role_actual") or query.get("requester_role") or "guide").upper()
+                    mentor_name = query.get("requester_name") or "Mentor"
+                    asp_name = query.get("aspirant_name") or "Entrepreneur"
+                    q_sub = _safe_esc(query.get("subject"), default="Institutional Query")
+                    q_priority = query.get("priority", "MEDIUM")
 
-                with st.expander(f"[{q_status}] For Mentee: {asp_name} | From {mentor_role_lbl}: {mentor_name} — {q_sub} ({q_priority})", expanded=(q_status == "PENDING_ADMIN")):
-                    q_card_html = (
-                        f'<div style="background:#F8FAFC; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 8px 8px 0; padding:0.9rem 1.1rem; margin-bottom:0.75rem;">'
-                        f'<div style="display:flex; justify-content:space-between; align-items:center;">'
-                        f'<div style="font-weight:800; color:#0F172A; font-size:1.05rem;">{q_sub}</div>'
-                        f'<div style="font-size:0.8rem; color:#64748B;">Submitted: {str(query.get("created_at",""))[:16]}</div>'
-                        f'</div>'
-                        f'<div style="font-size:0.85rem; color:#475569; margin:4px 0;">'
-                        f'Submitted by: <strong>{mentor_name}</strong> ({mentor_role_lbl}) on behalf of entrepreneur: <strong style="color:#0F172A;">{asp_name}</strong>'
-                        f'</div>'
-                        f'<div style="font-size:0.92rem; color:#1E293B; margin-top:0.5rem; line-height:1.5;">'
-                        f'{_safe_esc(query.get("message"), default="").replace(chr(10), "<br>")}'
-                        f'</div>'
-                        f'</div>'
-                    )
-                    st.markdown(q_card_html, unsafe_allow_html=True)
-
-                    if query.get("admin_directive"):
-                        ad_msg = _safe_esc(query.get("admin_directive"), default="").replace(chr(10), "<br>")
-                        ad_issued = str(query.get("directive_issued_at", ""))[:16]
-                        dir_card_html = (
-                            f'<div style="background:#F0FDF4; border:1px solid #86EFAC; border-left:4px solid #16A34A; border-radius:0 8px 8px 0; padding:0.75rem 1rem; margin-bottom:0.75rem;">'
-                            f'<div style="font-weight:800; color:#15803D; font-size:0.88rem; display:flex; justify-content:space-between;">'
-                            f'<span>🏛️ Issued Directorate Directive</span>'
-                            f'<span style="font-size:0.75rem; color:#166534; font-weight:600;">Issued: {ad_issued}</span>'
+                    with st.expander(f"[{q_status}] For Mentee: {asp_name} | From {mentor_role_lbl}: {mentor_name} — {q_sub} ({q_priority})", expanded=(q_status == "PENDING_ADMIN")):
+                        q_card_html = (
+                            f'<div style="background:#F8FAFC; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 8px 8px 0; padding:0.9rem 1.1rem; margin-bottom:0.75rem;">'
+                            f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                            f'<div style="font-weight:800; color:#0F172A; font-size:1.05rem;">{q_sub}</div>'
+                            f'<div style="font-size:0.8rem; color:#64748B;">Submitted: {str(query.get("created_at",""))[:16]}</div>'
                             f'</div>'
-                            f'<div style="font-size:0.9rem; color:#14532D; margin-top:0.35rem; line-height:1.5;">'
-                            f'{ad_msg}'
+                            f'<div style="font-size:0.85rem; color:#475569; margin:4px 0;">'
+                            f'Submitted by: <strong>{mentor_name}</strong> ({mentor_role_lbl}) on behalf of entrepreneur: <strong style="color:#0F172A;">{asp_name}</strong>'
+                            f'</div>'
+                            f'<div style="font-size:0.92rem; color:#1E293B; margin-top:0.5rem; line-height:1.5;">'
+                            f'{_safe_esc(query.get("message"), default="").replace(chr(10), "<br>")}'
                             f'</div>'
                             f'</div>'
                         )
-                        st.markdown(dir_card_html, unsafe_allow_html=True)
+                        st.markdown(q_card_html, unsafe_allow_html=True)
 
-                    if f"admin_inquiry_directive_success_{q_id}" in st.session_state:
-                        _dq_msg = st.session_state.pop(f"admin_inquiry_directive_success_{q_id}")
-                        st.success(_dq_msg)
-                        try:
-                            st.toast(_dq_msg, icon="✅")
-                        except Exception:
-                            pass
+                        if query.get("admin_directive"):
+                            ad_msg = _safe_esc(query.get("admin_directive"), default="").replace(chr(10), "<br>")
+                            ad_issued = str(query.get("directive_issued_at", ""))[:16]
+                            dir_card_html = (
+                                f'<div style="background:#F0FDF4; border:1px solid #86EFAC; border-left:4px solid #16A34A; border-radius:0 8px 8px 0; padding:0.75rem 1rem; margin-bottom:0.75rem;">'
+                                f'<div style="font-weight:800; color:#15803D; font-size:0.88rem; display:flex; justify-content:space-between;">'
+                                f'<span>🏛️ Issued Directorate Directive</span>'
+                                f'<span style="font-size:0.75rem; color:#166534; font-weight:600;">Issued: {ad_issued}</span>'
+                                f'</div>'
+                                f'<div style="font-size:0.9rem; color:#14532D; margin-top:0.35rem; line-height:1.5;">'
+                                f'{ad_msg}'
+                                f'</div>'
+                                f'</div>'
+                            )
+                            st.markdown(dir_card_html, unsafe_allow_html=True)
 
-                    with st.form(f"form_admin_dir_{q_id}"):
-                        st.markdown("##### 🏛️ Issue Official Administrative Directive")
-                        st.caption("The directive will be dispatched directly to the mentor. The entrepreneur will never see this administrative communication.")
+                        if f"admin_inquiry_directive_success_{q_id}" in st.session_state:
+                            _dq_msg = st.session_state.pop(f"admin_inquiry_directive_success_{q_id}")
+                            st.success(_dq_msg)
+                            try:
+                                st.toast(_dq_msg, icon="✅")
+                            except Exception:
+                                pass
 
-                        col_d1, col_d2 = st.columns([1, 2])
-                        with col_d1:
-                            status_choices = ["DIRECTIVE_ISSUED", "RESOLVED", "PENDING_ADMIN"]
-                            cur_st_idx = status_choices.index(q_status) if q_status in status_choices else 0
-                            new_st = st.selectbox("Directive Status", status_choices, index=cur_st_idx, key=f"dir_st_{q_id}")
-                        with col_d2:
-                            directive_text = st.text_area("Administrative Directive / Resolution Instructions *", value=query.get("admin_directive") or "", placeholder="e.g. Approved DIC fast-track liaison. Authorized subsidy exception. Assigned Co-Guide B to oversee bank sanction documents. Guide to communicate milestones to founder.", height=80, key=f"dir_txt_{q_id}")
+                        with st.form(f"form_admin_dir_{q_id}"):
+                            st.markdown("##### 🏛️ Issue Official Administrative Directive")
+                            st.caption("The directive will be dispatched directly to the mentor. The entrepreneur will never see this administrative communication.")
 
-                        st.markdown("###### 🤝 Operational Support Options (Assign on Behalf of Mentee)")
-                        col_asg1, col_asg2 = st.columns(2)
-                        with col_asg1:
-                            sel_co_guide = st.selectbox("Assign / Consult Co-Guide (Guide B)", list(guide_options.keys()), format_func=lambda x: guide_options[x], key=f"dir_cog_{q_id}", help="Adds an additional Guide to the entrepreneur's roster (as Guide B) without removing primary Guide A.")
-                        with col_asg2:
-                            sel_add_sme = st.selectbox("Assign / Add Domain Specialist (SME)", list(sme_options.keys()), format_func=lambda x: sme_options[x], key=f"dir_sme_{q_id}", help="Adds a domain specialist (GST, Legal, FSSAI, Patents) to the entrepreneur's advisory panel.")
+                            col_d1, col_d2 = st.columns([1, 2])
+                            with col_d1:
+                                status_choices = ["DIRECTIVE_ISSUED", "RESOLVED", "PENDING_ADMIN"]
+                                cur_st_idx = status_choices.index(q_status) if q_status in status_choices else 0
+                                new_st = st.selectbox("Directive Status", status_choices, index=cur_st_idx, key=f"dir_st_{q_id}")
+                            with col_d2:
+                                directive_text = st.text_area("Administrative Directive / Resolution Instructions *", value=query.get("admin_directive") or "", placeholder="e.g. Approved DIC fast-track liaison. Authorized subsidy exception. Assigned Co-Guide B to oversee bank sanction documents. Guide to communicate milestones to founder.", height=80, key=f"dir_txt_{q_id}")
 
-                        if st.form_submit_button("ISSUE DIRECTIVE & UPDATE", type="primary"):
-                            if not directive_text.strip():
-                                st.warning("Please enter the directive instructions for the mentor.")
-                            else:
-                                co_g_val = sel_co_guide if sel_co_guide != "NONE" else None
-                                sme_val = sel_add_sme if sel_add_sme != "NONE" else None
-                                ok, err = admin_respond_to_mentor(
-                                    query_id=q_id,
-                                    admin_id=admin_id,
-                                    directive=directive_text.strip(),
-                                    new_status=new_st,
-                                    assign_co_guide_id=co_g_val,
-                                    assign_sme_id=sme_val
-                                )
-                                if ok:
-                                    st.session_state[f"admin_inquiry_directive_success_{q_id}"] = f"Directive recorded and dispatched to {mentor_name} ({mentor_role_lbl})!"
-                                    st.rerun()
+                            st.markdown("###### 🤝 Operational Support Options (Assign on Behalf of Mentee)")
+                            col_asg1, col_asg2 = st.columns(2)
+                            with col_asg1:
+                                sel_co_guide = st.selectbox("Assign / Consult Co-Guide (Guide B)", list(guide_options.keys()), format_func=lambda x: guide_options[x], key=f"dir_cog_{q_id}", help="Adds an additional Guide to the entrepreneur's roster (as Guide B) without removing primary Guide A.")
+                            with col_asg2:
+                                sel_add_sme = st.selectbox("Assign / Add Domain Specialist (SME)", list(sme_options.keys()), format_func=lambda x: sme_options[x], key=f"dir_sme_{q_id}", help="Adds a domain specialist (GST, Legal, FSSAI, Patents) to the entrepreneur's advisory panel.")
+
+                            if st.form_submit_button("ISSUE DIRECTIVE & UPDATE", type="primary"):
+                                if not directive_text.strip():
+                                    st.warning("Please enter the directive instructions for the mentor.")
                                 else:
-                                    st.error(err or "Failed to issue directive.")
+                                    co_g_val = sel_co_guide if sel_co_guide != "NONE" else None
+                                    sme_val = sel_add_sme if sel_add_sme != "NONE" else None
+                                    ok, err = admin_respond_to_mentor(
+                                        query_id=q_id,
+                                        admin_id=admin_id,
+                                        directive=directive_text.strip(),
+                                        new_status=new_st,
+                                        assign_co_guide_id=co_g_val,
+                                        assign_sme_id=sme_val
+                                    )
+                                    if ok:
+                                        st.session_state[f"admin_inquiry_directive_success_{q_id}"] = f"Directive recorded and dispatched to {mentor_name} ({mentor_role_lbl})!"
+                                        st.rerun()
+                                    else:
+                                        st.error(err or "Failed to issue directive.")
 
         with subtab_ssr:
             st.subheader("📋 Scheme Support Reviews & Authoritative Exceptions")
@@ -928,6 +955,7 @@ def render_admin_portal(admin_profile: dict):
     # TAB 6: SCHEME CATALOGUE CRUD
     # ─────────────────────────────────────────────────────────────
     with tabs[5]:
+      if is_tab_active(tabs[5]):
         st.subheader(f"Scheme Catalogue Management ({len(all_schemes)} Records in Intelligence Database)")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Full Administrative Authority: Search, filter, add new schemes, edit existing guidelines, toggle archive status, or permanently delete schemes from both local and cloud databases.</p>", unsafe_allow_html=True)
 
@@ -941,28 +969,18 @@ def render_admin_portal(admin_profile: dict):
                     ns_agency = st.text_input("Agency / Ministry / Firm *", placeholder="e.g. MeitY (Ministry of Electronics and IT)")
                     ns_amount = st.text_input("Funding Amount *", placeholder="e.g. Up to 40% compute GPU subsidy + Rs 1 Crore grant")
                     ns_type_sel = st.selectbox("Funding / Capital Type", MASTER_FUNDING_TYPES)
-                    ns_custom_type = ""
-                    if ns_type_sel == "Other / Blended Capital (Specify)":
-                        ns_custom_type = st.text_input("Specify Custom Capital Type *", placeholder="e.g. SAFE, Revenue Share", key="ns_custom_type")
+                    ns_custom_type = st.text_input("Custom Capital Type (if 'Other' selected above)", placeholder="e.g. SAFE, Revenue Share", key="ns_custom_type")
                 with c_ns2:
                     ns_cat_sel = st.selectbox("Category", MASTER_CATEGORY_TYPES)
-                    ns_custom_cat = ""
-                    if ns_cat_sel == "Other / Consortium (Specify)":
-                        ns_custom_cat = st.text_input("Specify Custom Category *", placeholder="e.g. Global Consortium", key="ns_custom_cat")
+                    ns_custom_cat = st.text_input("Custom Category (if 'Other' selected above)", placeholder="e.g. Global Consortium", key="ns_custom_cat")
                     ns_stage_sel = st.selectbox("Eligible Stage", MASTER_STAGES)
-                    ns_custom_stage = ""
-                    if ns_stage_sel == "Other / Multi-Stage (Specify)":
-                        ns_custom_stage = st.text_input("Specify Custom Stage *", placeholder="e.g. Commercialization Phase", key="ns_custom_stage")
+                    ns_custom_stage = st.text_input("Custom Stage (if 'Other' selected above)", placeholder="e.g. Commercialization Phase", key="ns_custom_stage")
                     ns_scope_sel = st.selectbox("State Scope / Geography", MASTER_GEOGRAPHIC_SCOPES)
-                    ns_custom_scope = ""
-                    if ns_scope_sel == "Other / Specific Region (Specify)":
-                        ns_custom_scope = st.text_input("Specify Custom Geography *", placeholder="e.g. South India / Tier 2 Cities", key="ns_custom_scope")
+                    ns_custom_scope = st.text_input("Custom Geography (if 'Other' selected above)", placeholder="e.g. South India / Tier 2 Cities", key="ns_custom_scope")
                     ns_url = st.text_input("Official Portal URL", placeholder="https://indiaai.gov.in")
 
                 ns_sectors_sel = st.multiselect("Eligible Sectors *", MASTER_SECTORS, default=["Cross-Sector / All Sectors"])
-                ns_custom_sec = ""
-                if "Other / Not Listed (Specify)" in ns_sectors_sel:
-                    ns_custom_sec = st.text_input("Specify Custom Sectors (comma-separated) *", placeholder="e.g. SpaceTech, Marine Culture", key="ns_custom_sec")
+                ns_custom_sec = st.text_input("Custom Sectors, comma-separated (if 'Other' selected above)", placeholder="e.g. SpaceTech, Marine Culture", key="ns_custom_sec")
 
                 c_ns3, c_ns4 = st.columns(2)
                 with c_ns3:
