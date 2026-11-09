@@ -286,3 +286,4 @@ Each finding is detailed below with the 10 required architectural attributes.
 | **PERF-01** | N+1 profile queries | Low | Performance | Fixed via Batching | No |
 | **PERF-02** | Stale role memoization cache | Low | Cache Invalidation | Fixed via Invalidation | No |
 | **PERF-03** | Unbounded audit log table growth | Low | Database Scaling | Paginated / Indexed | No |
+

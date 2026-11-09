@@ -119,3 +119,4 @@ stateDiagram-v2
 2. **`*` -> `PURGED` when `legal_hold == TRUE`:** Strictly prohibited. Database constraints and service checks abort the operation.
 3. **`PENDING_DELETION` -> Automatic Purge:** Strictly prohibited during current phase. Automatic cron purge is disabled.
 4. **Transition to `ARCHIVED` with Dangling Unresolved Tickets:** Prohibited unless tickets are explicitly transferred or queued for Admin.
+

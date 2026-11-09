@@ -104,3 +104,4 @@ tests\test_single_admin_master_e2e.py ..........                         [100%]
   - User logs in: Grace banner displayed with countdown and cancel button.
   - User clicks `[Cancel Closure Request]`.
   - Status immediately returns to `ACTIVE`; closure scheduled date cleared; audit event logged.
+

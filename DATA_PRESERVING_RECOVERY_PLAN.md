@@ -146,3 +146,4 @@ ORDER BY column_name;
 ```
 
 Expected result: 7 rows returned, all matching specification defaults.
+

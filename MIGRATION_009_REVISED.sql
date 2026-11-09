@@ -228,3 +228,4 @@ SET account_status = CASE
 WHERE account_status IS NULL;
 
 COMMIT;
+

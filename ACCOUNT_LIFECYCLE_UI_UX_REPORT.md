@@ -114,3 +114,4 @@ When an account with a pending deletion logs into their dashboard:
   > If this was requested in error or you wish to maintain your account, you may cancel this request at any time:  
   > `[ Cancel Closure Request ]`
 - Clicking the button cancels the pending closure in real-time, resets status to `ACTIVE`, and reloads the page.
+

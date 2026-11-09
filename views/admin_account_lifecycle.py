@@ -419,3 +419,4 @@ def render_subtab_action_history(admin_id: str):
 
     df = pd.DataFrame(rows_display)
     st.dataframe(df, use_container_width=True, hide_index=True)
+
