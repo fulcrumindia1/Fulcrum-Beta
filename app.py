@@ -333,48 +333,28 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         }
 
         /* ─────────────────────────────────────────────────────────────────
-           SIDEBAR SELECTBOX & CURRENT WORKSPACE DROPDOWN
+           SIDEBAR SELECTBOX & CURRENT WORKSPACE DROPDOWN (OPTION A: WHITE BOX / DEEP NAVY TEXT)
            ───────────────────────────────────────────────────────────────── */
-        /* 1. Ensure selectbox wrapper in sidebar has NO white background */
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"],
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div,
-        section[data-testid="stSidebar"] [data-baseweb="select"],
-        .st-key-sb_current_workspace,
-        .st-key-sb_current_workspace [data-testid="stSelectbox"],
-        .st-key-sb_current_workspace [data-baseweb="select"] {
-            background-color: transparent !important;
-            background: transparent !important;
+        /* 1. Box container */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+        .st-key-sb_current_workspace div[data-baseweb="select"] > div {
+            background-color: #FFFFFF !important;
+            background: #FFFFFF !important;
+            border: 1px solid #CBD5E1 !important;
+            border-radius: 8px !important;
+            min-height: 42px !important;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
             margin-bottom: 0.6rem !important;
         }
 
-        /* 2. The Select Box Control Itself: Dark Navy + Rose Border */
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
-        .st-key-sb_current_workspace div[data-baseweb="select"] > div {
-            background-color: #162032 !important;
-            background: #162032 !important;
-            border: 1.5px solid #F43F5E !important;
-            border-radius: 8px !important;
-            min-height: 42px !important;
-            box-shadow: 0 0 12px rgba(244, 63, 94, 0.25) !important;
-        }
-
-        /* 3. Hover state */
+        /* 2. Hover state */
         section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover,
         .st-key-sb_current_workspace div[data-baseweb="select"] > div:hover {
-            border-color: #FB7185 !important;
-            background-color: #1e293b !important;
-            background: #1e293b !important;
-            box-shadow: 0 0 16px rgba(244, 63, 94, 0.45) !important;
+            border-color: #94A3B8 !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18) !important;
         }
 
-        /* 4. Ensure internal containers inside the control are transparent */
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div > div,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div * {
-            background-color: transparent !important;
-            background: transparent !important;
-        }
-
-        /* 5. Typography — Crisp, High-Contrast Pure White */
+        /* 3. High-Contrast Deep Midnight Navy Text (#0F172A) */
         section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] *,
         section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] div,
         section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] span,
@@ -383,16 +363,16 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         .st-key-sb_current_workspace div[data-baseweb="select"] div,
         .st-key-sb_current_workspace div[data-baseweb="select"] span,
         .st-key-sb_current_workspace div[data-baseweb="select"] p {
-            color: #FFFFFF !important;
+            color: #0F172A !important;
             font-weight: 700 !important;
             font-size: 0.95rem !important;
         }
 
-        /* 6. Dropdown Chevron */
+        /* 4. Deep Navy Chevron Arrow */
         section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] svg,
         .st-key-sb_current_workspace div[data-baseweb="select"] svg {
-            fill: #FB7185 !important;
-            color: #FB7185 !important;
+            fill: #0F172A !important;
+            color: #0F172A !important;
             background: transparent !important;
             background-color: transparent !important;
         }
@@ -939,39 +919,21 @@ def main():
             if not is_single_admin and len(ws_options) > 1:
                 st.markdown("""
                 <style>
-                /* Scoped Workspace Dropdown — Elegant High-Contrast Dark Card & Rose Text */
-                section[data-testid="stSidebar"] [data-testid="stSelectbox"],
-                section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div,
-                section[data-testid="stSidebar"] [data-baseweb="select"],
-                .st-key-sb_current_workspace,
-                .st-key-sb_current_workspace [data-testid="stSelectbox"],
-                .st-key-sb_current_workspace [data-baseweb="select"] {
-                    background-color: transparent !important;
-                    background: transparent !important;
-                }
-
+                /* Scoped Workspace Dropdown (Option A: White Box / Deep Navy Text) */
                 section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
                 .st-key-sb_current_workspace div[data-baseweb="select"] > div {
-                    background-color: #162032 !important;
-                    background: #162032 !important;
-                    border: 1.5px solid #F43F5E !important;
+                    background-color: #FFFFFF !important;
+                    background: #FFFFFF !important;
+                    border: 1px solid #CBD5E1 !important;
                     border-radius: 8px !important;
                     min-height: 42px !important;
-                    box-shadow: 0 0 12px rgba(244, 63, 94, 0.25) !important;
+                    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12) !important;
                 }
 
                 section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover,
                 .st-key-sb_current_workspace div[data-baseweb="select"] > div:hover {
-                    border-color: #FB7185 !important;
-                    background-color: #1e293b !important;
-                    background: #1e293b !important;
-                    box-shadow: 0 0 16px rgba(244, 63, 94, 0.45) !important;
-                }
-
-                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div > div,
-                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div * {
-                    background-color: transparent !important;
-                    background: transparent !important;
+                    border-color: #94A3B8 !important;
+                    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18) !important;
                 }
 
                 section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] *,
@@ -982,15 +944,15 @@ def main():
                 .st-key-sb_current_workspace div[data-baseweb="select"] div,
                 .st-key-sb_current_workspace div[data-baseweb="select"] span,
                 .st-key-sb_current_workspace div[data-baseweb="select"] p {
-                    color: #FFFFFF !important;
+                    color: #0F172A !important;
                     font-weight: 700 !important;
                     font-size: 0.95rem !important;
                 }
 
                 section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] svg,
                 .st-key-sb_current_workspace div[data-baseweb="select"] svg {
-                    fill: #FB7185 !important;
-                    color: #FB7185 !important;
+                    fill: #0F172A !important;
+                    color: #0F172A !important;
                     background: transparent !important;
                     background-color: transparent !important;
                 }
