@@ -334,45 +334,56 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
         /* Workspace Selector & Sidebar Selectbox — High-Contrast Rose/Pink Styling */
         [data-testid="stSidebar"] div[data-testid="stSelectbox"],
         [data-testid="stSidebar"] .stSelectbox,
-        section[data-testid="stSidebar"] div.st-key-sb_current_workspace {
+        section[data-testid="stSidebar"] div[data-baseweb="select"] {
             margin-bottom: 0.6rem !important;
         }
 
         /* Outer selectbox container */
-        div.st-key-sb_current_workspace div[data-baseweb="select"],
-        div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child {
-            background-color: #1e1528 !important;
-            border: 1.5px solid #F43F5E !important;
+        .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child {
+            background-color: #1a1625 !important;
+            background: #1a1625 !important;
+            border: 2px solid #F43F5E !important;
             border-radius: 8px !important;
             min-height: 42px !important;
-            box-shadow: 0 0 10px rgba(244, 63, 94, 0.2) !important;
+            box-shadow: 0 0 10px rgba(244, 63, 94, 0.3) !important;
         }
 
         /* Prevent inner divs from creating weird colored square blocks */
-        div.st-key-sb_current_workspace div[data-baseweb="select"] div {
+        .st-key-sb_current_workspace div[data-baseweb="select"] div,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] div {
             background-color: transparent !important;
+            background: transparent !important;
         }
 
-        div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover {
+        .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child:hover {
             border-color: #FB7185 !important;
-            box-shadow: 0 0 14px rgba(244, 63, 94, 0.4) !important;
+            background-color: #261933 !important;
+            box-shadow: 0 0 14px rgba(244, 63, 94, 0.5) !important;
         }
 
         /* Visible, crisp Rose-Pink text */
-        div.st-key-sb_current_workspace div[data-baseweb="select"] span,
-        div.st-key-sb_current_workspace div[data-baseweb="select"] p,
-        div.st-key-sb_current_workspace div[data-baseweb="select"] div[data-testid="stMarkdownContainer"] *,
-        div.st-key-sb_current_workspace div[data-baseweb="select"] input {
+        .st-key-sb_current_workspace div[data-baseweb="select"] *,
+        .st-key-sb_current_workspace div[data-baseweb="select"] div,
+        .st-key-sb_current_workspace div[data-baseweb="select"] span,
+        .st-key-sb_current_workspace div[data-baseweb="select"] p,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] *,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] div,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] span,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] p {
             color: #FDA4AF !important;
             font-weight: 700 !important;
             font-size: 0.95rem !important;
         }
 
         /* Dropdown Chevron */
-        div.st-key-sb_current_workspace div[data-baseweb="select"] svg {
+        .st-key-sb_current_workspace div[data-baseweb="select"] svg,
+        section[data-testid="stSidebar"] div[data-baseweb="select"] svg {
             fill: #FB7185 !important;
             color: #FB7185 !important;
             background: transparent !important;
+            background-color: transparent !important;
         }
 
         /* BaseWeb Dropdown Popover Listbox */
@@ -904,42 +915,50 @@ def main():
                 st.markdown("""
                 <style>
                 /* Scoped Workspace Dropdown — Elegant High-Contrast Dark Card & Rose Text */
-                div.st-key-sb_current_workspace div[data-baseweb="select"],
-                div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child {
+                .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child {
                     background-color: #1a1625 !important;
                     background: #1a1625 !important;
-                    border: 1.5px solid #F43F5E !important;
+                    border: 2px solid #F43F5E !important;
                     border-radius: 8px !important;
                     min-height: 42px !important;
-                    box-shadow: 0 0 10px rgba(244, 63, 94, 0.25) !important;
+                    box-shadow: 0 0 10px rgba(244, 63, 94, 0.3) !important;
                 }
 
-                div.st-key-sb_current_workspace div[data-baseweb="select"] div {
+                .st-key-sb_current_workspace div[data-baseweb="select"] div,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] div {
                     background-color: transparent !important;
                     background: transparent !important;
                 }
 
-                div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover {
+                .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child:hover {
                     border-color: #FB7185 !important;
                     background-color: #261933 !important;
-                    box-shadow: 0 0 14px rgba(244, 63, 94, 0.45) !important;
+                    box-shadow: 0 0 14px rgba(244, 63, 94, 0.5) !important;
                 }
 
                 /* Crisp, highly visible Rose-Pink typography */
-                div.st-key-sb_current_workspace div[data-baseweb="select"] span,
-                div.st-key-sb_current_workspace div[data-baseweb="select"] p,
-                div.st-key-sb_current_workspace div[data-baseweb="select"] div[data-testid="stMarkdownContainer"] *,
-                div.st-key-sb_current_workspace div[data-baseweb="select"] input {
+                .st-key-sb_current_workspace div[data-baseweb="select"] *,
+                .st-key-sb_current_workspace div[data-baseweb="select"] div,
+                .st-key-sb_current_workspace div[data-baseweb="select"] span,
+                .st-key-sb_current_workspace div[data-baseweb="select"] p,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] *,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] div,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] span,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] p {
                     color: #FDA4AF !important;
                     font-weight: 700 !important;
                     font-size: 0.95rem !important;
                 }
 
                 /* Chevron icon */
-                div.st-key-sb_current_workspace div[data-baseweb="select"] svg {
+                .st-key-sb_current_workspace div[data-baseweb="select"] svg,
+                section[data-testid="stSidebar"] div[data-baseweb="select"] svg {
                     fill: #FB7185 !important;
                     color: #FB7185 !important;
                     background: transparent !important;
+                    background-color: transparent !important;
                 }
                 </style>
                 """, unsafe_allow_html=True)
