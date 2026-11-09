@@ -161,3 +161,4 @@ The triple-layer protection was validated against an isolated PostgreSQL staging
 
 ## 5. Conclusion
 With table privileges revoked, PostgreSQL Restrictive RLS enabled, and an active BEFORE UPDATE/DELETE trigger in place, `public.account_lifecycle_log` provides genuine non-repudiation and immutable historical integrity for all administrative actions.
+

@@ -569,3 +569,10 @@ def update_profile(user_id: str, updates: Dict) -> Tuple[Optional[Dict], Optiona
     return merged, None
 
 
+def list_users_with_multi_roles() -> List[Dict]:
+    """Compatibility wrapper re-exporting list_users_with_multi_roles from services.roles."""
+    from services.roles import list_users_with_multi_roles as _list_roles
+    return _list_roles()
+
+
+

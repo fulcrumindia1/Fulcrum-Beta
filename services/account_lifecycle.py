@@ -1222,7 +1222,7 @@ def list_accounts_by_status(status_filter: Optional[str] = None) -> List[Dict]:
     """
     Retrieves all accounts annotated with current lifecycle status, legal hold, and role tags.
     """
-    from services.profiles import list_users_with_multi_roles
+    from services.roles import list_users_with_multi_roles
     users = list_users_with_multi_roles()
 
     results = []

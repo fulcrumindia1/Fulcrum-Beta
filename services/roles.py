@@ -274,6 +274,10 @@ def get_user_roles(user_id: str) -> List[Dict]:
     return roles
 
 
+# Canonical alias for backward compatibility with views/legal_ui.py, views/guide.py, views/sme.py
+get_user_role_grants = get_user_roles
+
+
 def get_active_roles(user_id: str) -> List[str]:
     """Returns list of currently active role strings for a user."""
     all_grants = get_user_roles(user_id)

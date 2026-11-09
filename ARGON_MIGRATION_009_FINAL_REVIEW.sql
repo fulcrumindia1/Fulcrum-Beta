@@ -286,3 +286,4 @@ EXECUTE FUNCTION public.enforce_account_lifecycle_log_immutability();
 NOTIFY pgrst, 'reload schema';
 
 COMMIT;
+

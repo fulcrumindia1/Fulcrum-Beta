@@ -167,3 +167,4 @@ COMMIT;
 1. **Safety Guarantee:** The rollback script creates a snapshot backup table `public._archive_backup_account_lifecycle_log` before dropping the ledger, ensuring zero compliance audit logs are lost during rollback.
 2. **Profiles Preservation:** Dropping the additive columns leaves all core profile information (`id`, `email`, `role`, `full_name`, `phone`, `district`, `state`, `profile_data`, `is_active`) 100% intact.
 3. **Application Compatibility:** The application code contains fallback handling that safely reads `is_active` if `account_status` is not present, preventing runtime crashes during intermediate migration states.
+

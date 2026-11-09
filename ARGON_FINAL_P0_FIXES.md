@@ -76,3 +76,4 @@ flowchart TD
    - Triple-layer immutability for `account_lifecycle_log`.
    - Two-phase safe backfill for existing users.
    - Constraint modification from `ON DELETE CASCADE` to `ON DELETE RESTRICT` on `profiles_id_fkey`.
+

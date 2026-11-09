@@ -134,3 +134,4 @@ At the conclusion of the migration, PostgREST was signaled to refresh its intern
 NOTIFY pgrst, 'reload schema';
 ```
 PostgREST successfully reloaded in staging within 35 ms without requiring service restart or dropping active client connections.
+

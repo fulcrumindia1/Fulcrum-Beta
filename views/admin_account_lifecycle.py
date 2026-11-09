@@ -18,6 +18,7 @@ from services.roles import (
     require_sole_admin,
     get_user_roles,
     get_active_roles,
+    list_users_with_multi_roles,
     SOLE_ADMIN_EMAIL,
     SOLE_ADMIN_UUID,
 )
@@ -35,7 +36,7 @@ from services.account_lifecycle import (
     list_account_lifecycle_logs,
     list_accounts_by_status,
 )
-from services.profiles import get_profile, list_users_with_multi_roles
+from services.profiles import get_profile
 from services.legal import check_user_nda_accepted
 
 
