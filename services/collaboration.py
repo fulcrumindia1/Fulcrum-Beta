@@ -25,6 +25,10 @@ def create_case_message(
     attachments: Optional[List[str]] = None
 ) -> Tuple[bool, Optional[str]]:
     """Creates a new case discussion message or private mentor note."""
+    if not author_id or not str(author_id).strip():
+        return False, "Author identity is required."
+    if not aspirant_id or not str(aspirant_id).strip():
+        return False, "Entrepreneur ID is required."
     if not title or not message:
         return False, "Title and message cannot be empty."
 
@@ -34,11 +38,11 @@ def create_case_message(
             return False, "Entrepreneurs cannot create private mentor notes."
 
         from services.governance import get_primary_admin_id
-        from services.roles import user_has_active_role
+        from services.roles import is_strict_admin, user_has_active_role
         from services.legal import check_user_nda_accepted
 
         primary_admin_id = str(get_primary_admin_id() or "")
-        is_admin = (primary_admin_id and str(author_id) == primary_admin_id) or user_has_active_role(str(author_id), "admin")
+        is_admin = (primary_admin_id and str(author_id) == primary_admin_id) or is_strict_admin(user_id=str(author_id)) or user_has_active_role(str(author_id), "admin")
 
         if not is_admin:
             # Must be an assigned mentor with active status and accepted NDA
@@ -48,12 +52,31 @@ def create_case_message(
             if not assigned_rel:
                 return False, "Unauthorized: No active mentorship relationship exists for this entrepreneur."
 
-            guides_list = [str(g.get("id")) for g in assigned_rel.get("guides", [])]
+            raw_gids = assigned_rel.get("guide_ids") or []
+            if isinstance(raw_gids, str):
+                try: raw_gids = json.loads(raw_gids)
+                except Exception: raw_gids = [raw_gids]
+            if not isinstance(raw_gids, list):
+                raw_gids = []
             if assigned_rel.get("guide_id"):
-                guides_list.append(str(assigned_rel["guide_id"]))
-            smes_list = [str(s.get("id")) for s in assigned_rel.get("smes", [])]
+                raw_gids.append(str(assigned_rel["guide_id"]))
+            for g in assigned_rel.get("guides", []):
+                if isinstance(g, dict) and g.get("id"):
+                    raw_gids.append(str(g["id"]))
+            guides_list = [str(gid) for gid in raw_gids if gid]
+
+            raw_sids = assigned_rel.get("sme_ids") or []
+            if isinstance(raw_sids, str):
+                try: raw_sids = json.loads(raw_sids)
+                except Exception: raw_sids = [raw_sids]
+            if not isinstance(raw_sids, list):
+                raw_sids = []
             if assigned_rel.get("sme_id"):
-                smes_list.append(str(assigned_rel["sme_id"]))
+                raw_sids.append(str(assigned_rel["sme_id"]))
+            for s in assigned_rel.get("smes", []):
+                if isinstance(s, dict) and s.get("id"):
+                    raw_sids.append(str(s["id"]))
+            smes_list = [str(sid) for sid in raw_sids if sid]
 
             str_author = str(author_id)
             if str_author not in guides_list and str_author not in smes_list:
@@ -83,15 +106,16 @@ def create_case_message(
     backend = get_data_backend()
     if backend == "supabase":
         client = get_supabase_admin_client() or get_supabase_client()
-        if client:
-            try:
-                client.table("case_discussions").insert(record).execute()
-            except Exception:
-                pass
-
-    db = get_local_db()
-    if hasattr(db, "insert_case_discussion"):
-        db.insert_case_discussion(record)
+        if not client:
+            return False, "Supabase connection is not available."
+        try:
+            client.table("case_discussions").insert(record).execute()
+        except Exception as e:
+            return False, f"Failed to persist case message in Supabase: {e}"
+    else:
+        db = get_local_db()
+        if hasattr(db, "insert_case_discussion"):
+            db.insert_case_discussion(record)
 
     invalidate_memo(f"case_discussions:{aspirant_id}")
     return True, None
@@ -123,11 +147,11 @@ def list_case_messages(
     can_view_private = False
     if effective_viewer:
         from services.governance import get_primary_admin_id
-        from services.roles import user_has_active_role
+        from services.roles import is_strict_admin, user_has_active_role
         from services.legal import check_user_nda_accepted
 
         primary_admin_id = str(get_primary_admin_id() or "")
-        is_admin = (primary_admin_id and str(effective_viewer) == primary_admin_id) or user_has_active_role(str(effective_viewer), "admin")
+        is_admin = (primary_admin_id and str(effective_viewer) == primary_admin_id) or is_strict_admin(user_id=str(effective_viewer)) or user_has_active_role(str(effective_viewer), "admin")
 
         if is_admin:
             can_view_private = (requesting_role != "aspirant")
@@ -139,12 +163,31 @@ def list_case_messages(
             rels = get_all_relationships()
             assigned_rel = next((r for r in rels if str(r.get("aspirant_id")) == str(aspirant_id) and r.get("status") == "active"), None)
             if assigned_rel:
-                guides_list = [str(g.get("id")) for g in assigned_rel.get("guides", [])]
+                raw_gids = assigned_rel.get("guide_ids") or []
+                if isinstance(raw_gids, str):
+                    try: raw_gids = json.loads(raw_gids)
+                    except Exception: raw_gids = [raw_gids]
+                if not isinstance(raw_gids, list):
+                    raw_gids = []
                 if assigned_rel.get("guide_id"):
-                    guides_list.append(str(assigned_rel["guide_id"]))
-                smes_list = [str(s.get("id")) for s in assigned_rel.get("smes", [])]
+                    raw_gids.append(str(assigned_rel["guide_id"]))
+                for g in assigned_rel.get("guides", []):
+                    if isinstance(g, dict) and g.get("id"):
+                        raw_gids.append(str(g["id"]))
+                guides_list = [str(gid) for gid in raw_gids if gid]
+
+                raw_sids = assigned_rel.get("sme_ids") or []
+                if isinstance(raw_sids, str):
+                    try: raw_sids = json.loads(raw_sids)
+                    except Exception: raw_sids = [raw_sids]
+                if not isinstance(raw_sids, list):
+                    raw_sids = []
                 if assigned_rel.get("sme_id"):
-                    smes_list.append(str(assigned_rel["sme_id"]))
+                    raw_sids.append(str(assigned_rel["sme_id"]))
+                for s in assigned_rel.get("smes", []):
+                    if isinstance(s, dict) and s.get("id"):
+                        raw_sids.append(str(s["id"]))
+                smes_list = [str(sid) for sid in raw_sids if sid]
 
                 str_v = str(effective_viewer)
                 if str_v in guides_list and check_user_nda_accepted(str_v, "guide"):
@@ -152,8 +195,8 @@ def list_case_messages(
                 elif str_v in smes_list and check_user_nda_accepted(str_v, "sme"):
                     can_view_private = (requesting_role != "aspirant")
     else:
-        # No authenticated viewer session — default to public entrepreneur view
-        can_view_private = (requesting_role not in ("aspirant", ""))
+        # No authenticated viewer session — STRICT FAIL CLOSED: NEVER allow private notes!
+        can_view_private = False
 
     cache_key = f"case_discussions:{aspirant_id}:{requesting_role}:{effective_viewer}:{can_view_private}"
     cached = get_memo(cache_key)
@@ -172,10 +215,10 @@ def list_case_messages(
                     q = q.eq("is_private_mentor_note", False)
                 res = q.execute()
                 records = res.data or []
-            except Exception:
-                pass
-
-    if not records:
+            except Exception as e:
+                print(f"[Collaboration] Supabase query notice: {e}")
+                records = []
+    else:
         db = get_local_db()
         if hasattr(db, "list_case_discussions"):
             records = db.list_case_discussions(aspirant_id=aspirant_id, include_private=can_view_private)

@@ -853,9 +853,21 @@ def main():
             # MULTI-ROLE: CURRENT WORKSPACE SELECTOR
             # ─────────────────────────────────────────────────────────────────
             from services.roles import get_active_roles, get_pending_nda_roles, get_user_roles, is_strict_admin
+            from services.account_lifecycle import get_account_status
             user_id = user.get("id")
             user_email = str(user.get("email", "")).strip().lower()
             base_p_role = str(user.get("role", "aspirant")).strip().lower()
+
+            acc_lifecycle_sb = get_account_status(user_id)
+            acc_status_sb = str(acc_lifecycle_sb.get("account_status") or "DENIED").strip().upper()
+            is_blocked_sb = (acc_status_sb in ("TEMPORARILY_SUSPENDED", "ARCHIVED", "DENIED")) or (not acc_lifecycle_sb.get("is_active", True) and acc_status_sb != "PENDING_DELETION")
+
+            if is_blocked_sb:
+                st.write("")
+                if st.button("🚪 Logout", use_container_width=True, key="btn_sidebar_logout_blocked"):
+                    logout_user()
+                    st.rerun()
+                return
 
             is_single_admin = is_strict_admin(user_dict=user)
 
@@ -881,14 +893,16 @@ def main():
                 ]
 
                 # If user has no explicit multi-role grants in user_roles, use base profile role
-                # BUT only if there are no revoked/suspended grants (don't resurrect revoked access)
+                # BUT never synthesize professional privileges (guide/sme) without an active grant
                 if not active_r and not pending_r:
                     all_grants = get_user_roles(user_id) if user_id else []
                     has_revoked_or_suspended = any(
                         g.get("status") in ("revoked", "suspended") for g in all_grants
                     )
-                    if not has_revoked_or_suspended:
-                        active_r = [base_p_role]
+                    if not has_revoked_or_suspended and base_p_role == "aspirant":
+                        active_r = ["aspirant"]
+                    else:
+                        active_r = ["aspirant"]
 
                 ws_options = []
                 if "aspirant" in active_r:
@@ -1026,7 +1040,34 @@ def main():
         # 0. Account Lifecycle Status Gate (Enforced across all active browser sessions)
         from services.account_lifecycle import get_account_status, cancel_account_deletion
         acc_lifecycle = get_account_status(user["id"])
-        acc_status = acc_lifecycle.get("account_status", "ACTIVE")
+        acc_status = str(acc_lifecycle.get("account_status") or "DENIED").strip().upper()
+
+        if acc_status == "DENIED" or (not acc_lifecycle.get("is_active", True) and acc_status != "PENDING_DELETION"):
+            err_reason = acc_lifecycle.get("error") or acc_lifecycle.get("lifecycle_reason") or "Account access denied by security policy."
+            st.markdown(f"""
+            <div style="max-width:620px; margin: 3rem auto; background:#FFFFFF; border:1.5px solid #E2E8F0; border-top:4px solid #DC2626; border-radius:14px; padding:2.2rem; box-shadow:0 4px 16px rgba(0,0,0,0.06);">
+                <div style="display:flex; align-items:center; gap:14px; margin-bottom:1rem;">
+                    <div style="font-size:2.2rem;">🚫</div>
+                    <div>
+                        <h2 style="margin:0; font-size:1.4rem; color:#0F172A;">Access Denied</h2>
+                        <div style="color:#64748B; font-size:0.88rem; margin-top:2px;">Account status: DENIED</div>
+                    </div>
+                </div>
+                <div style="background:#FEF2F2; border:1px solid #FEE2E2; border-radius:8px; padding:0.9rem 1.1rem; margin-bottom:1.25rem;">
+                    <span style="font-weight:700; color:#991B1B; font-size:0.88rem;">Security Notice:</span>
+                    <div style="color:#B91C1C; font-size:0.84rem; margin-top:3px;">{err_reason}</div>
+                </div>
+                <p style="color:#334155; font-size:0.92rem; line-height:1.55;">
+                    Your account cannot access the Fulcrum platform. For assistance, contact <a href="mailto:fulcrumindia1@gmail.com" style="color:#2563EB; font-weight:600;">fulcrumindia1@gmail.com</a>.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
+            with col_d2:
+                if st.button("🚪 Sign Out", key="btn_denied_logout", type="primary", use_container_width=True):
+                    logout_user()
+                    st.rerun()
+            return
 
         if acc_status in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
             status_title = "Account Suspended" if acc_status == "TEMPORARILY_SUSPENDED" else "Account Archived"

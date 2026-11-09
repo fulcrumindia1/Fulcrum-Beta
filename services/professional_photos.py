@@ -342,36 +342,44 @@ def delete_professional_photo(
 
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if admin:
-            paths_to_remove: List[str] = []
-            try:
-                res = admin.table("professional_photos").select("storage_path").eq("user_id", target_id).execute()
-                for r in (res.data or []):
-                    if r.get("storage_path"):
-                        paths_to_remove.append(r["storage_path"])
-                admin.table("professional_photos").delete().eq("user_id", target_id).execute()
-            except Exception:
-                pass
-            try:
-                listed = admin.storage.from_(PROFESSIONAL_PHOTO_BUCKET).list(target_id)
-                for item in (listed or []):
-                    name = item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
-                    if name and not name.startswith("."):
-                        p_cand = f"{target_id}/{name}"
-                        if p_cand not in paths_to_remove:
-                            paths_to_remove.append(p_cand)
-            except Exception:
-                pass
-            if paths_to_remove:
-                try:
-                    admin.storage.from_(PROFESSIONAL_PHOTO_BUCKET).remove(paths_to_remove)
-                except Exception:
-                    pass
+        if not admin:
+            return False, "Supabase connection is not available."
 
-    try:
-        db.delete_professional_photo(target_id)
-    except Exception:
-        pass
+        paths_to_remove: List[str] = []
+        try:
+            res = admin.table("professional_photos").select("storage_path").eq("user_id", target_id).execute()
+            for r in (res.data or []):
+                if r.get("storage_path"):
+                    paths_to_remove.append(r["storage_path"])
+        except Exception as e:
+            return False, f"Failed to query professional photo record from Supabase: {e}"
+
+        try:
+            listed = admin.storage.from_(PROFESSIONAL_PHOTO_BUCKET).list(target_id)
+            for item in (listed or []):
+                name = item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+                if name and not name.startswith("."):
+                    p_cand = f"{target_id}/{name}"
+                    if p_cand not in paths_to_remove:
+                        paths_to_remove.append(p_cand)
+        except Exception:
+            pass
+
+        if paths_to_remove:
+            try:
+                admin.storage.from_(PROFESSIONAL_PHOTO_BUCKET).remove(paths_to_remove)
+            except Exception as e:
+                return False, f"Failed to remove professional photo from cloud storage: {e}"
+
+        try:
+            admin.table("professional_photos").delete().eq("user_id", target_id).execute()
+        except Exception as e:
+            return False, f"Failed to delete professional photo record from Supabase: {e}"
+    else:
+        try:
+            db.delete_professional_photo(target_id)
+        except Exception as e:
+            return False, f"Failed to delete professional photo from local database: {e}"
 
     _invalidate_prof_photo_cache(target_id)
     return True, None

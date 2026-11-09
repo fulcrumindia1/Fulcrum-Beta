@@ -125,21 +125,28 @@ def is_strict_admin(
         try:
             from services.profiles import get_profile
             p = get_profile(clean_uid)
-            if p and str(p.get("email") or "").strip().lower() == SOLE_ADMIN_EMAIL:
+            if p:
+                p_email = str(p.get("email") or "").strip().lower()
+                if p_email and p_email != SOLE_ADMIN_EMAIL:
+                    return False
                 return True
         except Exception:
             pass
-        return True
+        return False
 
     # If only email was passed without UUID, verify persistent profile actually bears SOLE_ADMIN_UUID
     if clean_email == SOLE_ADMIN_EMAIL and not clean_uid:
         try:
             from services.profiles import get_profile_by_email
             p = get_profile_by_email(clean_email)
-            if p and str(p.get("id") or "").strip().lower() == SOLE_ADMIN_UUID:
-                return True
+            if p:
+                p_id = str(p.get("id") or "").strip().lower()
+                p_role = str(p.get("role") or "").strip().lower()
+                if p_id == SOLE_ADMIN_UUID and p_role == "admin":
+                    return True
         except Exception:
             pass
+        return False
 
     return False
 
@@ -154,9 +161,9 @@ def require_sole_admin(
     Enforces that only the verified Sole Platform Administrator (fulcrumindia1@gmail.com)
     can execute administrative actions. Rejects unauthorized, spoofed, or expired sessions.
     """
+    sess_u = None
     try:
         import streamlit as st
-        sess_u = None
         if hasattr(st, "session_state"):
             if isinstance(st.session_state, dict):
                 sess_u = st.session_state.get("user")
@@ -164,16 +171,32 @@ def require_sole_admin(
                 sess_u = st.session_state.get("user")
             elif hasattr(st.session_state, "user"):
                 sess_u = st.session_state.user
-
-        if sess_u and isinstance(sess_u, dict):
-            sess_uid = str(sess_u.get("id") or "").strip().lower()
-            sess_email = str(sess_u.get("email") or "").strip().lower()
-            if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
-                clean_actor = str(actor_id or (actor_dict.get("id") if actor_dict else "") or "").strip().lower()
-                if clean_actor == SOLE_ADMIN_UUID:
-                    return False, "Unauthorized: Actor spoofing detected. An active non-admin session cannot impersonate the Sole Admin."
     except Exception:
-        pass
+        sess_u = None
+
+    # Check if running in an interactive Streamlit browser context
+    has_streamlit_ctx = False
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        has_streamlit_ctx = (get_script_run_ctx() is not None)
+    except Exception:
+        has_streamlit_ctx = False
+
+    # In an active Streamlit runtime, require an authenticated Sole Admin session
+    if has_streamlit_ctx:
+        if not sess_u or not isinstance(sess_u, dict):
+            return False, "Unauthorized: An authenticated Sole Admin session is required for privileged administrative actions."
+        sess_uid = str(sess_u.get("id") or "").strip().lower()
+        sess_email = str(sess_u.get("email") or "").strip().lower()
+        if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
+            return False, "Unauthorized: Actor spoofing detected. An active non-admin session cannot impersonate the Sole Admin."
+
+    # If a session user is present (e.g. patched in unit tests), enforce anti-spoofing
+    if sess_u and isinstance(sess_u, dict):
+        sess_uid = str(sess_u.get("id") or "").strip().lower()
+        sess_email = str(sess_u.get("email") or "").strip().lower()
+        if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
+            return False, "Unauthorized: Actor spoofing detected. An active non-admin session cannot impersonate the Sole Admin."
 
     if is_strict_admin(user_id=actor_id, user_dict=actor_dict, token=token):
         return True, None
@@ -257,14 +280,16 @@ def get_user_roles(user_id: str) -> List[Dict]:
                     "activated_at": p.get("created_at")
                 })
         else:
-            # For entrepreneurs and mentors, ensure base registered role is present
-            # BUT never resurrect a role that was explicitly revoked or suspended
+            # For entrepreneurs, ensure base registered 'aspirant' role is present if no explicit grant exists
+            # CRITICAL DEFENSE: Never synthesize professional roles ('guide', 'sme') without an explicit
+            # verified record in user_roles! Revoked/suspended mentors or database query fallbacks must
+            # never gain active professional privileges.
             existing_base = next((r for r in roles if r.get("role") == base_role), None)
-            if not existing_base:
+            if not existing_base and base_role == "aspirant":
                 roles.append({
-                    "id": f"role_{user_id}_{base_role}",
+                    "id": f"role_{user_id}_aspirant",
                     "user_id": user_id,
-                    "role": base_role,
+                    "role": "aspirant",
                     "status": "active",
                     "granted_at": p.get("created_at"),
                     "activated_at": p.get("created_at")

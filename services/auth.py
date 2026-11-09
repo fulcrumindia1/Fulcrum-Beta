@@ -248,11 +248,17 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
             # Check Account Lifecycle Gate
             from services.account_lifecycle import get_account_status
             acc_st = get_account_status(local_profile["id"])
-            st_val = acc_st.get("account_status", "ACTIVE")
+            st_val = str(acc_st.get("account_status") or "DENIED").strip().upper()
+            if st_val == "DENIED" or not acc_st.get("exists", True) or acc_st.get("error"):
+                return None, f"Account access denied: {acc_st.get('error') or 'Account record is invalid or inaccessible.'}"
             if st_val in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
                 st_label = "temporarily suspended" if st_val == "TEMPORARILY_SUSPENDED" else "archived"
                 reason_txt = acc_st.get("lifecycle_reason") or "Administrative compliance review"
                 return None, f"Account access restricted: Account is {st_label} ({reason_txt}). Please contact fulcrumindia1@gmail.com."
+            if st_val != "ACTIVE" and st_val != "PENDING_DELETION":
+                return None, f"Account access denied: Restricted account status '{st_val}'."
+            if not acc_st.get("is_active", True) and st_val != "PENDING_DELETION":
+                return None, "Account access restricted: Account is marked inactive by administration."
 
             st.session_state.user = local_profile
             st.session_state.user_id = local_profile["id"]
@@ -368,7 +374,13 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
     # Account Lifecycle Gate: Enforce active status before granting session state
     from services.account_lifecycle import get_account_status
     acc_st = get_account_status(profile["id"])
-    st_val = acc_st.get("account_status", "ACTIVE")
+    st_val = str(acc_st.get("account_status") or "DENIED").strip().upper()
+    if st_val == "DENIED" or not acc_st.get("exists", True) or acc_st.get("error"):
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
+        return None, f"Account access denied: {acc_st.get('error') or 'Account record is invalid or inaccessible.'}"
     if st_val in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
         st_label = "temporarily suspended" if st_val == "TEMPORARILY_SUSPENDED" else "archived"
         reason_txt = acc_st.get("lifecycle_reason") or "Administrative compliance review"
@@ -377,6 +389,18 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
         except Exception:
             pass
         return None, f"Account access restricted: Account is {st_label} ({reason_txt}). Please contact fulcrumindia1@gmail.com."
+    if st_val != "ACTIVE" and st_val != "PENDING_DELETION":
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
+        return None, f"Account access denied: Restricted account status '{st_val}'."
+    if not acc_st.get("is_active", True) and st_val != "PENDING_DELETION":
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
+        return None, "Account access restricted: Account is marked inactive by administration."
 
     # Save authenticated session state
     st.session_state.user = profile

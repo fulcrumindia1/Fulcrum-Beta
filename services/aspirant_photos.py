@@ -563,22 +563,23 @@ def delete_aspirant_photo(
     # Supabase cleanup
     if backend == "supabase":
         admin = get_supabase_admin_client() or get_supabase_client()
-        if admin:
-            try:
-                res = admin.table("aspirant_photos").select("storage_path").eq("user_id", user_id).limit(1).execute()
-                if res.data and len(res.data) > 0:
-                    old_path = res.data[0].get("storage_path")
-                    if old_path:
-                        try:
-                            admin.storage.from_(STORAGE_BUCKET).remove([old_path])
-                        except Exception:
-                            pass
-                admin.table("aspirant_photos").delete().eq("user_id", user_id).execute()
-            except Exception as e:
-                return False, f"Failed to delete photo from Supabase: {e}"
-
-    # Local DB cleanup
-    get_local_db().delete_aspirant_photo(user_id)
+        if not admin:
+            return False, "Supabase connection is not available."
+        try:
+            res = admin.table("aspirant_photos").select("storage_path").eq("user_id", user_id).limit(1).execute()
+            if res.data and len(res.data) > 0:
+                old_path = res.data[0].get("storage_path")
+                if old_path:
+                    try:
+                        admin.storage.from_(STORAGE_BUCKET).remove([old_path])
+                    except Exception as e_st:
+                        return False, f"Failed to delete photo from cloud storage: {e_st}"
+            admin.table("aspirant_photos").delete().eq("user_id", user_id).execute()
+        except Exception as e:
+            return False, f"Failed to delete photo from Supabase: {e}"
+    else:
+        # Local DB cleanup
+        get_local_db().delete_aspirant_photo(user_id)
     return True, None
 
 

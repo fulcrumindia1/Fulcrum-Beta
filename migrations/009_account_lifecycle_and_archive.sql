@@ -224,7 +224,7 @@ CREATE POLICY "Sole Admin select account_lifecycle_log"
     TO authenticated
     USING (
         auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com'
-        OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin'
+        AND auth.uid() = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid
     );
 
 -- User SELECT Policy (View own audit trail)
@@ -236,15 +236,19 @@ CREATE POLICY "Users view own account_lifecycle_log"
     USING (user_id = auth.uid());
 
 -- Authenticated INSERT Policy (Append-Only)
+-- Strict Defense: Only Sole Admin or self-service deletion actions can insert
 DROP POLICY IF EXISTS "Authenticated insert account_lifecycle_log" ON public.account_lifecycle_log;
 CREATE POLICY "Authenticated insert account_lifecycle_log"
     ON public.account_lifecycle_log
     FOR INSERT
     TO authenticated
     WITH CHECK (
-        auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com'
-        OR auth.uid() = actor_id
-        OR auth.uid() = user_id
+        (auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com' AND auth.uid() = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid)
+        OR (
+            auth.uid() = actor_id
+            AND auth.uid() = user_id
+            AND action IN ('REQUEST_DELETION', 'CANCEL_DELETION')
+        )
     );
 
 -- RESTRICTIVE Policies: In PostgreSQL, AS RESTRICTIVE policies are combined with AND!

@@ -1212,10 +1212,12 @@ def list_account_lifecycle_logs(
             except Exception as e:
                 print(f"[AccountLifecycle] Log fetch notice: {e}")
                 return []
-    db = get_local_db()
-    if hasattr(db, "list_account_lifecycle_logs"):
-        return db.list_account_lifecycle_logs(user_id=user_id, limit=limit)
-    return []
+        return []
+    else:
+        db = get_local_db()
+        if hasattr(db, "list_account_lifecycle_logs"):
+            return db.list_account_lifecycle_logs(user_id=user_id, limit=limit)
+        return []
 
 
 def list_accounts_by_status(status_filter: Optional[str] = None) -> List[Dict]:

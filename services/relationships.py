@@ -744,7 +744,7 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
                         "updated_at": now_iso
                     }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
             except Exception as ex_hr:
-                print(f"[Relationships] Notice: consultation handover exception: {ex_hr}")
+                return False, f"Failed to transfer consultations during Guide unassignment: {ex_hr}"
         except Exception as e:
             return False, f"Failed to unassign Guide in Supabase: {e}"
     else:
@@ -892,7 +892,7 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
                         "updated_at": now_iso
                     }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
             except Exception as ex_hr:
-                print(f"[Relationships] Notice: consultation handover exception: {ex_hr}")
+                return False, f"Failed to transfer consultations during SME unassignment: {ex_hr}"
         except Exception as e:
             return False, f"Failed to unassign SME in Supabase: {e}"
     else:
