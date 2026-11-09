@@ -235,6 +235,7 @@ def render_login_page():
     acc_token = query_params.get("access_token", "")
     ref_token = query_params.get("refresh_token", "")
     auth_code = query_params.get("code", "")
+    error_desc = query_params.get("error_description") or query_params.get("error") or ""
     backend = get_data_backend()
 
     # Handle modern Supabase PKCE code exchange if redirected from reset email
@@ -264,8 +265,6 @@ def render_login_page():
         st.session_state.sb_access_token = acc_token
     if ref_token:
         st.session_state.sb_refresh_token = ref_token
-
-    error_desc = query_params.get("error_description") or query_params.get("error") or error_desc
 
     # Centered Container Layout
     col_l, col_center, col_r = st.columns([1, 1.4, 1])
