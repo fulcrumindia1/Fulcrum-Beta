@@ -143,27 +143,30 @@ def get_profiles_batch(user_ids: List[str]) -> Dict[str, Dict]:
     backend = get_data_backend()
 
     if backend == "supabase":
-        client = _get_user_client() or _get_admin_client()
-        admin = _get_admin_client()
-        fetcher = client or admin
-        if fetcher:
+        client = _get_user_client()
+        if client:
             try:
-                # Query in single batch with in_ filter
-                res = fetcher.table("profiles").select("*").in_("id", missing_ids).execute()
+                res = client.table("profiles").select("*").in_("id", missing_ids).execute()
                 for p in (res.data or []):
                     p["completion_pct"] = calculate_completion(p)
                     set_memo(f"profile:{p['id']}", p, ttl_seconds=60)
                     result[p["id"]] = p
-            except Exception as e:
-                if admin and admin != fetcher:
-                    try:
-                        res = admin.table("profiles").select("*").in_("id", missing_ids).execute()
-                        for p in (res.data or []):
-                            p["completion_pct"] = calculate_completion(p)
-                            set_memo(f"profile:{p['id']}", p, ttl_seconds=60)
-                            result[p["id"]] = p
-                    except Exception:
-                        pass
+            except Exception:
+                pass
+
+        # Query admin client for any remaining missing profiles (bypasses RLS for mentor panels & background tasks)
+        still_to_fetch = [uid for uid in missing_ids if uid not in result]
+        if still_to_fetch:
+            admin = _get_admin_client()
+            if admin:
+                try:
+                    res_admin = admin.table("profiles").select("*").in_("id", still_to_fetch).execute()
+                    for p in (res_admin.data or []):
+                        p["completion_pct"] = calculate_completion(p)
+                        set_memo(f"profile:{p['id']}", p, ttl_seconds=60)
+                        result[p["id"]] = p
+                except Exception:
+                    pass
         still_missing = [uid for uid in missing_ids if uid not in result]
         if still_missing:
             db = get_local_db()
