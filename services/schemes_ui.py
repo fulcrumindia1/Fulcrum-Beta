@@ -352,9 +352,12 @@ def open_delete_scheme_dialog(s: dict, admin_id: str = None):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Yes, Delete", type="primary", use_container_width=True):
-            delete_scheme(sid, admin_id or "admin")
-            st.success(f"Deleted '{name}'")
-            st.rerun()
+            ok, err = delete_scheme(sid, admin_id or "admin")
+            if ok:
+                st.success(f"Deleted '{name}'")
+                st.rerun()
+            else:
+                st.error(err or f"Failed to delete '{name}'")
     with col2:
         if st.button("Cancel", use_container_width=True):
             st.rerun()

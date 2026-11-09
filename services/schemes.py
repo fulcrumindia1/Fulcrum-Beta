@@ -235,6 +235,11 @@ def delete_scheme(scheme_id: str, admin_id: str) -> Tuple[bool, Optional[str]]:
         if not client:
             return False, "Supabase client not available."
         try:
+            try:
+                client.table("scheme_releases").delete().eq("scheme_id", scheme_id).execute()
+                client.table("scheme_support_reviews").delete().eq("scheme_id", scheme_id).execute()
+            except Exception as ex_fk:
+                print(f"[Schemes] Best-effort cascade cleanup: {ex_fk}")
             client.table("schemes").delete().eq("id", scheme_id).execute()
             invalidate_global_cache("schemes")
             invalidate_memo("scheme_matches_ai:")
@@ -440,9 +445,9 @@ def release_scheme_to_aspirant(
     backend = get_data_backend()
 
     if backend == "supabase":
-        client = _get_user_client()
         admin = _get_admin_client()
-        writer = client if client else admin
+        client = _get_user_client()
+        writer = admin or client
         if not writer:
             return False, "Supabase client not available."
         try:
@@ -555,9 +560,9 @@ def withdraw_scheme_release(
     backend = get_data_backend()
 
     if backend == "supabase":
-        client = _get_user_client()
         admin = _get_admin_client()
-        writer = client if client else admin
+        client = _get_user_client()
+        writer = admin or client
         if not writer:
             return False, "Supabase client not available."
         try:
@@ -681,11 +686,12 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
                     s_clean["release_id"] = r.get("id")
                     s_clean["guide_id"] = r.get("guide_id")
                     s_clean["guide_recommendation"] = r.get("guide_recommendation")
-                    s_clean["guide_note"] = r.get("guide_note")
                     s_clean["released_at"] = r.get("released_at")
                     s_clean["eligibility_summary"] = r.get("eligibility_summary")
                     s_clean["application_stage"] = _extract_application_stage(r)
-                    # STRICT PRIVATE INTELLIGENCE STRIPPING
+                    # STRICT PRIVATE INTELLIGENCE STRIPPING:
+                    # Never leak internal Guide evaluation notes, hidden agenda, or AI prompt to entrepreneur
+                    s_clean.pop("guide_note", None)
                     s_clean.pop("hidden_agenda", None)
                     s_clean.pop("red_flags", None)
                     s_clean.pop("application_prompt", None)
@@ -698,10 +704,17 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
         return []
 
     local_res = get_local_db().get_released_schemes_for_aspirant(aspirant_id)
+    cleaned_local = []
     for item in (local_res or []):
-        item["application_stage"] = _extract_application_stage(item)
-    set_memo(cache_key, local_res, ttl_seconds=60)
-    return local_res
+        c_item = dict(item)
+        c_item["application_stage"] = _extract_application_stage(c_item)
+        c_item.pop("guide_note", None)
+        c_item.pop("hidden_agenda", None)
+        c_item.pop("red_flags", None)
+        c_item.pop("application_prompt", None)
+        cleaned_local.append(c_item)
+    set_memo(cache_key, cleaned_local, ttl_seconds=60)
+    return cleaned_local
 
 SCHEME_APPLICATION_STAGES = (
     "Recommended",
@@ -746,11 +759,13 @@ def update_scheme_application_stage(
     if not aspirant_id or not scheme_id:
         return False, "Aspirant ID and Scheme ID are required."
 
-    # Authorization: Aspirant owner, assigned Guide (primary or Co-Guide), or Admin
+    # Authorization: Aspirant owner, assigned Guide (primary or Co-Guide), or verified Platform Admin
     from services.relationships import get_aspirant_mentors
     from services.profiles import get_profile
+    from services.roles import is_strict_admin
     actor_prof = get_profile(actor_id) or {}
-    is_admin = (actor_prof.get("role") == "admin") or (actor_role == "admin")
+    # Anti-spoofing: Verify actual admin identity rather than trusting caller-supplied text parameter
+    is_admin = is_strict_admin(user_id=actor_id, user_dict=actor_prof)
     is_owner = (str(actor_id) == str(aspirant_id))
     mentors = get_aspirant_mentors(aspirant_id) or {}
     guide_ids = [str(g.get("id")) for g in mentors.get("guides", []) if g and g.get("id")]

@@ -59,10 +59,12 @@ def submit_scheme_support_review(
         admin = get_supabase_admin_client()
         if admin:
             try:
-                admin.table("scheme_support_reviews").upsert(
+                res = admin.table("scheme_support_reviews").upsert(
                     record,
                     on_conflict="aspirant_id, scheme_id, guide_id"
                 ).execute()
+                if res.data and len(res.data) > 0 and res.data[0].get("id"):
+                    review_id = res.data[0]["id"]
             except Exception as e:
                 # If Supabase table is not yet migrated, we continue to local DB safely
                 print(f"[SchemeReviews] Supabase insertion note: {e}")
@@ -94,7 +96,7 @@ def submit_scheme_support_review(
     except Exception as e:
         print(f"[SchemeReviews] Notification dispatch error: {e}")
 
-    return True, None
+    return True, review_id
 
 
 def list_scheme_support_reviews(
@@ -177,17 +179,20 @@ def decide_scheme_support_review(
 
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if admin:
-            try:
-                admin.table("scheme_support_reviews").update({
-                    "status": decision,
-                    "admin_decision_notes": admin_notes.strip(),
-                    "reviewed_by": admin_id,
-                    "reviewed_at": now_iso,
-                    "updated_at": now_iso
-                }).eq("id", review_id).execute()
-            except Exception as e:
-                print(f"[SchemeReviews] Supabase update note: {e}")
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            u_res = admin.table("scheme_support_reviews").update({
+                "status": decision,
+                "admin_decision_notes": admin_notes.strip(),
+                "reviewed_by": admin_id,
+                "reviewed_at": now_iso,
+                "updated_at": now_iso
+            }).eq("id", review_id).execute()
+            if not u_res.data:
+                return False, f"Failed to record review decision: Review '{review_id}' not found."
+        except Exception as e:
+            return False, f"Failed to persist decision in Supabase: {e}"
 
     db = get_local_db()
     if hasattr(db, "update_scheme_support_review"):
@@ -203,15 +208,17 @@ def decide_scheme_support_review(
         if decision == "APPROVED" and target_review.get("aspirant_id") and target_review.get("scheme_id"):
             try:
                 from services.schemes import release_scheme_to_aspirant
-                release_scheme_to_aspirant(
+                ok_rel, err_rel = release_scheme_to_aspirant(
                     guide_id=target_review.get("guide_id") or admin_id,
                     aspirant_id=target_review["aspirant_id"],
                     scheme_id=target_review["scheme_id"],
                     guide_recommendation=target_review.get("justification") or admin_notes.strip(),
                     guide_note=f"Approved via Scheme Support Review: {admin_notes.strip()}",
                 )
+                if not ok_rel:
+                    print(f"[SchemeReviews] Notice: Review approved but auto-release encountered: {err_rel}")
             except Exception as rel_err:
-                print(f"[SchemeReviews] Auto-release note: {rel_err}")
+                print(f"[SchemeReviews] Auto-release exception: {rel_err}")
 
         try:
             from services.notifications import create_notification
