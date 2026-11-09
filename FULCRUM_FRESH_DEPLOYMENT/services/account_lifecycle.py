@@ -1005,7 +1005,7 @@ def request_account_deletion(
             "previous_status": curr_details.get("account_status", "ACTIVE"),
             "new_status": "PENDING_DELETION",
             "reason": note,
-            "metadata": f"{{\"scheduled_for\": \"{scheduled_for}\", \"grace_days\": {grace_days}}}",
+            "metadata": json.dumps({"scheduled_for": str(scheduled_for), "grace_days": grace_days}),
             "created_at": now_iso
         })
 
@@ -1176,7 +1176,7 @@ def set_legal_hold(
             "previous_status": curr_status,
             "new_status": curr_status,
             "reason": reason.strip(),
-            "metadata": f"{{\"legal_hold\": {str(enabled).lower()}}}",
+            "metadata": json.dumps({"legal_hold": bool(enabled)}),
             "created_at": now_iso
         })
 

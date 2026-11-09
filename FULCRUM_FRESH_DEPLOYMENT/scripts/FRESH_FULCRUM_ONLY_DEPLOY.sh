@@ -187,3 +187,4 @@ echo "=================================================================="
 echo "  [SUCCESS] FULCRUM CONTAINER SUCCESSFULLY DEPLOYED & HEALTHY!"
 echo "=================================================================="
 docker stats --no-stream fulcrum-app fulcrum-caddy 2>/dev/null || true
+

@@ -15,6 +15,8 @@ from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
 from services.cache import get_memo, set_memo, invalidate_memo
+from services.relationships import get_aspirant_mentors
+from services.governance import check_sme_has_conflict
 
 def _invalidate_help_requests_cache() -> None:
     invalidate_memo("help_requests:")
@@ -479,7 +481,6 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
             aspirant_id = req["aspirant_id"]
             if req.get("assigned_guide_id") and str(req.get("assigned_guide_id")) != str(guide_id):
                 # Also allow assigned Co-Guides for this aspirant
-                from services.relationships import get_aspirant_mentors
                 m_info = get_aspirant_mentors(aspirant_id) or {}
                 co_guide_ids = [str(g.get("id")) for g in m_info.get("guides", []) if g and g.get("id")]
                 if str(guide_id) not in co_guide_ids:
@@ -528,7 +529,6 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
         req = dict(row)
         aspirant_id = req["aspirant_id"]
         if req.get("assigned_guide_id") and req.get("assigned_guide_id") != guide_id:
-            from services.relationships import get_aspirant_mentors
             m_info = get_aspirant_mentors(aspirant_id) or {}
             co_guide_ids = [str(g.get("id")) for g in m_info.get("guides", []) if g and g.get("id")]
             if str(guide_id) not in co_guide_ids:
@@ -677,11 +677,9 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
                 return False, "Help request not found."
             req = t_res.data[0]
             aspirant_id = req["aspirant_id"]
-            from services.governance import check_sme_has_conflict
             if check_sme_has_conflict(sme_id, aspirant_id):
                 return False, "Conflict of Interest Recusal Active: You have declared a conflict of interest on this case and cannot submit advisory responses pending Admin reassignment."
             if req.get("assigned_sme_id") and str(req.get("assigned_sme_id")) != str(sme_id):
-                from services.relationships import get_aspirant_mentors
                 m_info = get_aspirant_mentors(aspirant_id) or {}
                 panel_sme_ids = [str(s.get("id")) for s in m_info.get("smes", []) if s and s.get("id")]
                 if str(sme_id) not in panel_sme_ids:
@@ -730,11 +728,9 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
 
         req = dict(row)
         aspirant_id = req["aspirant_id"]
-        from services.governance import check_sme_has_conflict
         if check_sme_has_conflict(sme_id, aspirant_id):
             return False, "Conflict of Interest Recusal Active: You have declared a conflict of interest on this case and cannot submit advisory responses pending Admin reassignment."
         if req.get("assigned_sme_id") and req.get("assigned_sme_id") != sme_id:
-            from services.relationships import get_aspirant_mentors
             m_info = get_aspirant_mentors(aspirant_id) or {}
             panel_sme_ids = [str(s.get("id")) for s in m_info.get("smes", []) if s and s.get("id")]
             if str(sme_id) not in panel_sme_ids:

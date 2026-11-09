@@ -78,3 +78,4 @@ else
     docker logs --tail=30 fulcrum-app
     exit 1
 fi
+

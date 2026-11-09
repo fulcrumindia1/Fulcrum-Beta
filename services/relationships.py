@@ -15,6 +15,7 @@ from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
 from services.cache import get_memo, set_memo, invalidate_memo
+from services.roles import get_user_roles
 
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
@@ -106,7 +107,6 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
                 if gp and not any(existing["id"] == gp["id"] for existing in guides):
                     gp_copy = dict(gp)
                     try:
-                        from services.roles import get_user_roles
                         g_roles = get_user_roles(gid)
                         g_rec = next((r for r in g_roles if r.get("role") == "guide"), None)
                         gp_copy["role_status"] = g_rec.get("status", "active") if g_rec else "active"
@@ -123,7 +123,6 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
                 if sp and not any(existing["id"] == sp["id"] for existing in smes):
                     sp_copy = dict(sp)
                     try:
-                        from services.roles import get_user_roles
                         s_roles = get_user_roles(sid)
                         s_rec = next((r for r in s_roles if r.get("role") == "sme"), None)
                         sp_copy["role_status"] = s_rec.get("status", "active") if s_rec else "active"
@@ -178,7 +177,6 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
             if gp and not any(existing["id"] == gp["id"] for existing in guides):
                 gp_copy = dict(gp)
                 try:
-                    from services.roles import get_user_roles
                     g_roles = get_user_roles(gid)
                     g_rec = next((r for r in g_roles if r.get("role") == "guide"), None)
                     gp_copy["role_status"] = g_rec.get("status", "active") if g_rec else "active"
@@ -195,7 +193,6 @@ def get_aspirant_mentors(aspirant_id: str) -> Dict[str, Optional[Dict]]:
             if sp and not any(existing["id"] == sp["id"] for existing in smes):
                 sp_copy = dict(sp)
                 try:
-                    from services.roles import get_user_roles
                     s_roles = get_user_roles(sid)
                     s_rec = next((r for r in s_roles if r.get("role") == "sme"), None)
                     sp_copy["role_status"] = s_rec.get("status", "active") if s_rec else "active"

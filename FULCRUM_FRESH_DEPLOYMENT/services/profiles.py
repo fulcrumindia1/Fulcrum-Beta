@@ -368,7 +368,7 @@ def list_all_profiles() -> List[Dict]:
     set_memo("all_profiles", rows, ttl_seconds=60)
     return rows
 
-def list_profiles_by_role(role: str) -> List[Dict]:
+def list_profiles_by_role(role: str, requesting_actor_id: Optional[str] = None, **kwargs) -> List[Dict]:
     """Lists profiles holding a specific role from active backend.
     In Multi-Role architecture, a user holds a role if:
       1. profiles.role == role, OR

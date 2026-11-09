@@ -23,6 +23,7 @@ backups/*
 *.md
 *.sql
 *.txt
+!requirements.txt
 DOCUMENTATION/
 brain/
 artifacts/

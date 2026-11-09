@@ -756,15 +756,21 @@ def update_scheme_application_stage(
     scheme_id: str,
     actor_id: str,
     actor_role: str,
-    stage: str,
-    note: str = ""
+    stage: str = "",
+    note: str = "",
+    new_stage: Optional[str] = None,
+    stage_note: Optional[str] = None,
+    **kwargs
 ) -> Tuple[bool, Optional[str]]:
     """
     Updates the post-release application tracking stage for a released scheme
     (Recommended -> Preparing DPR / Documents -> Applied on Portal -> Sanctioned / Funded / Rejected / Not Pursuing)
     and logs a Journey milestone event.
     """
-    if stage not in SCHEME_APPLICATION_STAGES:
+    actual_stage = new_stage if new_stage is not None else stage
+    actual_note = stage_note if stage_note is not None else note
+
+    if actual_stage not in SCHEME_APPLICATION_STAGES:
         return False, f"Invalid application stage. Must be one of: {', '.join(SCHEME_APPLICATION_STAGES)}"
     if not aspirant_id or not scheme_id:
         return False, "Aspirant ID and Scheme ID are required."
@@ -807,20 +813,20 @@ def update_scheme_application_stage(
                 base_elig = curr_elig.split("[AppStage:", 1)[0].strip()
             else:
                 base_elig = curr_elig.strip()
-            new_elig = f"{base_elig} [AppStage: {stage}]".strip()
+            new_elig = f"{base_elig} [AppStage: {actual_stage}]".strip()
             upd_payload = {
                 "eligibility_summary": new_elig,
                 "updated_at": now_iso
             }
-            if note and note.strip():
+            if actual_note and actual_note.strip():
                 curr_note = str(row.get("guide_note") or "").strip()
-                upd_payload["guide_note"] = f"{curr_note} | [{stage}] {note.strip()}".strip(" |")
+                upd_payload["guide_note"] = f"{curr_note} | [{actual_stage}] {actual_note.strip()}".strip(" |")
             writer.table("scheme_releases").update(upd_payload).eq("aspirant_id", aspirant_id).eq("scheme_id", scheme_id).execute()
             # Best-effort: persist to dedicated columns (Migration 008). Silently skipped if columns absent.
             try:
                 writer.table("scheme_releases").update({
-                    "application_stage": stage,
-                    "application_note": (note or "").strip(),
+                    "application_stage": actual_stage,
+                    "application_note": (actual_note or "").strip(),
                     "stage_updated_at": now_iso,
                     "stage_updated_by": actor_id
                 }).eq("aspirant_id", aspirant_id).eq("scheme_id", scheme_id).execute()
@@ -839,9 +845,9 @@ def update_scheme_application_stage(
             return False, "Scheme release record not found."
         curr_elig = str(row["eligibility_summary"] or "Potentially Eligible")
         base_elig = curr_elig.split("[AppStage:", 1)[0].strip() if "[AppStage:" in curr_elig else curr_elig.strip()
-        new_elig = f"{base_elig} [AppStage: {stage}]".strip()
+        new_elig = f"{base_elig} [AppStage: {actual_stage}]".strip()
         curr_note = str(row["guide_note"] or "").strip()
-        new_note = f"{curr_note} | [{stage}] {note.strip()}".strip(" |") if (note and note.strip()) else curr_note
+        new_note = f"{curr_note} | [{actual_stage}] {actual_note.strip()}".strip(" |") if (actual_note and actual_note.strip()) else curr_note
         cur.execute("""
             UPDATE scheme_releases
             SET eligibility_summary = ?, guide_note = ?, updated_at = ?
@@ -851,9 +857,9 @@ def update_scheme_application_stage(
         conn.close()
 
     from services.journey import log_meaningful_event
-    desc = f"Scheme application progress for '{scheme_name}' updated to: {stage}."
-    if note and note.strip():
-        desc += f" Note: {note.strip()}"
+    desc = f"Scheme application progress for '{scheme_name}' updated to: {actual_stage}."
+    if actual_note and actual_note.strip():
+        desc += f" Note: {actual_note.strip()}"
     log_meaningful_event(
         aspirant_id=aspirant_id,
         actor_id=actor_id,

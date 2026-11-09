@@ -21,16 +21,30 @@ def _safe_esc(val, default=""):
     if val is None:
         return default
     return html.escape(str(val))
+import secrets
+import uuid
+import math
 from services.auth import admin_create_mentor, backfill_auth_users, get_data_backend
-from services.profiles import get_profile, list_profiles_by_role
-from services.relationships import get_aspirant_mentors, assign_guide, assign_sme, unassign_guide, unassign_sme
+from services.profiles import get_profile, list_profiles_by_role, get_profiles_batch, list_all_profiles, update_profile
+from services.relationships import get_aspirant_mentors, assign_guide, assign_sme, unassign_guide, unassign_sme, get_all_relationships
 from services.journey import get_journey_timeline, soft_delete_event, log_meaningful_event, add_admin_journey_entry, get_standard_role_label, count_active_journeys
 from views.journey_edit_dialog import render_edit_journey_dialog
-from services.roles import get_active_roles
-from services.schemes import list_schemes, get_scheme, upsert_scheme, toggle_archive_scheme, delete_scheme, match_schemes_for_aspirant
+from services.roles import get_active_roles, is_strict_admin, SOLE_ADMIN_EMAIL, list_users_with_multi_roles
+from services.schemes import list_schemes, get_scheme, upsert_scheme, toggle_archive_scheme, delete_scheme, match_schemes_for_aspirant, get_released_schemes_for_aspirant
 from services.pdf_generator import generate_aspirant_dossier_pdf
 from services.schemes_ui import render_fund_explorer_card
 from services.cache import is_tab_active
+from services.admin_metrics import get_admin_dashboard_metrics
+from services.pagination import paginate_profiles, paginate_guides, paginate_smes, render_pagination_controls
+from services.aspirant_photos import get_aspirant_photo
+from services.professional_photos import (
+    get_professional_photos_batch,
+    render_professional_avatar_html,
+    upload_professional_photo,
+    delete_professional_photo
+)
+from services.scheme_reviews import list_scheme_support_reviews, decide_scheme_support_review
+from views.admin_account_lifecycle import render_admin_account_lifecycle_tab
 from views.admin_governance import (
     render_admin_role_grants_tab,
     render_admin_legal_records_tab,
@@ -50,7 +64,6 @@ from services.constants import (
 )
 
 def render_admin_portal(admin_profile: dict):
-    from services.roles import is_strict_admin, SOLE_ADMIN_EMAIL
     if not is_strict_admin(user_dict=admin_profile):
         st.error("🚫 Access Denied: This workspace is restricted exclusively to the Sole Platform Administrator (fulcrumindia1@gmail.com).")
         st.stop()
@@ -88,7 +101,6 @@ def render_admin_portal(admin_profile: dict):
                     st.rerun()
 
     # Fetch real-time dashboard aggregates via lightweight database-side counts (PERF-01 optimized)
-    from services.admin_metrics import get_admin_dashboard_metrics
     dash_metrics = get_admin_dashboard_metrics(admin_id=admin_id)
     asp_count = dash_metrics.get("aspirants_count", 0)
     guides_count = dash_metrics.get("guides_count", 0)
@@ -183,9 +195,6 @@ def render_admin_portal(admin_profile: dict):
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
       if is_tab_active(tabs[0]):
-        from services.pagination import paginate_profiles, render_pagination_controls
-        from services.roles import list_users_with_multi_roles
-
         st.subheader("Entrepreneurs Directory")
 
         c_asp_s1, c_asp_s2 = st.columns([3, 1])
@@ -255,7 +264,6 @@ def render_admin_portal(admin_profile: dict):
                 s_assigned = mentors_info.get("sme")
                 b_info = curr_asp.get("profile_data", {}).get("business", {})
 
-                from services.aspirant_photos import get_aspirant_photo
                 adm_asp_photo = get_aspirant_photo(selected_asp_id, viewer_id=admin_id, viewer_role="admin")
                 if adm_asp_photo and adm_asp_photo.get("url"):
                     photo_html = (
@@ -273,10 +281,6 @@ def render_admin_portal(admin_profile: dict):
                         '</div>'
                     )
 
-                from services.professional_photos import (
-                    get_professional_photos_batch,
-                    render_professional_avatar_html,
-                )
                 mentor_ids_for_asp = [
                     mid for mid in [
                         g_assigned.get("id") if g_assigned else None,
@@ -338,7 +342,6 @@ def render_admin_portal(admin_profile: dict):
                 st.markdown(card_html, unsafe_allow_html=True)
 
                 # Show Released Schemes & Post-Release Application Stage Summary for this Founder
-                from services.schemes import get_released_schemes_for_aspirant
                 asp_rel_schemes = get_released_schemes_for_aspirant(selected_asp_id) or []
                 if asp_rel_schemes:
                     with st.expander(f"🏛️ Released Schemes & Application Progress ({len(asp_rel_schemes)} Released)", expanded=False):
@@ -347,10 +350,11 @@ def render_admin_portal(admin_profile: dict):
                             rs_stage = _safe_esc(rs.get("application_stage") or "Released")
                             rs_note = _safe_esc(rs.get("application_note") or "")
                             rs_upd = str(rs.get("stage_updated_at") or rs.get("released_at") or "")[:10]
+                            rs_note_html = f' · <span style="color:#475569; font-size:0.82rem;">{rs_note}</span>' if rs_note else ""
                             st.markdown(
                                 f'<div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.65rem 1rem; margin-bottom:0.45rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">'
                                 f'<div><strong style="color:#0F172A; font-size:0.9rem;">{rs_name}</strong>'
-                                f'{" · <span style=\"color:#475569; font-size:0.82rem;\">" + rs_note + "</span>" if rs_note else ""}</div>'
+                                f'{rs_note_html}</div>'
                                 f'<div style="display:flex; align-items:center; gap:8px;">'
                                 f'<span style="background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; font-size:0.74rem; font-weight:800; padding:2px 8px; border-radius:999px;">Stage: {rs_stage}</span>'
                                 f'<span style="color:#94A3B8; font-size:0.75rem;">{rs_upd}</span>'
@@ -508,7 +512,6 @@ def render_admin_portal(admin_profile: dict):
                     cg_loc_custom = st.text_input("Custom Location / State (if 'Other' selected above)", placeholder="e.g. Bengaluru (Karnataka)", key="cg_custom_loc")
                     cg_loc = cg_loc_custom.strip() if (cg_loc_sel == "Other District / Non-TN (Specify)" and cg_loc_custom and cg_loc_custom.strip()) else cg_loc_sel
                     cg_exp = st.text_input("Primary Expertise *", placeholder="e.g. PMEGP Loan Specialist, Banking, Food Processing")
-                    import secrets
                     gen_guide_pwd = secrets.token_urlsafe(12)
                     cg_pwd = st.text_input("Temporary Password", value=gen_guide_pwd)
                 cg_bio = st.text_area("Professional Background", placeholder="Retired Chief Manager with 30 years experience in MSME lending.")
@@ -542,18 +545,11 @@ def render_admin_portal(admin_profile: dict):
         with c_gs2:
             g_dist = st.selectbox("Guide District Filter", ["ALL"] + list(MASTER_DISTRICTS_TN), key="adm_g_dist_sel")
 
-        from services.pagination import paginate_guides, render_pagination_controls
         guides, total_guides = paginate_guides(page=cur_g_page, page_size=25, search=g_search, district=g_dist)
 
         if not guides and total_guides == 0:
             st.info("No guides currently registered or matching search filters. Create one above.")
         else:
-            from services.professional_photos import (
-                get_professional_photos_batch,
-                render_professional_avatar_html,
-                upload_professional_photo,
-                delete_professional_photo,
-            )
             guide_photo_map = get_professional_photos_batch(
                 viewer_id=admin_id,
                 user_ids=[g["id"] for g in guides if g.get("id")],
@@ -654,7 +650,6 @@ def render_admin_portal(admin_profile: dict):
                     cs_loc_custom = st.text_input("Custom Location / State (if 'Other' selected above)", placeholder="e.g. Mumbai (Maharashtra)", key="cs_custom_loc")
                     cs_loc = cs_loc_custom.strip() if (cs_loc_sel == "Other District / Non-TN (Specify)" and cs_loc_custom and cs_loc_custom.strip()) else cs_loc_sel
                     cs_exp = st.text_input("Specialization Domain *", placeholder="e.g. GST Auditing, Taxation, Corporate Compliance")
-                    import secrets
                     gen_sme_pwd = secrets.token_urlsafe(12)
                     cs_pwd = st.text_input("Temporary Password", value=gen_sme_pwd)
                 cs_ind = st.text_input("Industry Specialization", placeholder="e.g. Food Processing, Export, Manufacturing")
@@ -690,18 +685,11 @@ def render_admin_portal(admin_profile: dict):
         with c_ss2:
             s_dist = st.selectbox("SME District Filter", ["ALL"] + list(MASTER_DISTRICTS_TN), key="adm_s_dist_sel")
 
-        from services.pagination import paginate_smes, render_pagination_controls
         smes, total_smes = paginate_smes(page=cur_s_page, page_size=25, search=s_search, district=s_dist)
 
         if not smes and total_smes == 0:
             st.info("No SMEs registered or matching search filters. Create one above.")
         else:
-            from services.professional_photos import (
-                get_professional_photos_batch,
-                render_professional_avatar_html,
-                upload_professional_photo,
-                delete_professional_photo,
-            )
             sme_photo_map = get_professional_photos_batch(
                 viewer_id=admin_id,
                 user_ids=[s["id"] for s in smes if s.get("id")],
@@ -782,10 +770,6 @@ def render_admin_portal(admin_profile: dict):
       if is_tab_active(tabs[3]):
         st.subheader("🎯 Assign Mentors to Entrepreneurs")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>The Admin is the exclusive authority for pairing Aspirants with Guides and SMEs.</p>", unsafe_allow_html=True)
-
-        from services.pagination import paginate_profiles
-        from services.relationships import get_all_relationships, get_aspirant_mentors, assign_guide, assign_sme, unassign_guide, unassign_sme
-        from services.profiles import get_profiles_batch, list_profiles_by_role
 
         guides = list_profiles_by_role("guide", requesting_actor_id=admin_id)
         smes = list_profiles_by_role("sme", requesting_actor_id=admin_id)
@@ -1042,8 +1026,8 @@ def render_admin_portal(admin_profile: dict):
                 st.info("No mentor administrative inquiries currently recorded matching the filter criteria.")
             else:
                 # Build Guide and SME lookup dictionaries for co-assignment options (multi-role aware)
-                guides_list = list_active_profiles_for_role("guide")
-                smes_list = list_active_profiles_for_role("sme")
+                guides_list = list_profiles_by_role("guide")
+                smes_list = list_profiles_by_role("sme")
                 guide_options = {"NONE": "None (Keep Current Mentorship Team)"}
                 for g in guides_list:
                     guide_options[g["id"]] = f"{g['full_name']} ({g.get('district', 'Tamil Nadu')})"
@@ -1146,8 +1130,6 @@ def render_admin_portal(admin_profile: dict):
             st.subheader("📋 Scheme Support Reviews & Authoritative Exceptions")
             st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Caseload Guides escalate high-potential opportunities that require administrative evaluation or policy exceptions. Review guide justifications, inspect match scores, and approve or reject schemes.</p>", unsafe_allow_html=True)
 
-            from services.scheme_reviews import list_scheme_support_reviews, decide_scheme_support_review
-
             ssr_list = list_scheme_support_reviews()
             ssr_pending = [r for r in ssr_list if r.get("status") == "PENDING"]
             ssr_approved = [r for r in ssr_list if r.get("status") == "APPROVED"]
@@ -1216,6 +1198,7 @@ def render_admin_portal(admin_profile: dict):
     # ─────────────────────────────────────────────────────────────
     with tabs[5]:
       if is_tab_active(tabs[5]):
+        all_schemes = list_schemes(active_only=False) or []
         st.subheader(f"Scheme Catalogue Management ({len(all_schemes)} Records in Intelligence Database)")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Full Administrative Authority: Search, filter, add new schemes, edit existing guidelines, toggle archive status, or permanently delete schemes from both local and cloud databases.</p>", unsafe_allow_html=True)
 
@@ -1255,7 +1238,6 @@ def render_admin_portal(admin_profile: dict):
 
                 if st.form_submit_button("ADD SCHEME TO CATALOGUE", type="primary"):
                     if ns_name and ns_agency:
-                        import uuid
                         final_type = ns_custom_type.strip() if (ns_type_sel == "Other / Blended Capital (Specify)" and ns_custom_type.strip()) else ns_type_sel
                         final_cat = ns_custom_cat.strip() if (ns_cat_sel == "Other / Consortium (Specify)" and ns_custom_cat.strip()) else ns_cat_sel
                         final_stage = ns_custom_stage.strip() if (ns_stage_sel == "Other / Multi-Stage (Specify)" and ns_custom_stage.strip()) else ns_stage_sel
@@ -1334,7 +1316,6 @@ def render_admin_portal(admin_profile: dict):
         else:
             page_size = int(page_size_option)
 
-        import math
         total_pages = max(1, math.ceil(total_count / page_size)) if total_count > 0 else 1
 
         if "adm_scheme_page" not in st.session_state:
@@ -1417,5 +1398,4 @@ def render_admin_portal(admin_profile: dict):
     # ─────────────────────────────────────────────────────────────
     with tabs[12]:
         if is_tab_active(tabs[12]):
-            from views.admin_account_lifecycle import render_admin_account_lifecycle_tab
             render_admin_account_lifecycle_tab(admin_id)

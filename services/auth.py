@@ -9,6 +9,7 @@ No hardcoded secrets. Deterministic backend selection via DATA_BACKEND.
 """
 
 import os
+import json
 import streamlit as st
 from datetime import datetime, timezone
 from typing import Optional, Tuple, Dict, Any, List
@@ -173,6 +174,9 @@ def get_supabase_admin_client() -> Optional[Client]:
     except Exception:
         return None
 
+# Import account lifecycle gate after core client getters are established
+from services.account_lifecycle import get_account_status
+
 def sync_user_phone_if_missing(user_id: str, phone: str, district: Optional[str] = None) -> bool:
     """Self-healing utility: updates missing phone/district in profiles table and profile_data."""
     if not user_id or not phone:
@@ -246,7 +250,6 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
                 local_db.upsert_profile(local_profile)
 
             # Check Account Lifecycle Gate
-            from services.account_lifecycle import get_account_status
             acc_st = get_account_status(local_profile["id"])
             st_val = str(acc_st.get("account_status") or "DENIED").strip().upper()
             if st_val == "DENIED" or not acc_st.get("exists", True) or acc_st.get("error"):
@@ -372,7 +375,6 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
             sync_user_phone_if_missing(user_id, meta_phone, user_meta.get("district"))
 
     # Account Lifecycle Gate: Enforce active status before granting session state
-    from services.account_lifecycle import get_account_status
     acc_st = get_account_status(profile["id"])
     st_val = str(acc_st.get("account_status") or "DENIED").strip().upper()
     if st_val == "DENIED" or not acc_st.get("exists", True) or acc_st.get("error"):
@@ -711,7 +713,6 @@ def complete_first_login_password_change(
         prof = get_profile(user_id)
         prof_data = (prof.get("profile_data") or {}) if prof else {}
         if isinstance(prof_data, str):
-            import json
             try: prof_data = json.loads(prof_data)
             except Exception: prof_data = {}
         prof_data["temp_password_issued"] = False
@@ -761,7 +762,6 @@ def complete_first_login_password_change(
     prof = get_profile(user_id)
     prof_data = (prof.get("profile_data") or {}) if prof else {}
     if isinstance(prof_data, str):
-        import json
         try: prof_data = json.loads(prof_data)
         except Exception: prof_data = {}
     prof_data["temp_password_issued"] = False
