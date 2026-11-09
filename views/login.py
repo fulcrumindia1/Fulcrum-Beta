@@ -275,9 +275,6 @@ def render_login_page():
         <div style="text-align: center; margin-top: 2rem; margin-bottom: 1.25rem;">
             <div class="auth-brand-badge">Institutional Enterprise System</div>
             <h1 class="auth-title">FULCRUM-INDIA</h1>
-            <div class="auth-subtitle">
-                Core Relationship, Profile, Journey & Scheme Intelligence System
-            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -417,14 +414,6 @@ def render_login_page():
             </div>
             """, unsafe_allow_html=True)
 
-            st.markdown("""
-            <div style="text-align: center; margin-top: 1.25rem; font-size: 0.82rem; color: #64748B;">
-                <div style="color: #94A3B8; font-size: 0.76rem;">
-                    Authorized access only · Aspirants, Guides, SMEs & Program Administrators
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
         # ─────────────────────────────────────────────────────────────
         # TAB 2: PUBLIC ASPIRANT SIGNUP SURFACE (Aspirants Only)
         # ─────────────────────────────────────────────────────────────
@@ -486,9 +475,4 @@ def render_login_page():
             </div>
             """, unsafe_allow_html=True)
 
-        st.markdown("""
-        <div class="auth-footer">
-            FULCRUM-INDIA Enterprise Guidance System · Cluster A<br>
-            Protected by Row Level Security (RLS) & Verified RBAC
-        </div>
-        """, unsafe_allow_html=True)
+
