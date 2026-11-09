@@ -112,9 +112,8 @@ def get_account_status(user_id: str) -> Dict:
 
         try:
             res = admin.table("profiles").select(
-                "id, is_active, account_status, legal_hold, lifecycle_reason, status_updated_at, "
-                "status_updated_by, deletion_requested_at, deletion_requested_by, "
-                "deletion_scheduled_for, retention_notes"
+                "id, is_active, account_status, legal_hold, status_reason, "
+                "deletion_requested_at, deletion_scheduled_for, archived_at, restored_at, updated_at"
             ).eq("id", clean_uid).limit(1).execute()
 
             if res.data and len(res.data) > 0:
@@ -257,13 +256,17 @@ def get_account_status(user_id: str) -> Dict:
         "exists": True,
         "error": None,
         "legal_hold": bool(status_dict.get("legal_hold", False)),
-        "lifecycle_reason": status_dict.get("lifecycle_reason"),
-        "status_updated_at": status_dict.get("status_updated_at"),
+        "lifecycle_reason": status_dict.get("status_reason") or status_dict.get("lifecycle_reason"),
+        "status_reason": status_dict.get("status_reason"),
+        "status_updated_at": status_dict.get("status_updated_at") or status_dict.get("updated_at"),
         "status_updated_by": status_dict.get("status_updated_by"),
         "deletion_requested_at": status_dict.get("deletion_requested_at"),
         "deletion_requested_by": status_dict.get("deletion_requested_by"),
         "deletion_scheduled_for": status_dict.get("deletion_scheduled_for"),
-        "retention_notes": status_dict.get("retention_notes"),
+        "retention_notes": status_dict.get("retention_notes") or status_dict.get("status_reason"),
+        "archived_at": status_dict.get("archived_at"),
+        "restored_at": status_dict.get("restored_at"),
+        "updated_at": status_dict.get("updated_at"),
     }
 
     set_memo(cache_key, result, ttl_seconds=10)
@@ -339,9 +342,7 @@ def suspend_account(
             admin.table("profiles").update({
                 "account_status": "TEMPORARILY_SUSPENDED",
                 "is_active": False,
-                "lifecycle_reason": reason.strip(),
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id,
+                "status_reason": reason.strip(),
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
@@ -352,10 +353,10 @@ def suspend_account(
                     "user_id": user_id,
                     "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "SUSPEND",
-                    "previous_status": prev_status,
+                    "old_status": prev_status,
                     "new_status": "TEMPORARILY_SUSPENDED",
                     "reason": reason.strip(),
-                    "metadata": {"timestamp": now_iso},
+                    "details": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
                 if not ins_log or not getattr(ins_log, "data", None):
@@ -445,9 +446,8 @@ def resume_account(
             admin.table("profiles").update({
                 "account_status": "ACTIVE",
                 "is_active": True,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id,
+                "status_reason": note,
+                "reactivated_at": now_iso,
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
@@ -457,10 +457,10 @@ def resume_account(
                     "user_id": user_id,
                     "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "RESUME",
-                    "previous_status": curr_status,
+                    "old_status": curr_status,
                     "new_status": "ACTIVE",
                     "reason": note,
-                    "metadata": {"timestamp": now_iso},
+                    "details": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
                 if not ins_log or not getattr(ins_log, "data", None):
@@ -718,9 +718,8 @@ def archive_account(
             admin.table("profiles").update({
                 "account_status": "ARCHIVED",
                 "is_active": False,
-                "lifecycle_reason": reason.strip(),
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id,
+                "status_reason": reason.strip(),
+                "archived_at": now_iso,
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
@@ -730,10 +729,10 @@ def archive_account(
                     "user_id": user_id,
                     "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "ARCHIVE",
-                    "previous_status": prev_status,
+                    "old_status": prev_status,
                     "new_status": "ARCHIVED",
                     "reason": reason.strip(),
-                    "metadata": {"timestamp": now_iso},
+                    "details": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
                 if not ins_log or not getattr(ins_log, "data", None):
@@ -826,11 +825,9 @@ def restore_account(
             admin.table("profiles").update({
                 "account_status": "ACTIVE",
                 "is_active": True,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id,
+                "status_reason": note,
+                "restored_at": now_iso,
                 "deletion_requested_at": None,
-                "deletion_requested_by": None,
                 "deletion_scheduled_for": None,
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
@@ -841,10 +838,10 @@ def restore_account(
                     "user_id": user_id,
                     "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "RESTORE",
-                    "previous_status": curr_status,
+                    "old_status": curr_status,
                     "new_status": "ACTIVE",
                     "reason": note,
-                    "metadata": {"timestamp": now_iso},
+                    "details": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
                 if not ins_log or not getattr(ins_log, "data", None):
@@ -951,11 +948,9 @@ def request_account_deletion(
             admin.table("profiles").update({
                 "account_status": "PENDING_DELETION",
                 "deletion_requested_at": now_iso,
-                "deletion_requested_by": actor_id,
                 "deletion_scheduled_for": scheduled_for,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id,
+                "grace_period_days": max(1, grace_days),
+                "status_reason": note,
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
@@ -965,10 +960,10 @@ def request_account_deletion(
                     "user_id": user_id,
                     "actor_id": actor_id or user_id,
                     "action": "REQUEST_DELETION",
-                    "previous_status": curr_details.get("account_status", "ACTIVE"),
+                    "old_status": curr_details.get("account_status", "ACTIVE"),
                     "new_status": "PENDING_DELETION",
                     "reason": note,
-                    "metadata": {"scheduled_for": scheduled_for, "grace_days": grace_days},
+                    "details": {"scheduled_for": scheduled_for, "grace_days": grace_days, "requested_by": actor_id},
                     "created_at": now_iso
                 }).execute()
                 if not ins_log or not getattr(ins_log, "data", None):
@@ -1054,11 +1049,8 @@ def cancel_account_deletion(
                 "account_status": "ACTIVE",
                 "is_active": True,
                 "deletion_requested_at": None,
-                "deletion_requested_by": None,
                 "deletion_scheduled_for": None,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id,
+                "status_reason": note,
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
@@ -1068,10 +1060,10 @@ def cancel_account_deletion(
                     "user_id": user_id,
                     "actor_id": actor_id or user_id,
                     "action": "CANCEL_DELETION",
-                    "previous_status": "PENDING_DELETION",
+                    "old_status": "PENDING_DELETION",
                     "new_status": "ACTIVE",
                     "reason": note,
-                    "metadata": {"timestamp": now_iso},
+                    "details": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
                 if not ins_log or not getattr(ins_log, "data", None):
@@ -1153,7 +1145,7 @@ def set_legal_hold(
         try:
             admin.table("profiles").update({
                 "legal_hold": enabled,
-                "retention_notes": f"Legal hold {'applied' if enabled else 'released'}: {reason.strip()}",
+                "status_reason": f"Legal hold {'applied' if enabled else 'released'}: {reason.strip()}",
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
@@ -1161,12 +1153,12 @@ def set_legal_hold(
                 admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": action_label,
-                    "previous_status": curr_status,
+                    "old_status": curr_status,
                     "new_status": curr_status,
                     "reason": reason.strip(),
-                    "metadata": {"legal_hold": enabled},
+                    "details": {"legal_hold": enabled, "notes": reason.strip()},
                     "created_at": now_iso
                 }).execute()
             except Exception as log_err:
@@ -1208,7 +1200,15 @@ def list_account_lifecycle_logs(
                 if user_id:
                     q = q.eq("user_id", user_id)
                 res = q.order("created_at", desc=True).limit(limit).execute()
-                return res.data or []
+                if res.data:
+                    normalized = []
+                    for row in res.data:
+                        r = dict(row)
+                        r["previous_status"] = r.get("previous_status") or r.get("old_status") or "ACTIVE"
+                        r["metadata"] = r.get("metadata") or r.get("details") or {}
+                        normalized.append(r)
+                    return normalized
+                return []
             except Exception as e:
                 print(f"[AccountLifecycle] Log fetch notice: {e}")
                 return []

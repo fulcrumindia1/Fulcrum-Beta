@@ -164,23 +164,18 @@ def render_subtab_active_accounts(admin_id: str):
 
         # Card container
         border_color = "#3B82F6" if ustatus == "ACTIVE" else "#F59E0B"
-        st.markdown(f"""
-        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:10px; padding:1.1rem 1.3rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                <div>
-                    <span style="font-weight:800; color:#0F172A; font-size:1.05rem;">{uname}</span>
-                    <span style="color:#64748B; font-size:0.86rem; margin-left:8px;">({uemail})</span>
-                    <span style="color:#94A3B8; font-size:0.82rem; margin-left:8px;">📍 {udist}</span>
-                </div>
-                <div style="display:flex; gap:6px; align-items:center;">
-                    <span style="background:{'#DCFCE7' if ustatus == 'ACTIVE' else '#FEF3C7'}; color:{'#15803D' if ustatus == 'ACTIVE' else '#B45309'}; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">
-                        {'🟢 ACTIVE' if ustatus == 'ACTIVE' else '⏸️ SUSPENDED'}
-                    </span>
-                    {'<span style="background:#FEE2E2; color:#B91C1C; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">⚖️ LEGAL HOLD</span>' if uheld else ''}
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        badge_html = f'<span style="background:{"#DCFCE7" if ustatus == "ACTIVE" else "#FEF3C7"}; color:{"#15803D" if ustatus == "ACTIVE" else "#B45309"}; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">{"🟢 ACTIVE" if ustatus == "ACTIVE" else "⏸️ SUSPENDED"}</span>'
+        hold_html = '<span style="background:#FEE2E2; color:#B91C1C; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">⚖️ LEGAL HOLD</span>' if uheld else ''
+        card_html = (
+            f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:10px; padding:1.1rem 1.3rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+            f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">'
+            f'<div><span style="font-weight:800; color:#0F172A; font-size:1.05rem;">{uname}</span>'
+            f'<span style="color:#64748B; font-size:0.86rem; margin-left:8px;">({uemail})</span>'
+            f'<span style="color:#94A3B8; font-size:0.82rem; margin-left:8px;">📍 {udist}</span></div>'
+            f'<div style="display:flex; gap:6px; align-items:center;">{badge_html}{hold_html}</div>'
+            f'</div></div>'
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
 
         with st.expander(f"⚙️ Manage Lifecycle: {uname}", expanded=False):
             if is_sole_admin:
@@ -293,24 +288,17 @@ def render_subtab_archived_accounts(admin_id: str):
         udate = (u.get("status_updated_at") or u.get("updated_at") or "")[:10]
         ureason = u.get("lifecycle_reason") or "Archived by Administration"
 
-        st.markdown(f"""
-        <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #64748B; border-radius:10px; padding:1.1rem 1.3rem; margin-bottom:1rem;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                <div>
-                    <span style="font-weight:800; color:#0F172A; font-size:1.05rem;">{uname}</span>
-                    <span style="color:#64748B; font-size:0.86rem; margin-left:8px;">({uemail})</span>
-                    <div style="color:#64748B; font-size:0.82rem; margin-top:4px;">
-                        Archived Date: <strong>{udate or 'Recorded'}</strong> | Reason: <em>{ureason}</em>
-                    </div>
-                </div>
-                <div>
-                    <span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:3px 10px; border-radius:6px;">
-                        🗄️ ARCHIVED
-                    </span>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        card_archived = (
+            f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #64748B; border-radius:10px; padding:1.1rem 1.3rem; margin-bottom:1rem;">'
+            f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">'
+            f'<div><span style="font-weight:800; color:#0F172A; font-size:1.05rem;">{uname}</span>'
+            f'<span style="color:#64748B; font-size:0.86rem; margin-left:8px;">({uemail})</span>'
+            f'<div style="color:#64748B; font-size:0.82rem; margin-top:4px;">'
+            f'Archived Date: <strong>{udate or "Recorded"}</strong> | Reason: <em>{ureason}</em></div></div>'
+            f'<div><span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:3px 10px; border-radius:6px;">🗄️ ARCHIVED</span></div>'
+            f'</div></div>'
+        )
+        st.markdown(card_archived, unsafe_allow_html=True)
 
         col_r1, col_r2 = st.columns([3, 1])
         with col_r1:
@@ -329,16 +317,16 @@ def render_subtab_archived_accounts(admin_id: str):
 
 def render_subtab_pending_deletion(admin_id: str):
     st.markdown("### ⏳ Accounts Pending Deletion Review")
-    st.markdown("""
-    <div style="background:#FEF3C7; border:1px solid #FDE68A; border-left:4px solid #D97706; border-radius:10px; padding:0.9rem 1.2rem; margin-bottom:1.25rem;">
-        <span style="font-weight:800; color:#92400E; font-size:0.9rem;">Institutional Policy on Permanent Erasure:</span>
-        <div style="color:#B45309; font-size:0.84rem; margin-top:3px;">
-            A 30-day grace period is enforced on all account closure requests.
-            <strong>There is NO automatic permanent purge during this phase.</strong>
-            Erasing accounts requires explicit, verified lawful erasure protocol execution with legal hold clearance.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div style="background:#FEF3C7; border:1px solid #FDE68A; border-left:4px solid #D97706; border-radius:10px; padding:0.9rem 1.2rem; margin-bottom:1.25rem;">'
+        '<span style="font-weight:800; color:#92400E; font-size:0.9rem;">Institutional Policy on Permanent Erasure:</span>'
+        '<div style="color:#B45309; font-size:0.84rem; margin-top:3px;">'
+        'A 30-day grace period is enforced on all account closure requests. '
+        '<strong>There is NO automatic permanent purge during this phase.</strong> '
+        'Erasing accounts requires explicit, verified lawful erasure protocol execution with legal hold clearance.'
+        '</div></div>',
+        unsafe_allow_html=True
+    )
 
     pending_users = list_accounts_by_status("PENDING_DELETION")
     st.metric("Accounts in Grace Window", len(pending_users))
@@ -356,25 +344,20 @@ def render_subtab_pending_deletion(admin_id: str):
         uheld = bool(u.get("legal_hold", False))
         ureason = u.get("lifecycle_reason") or "Account closure requested"
 
-        st.markdown(f"""
-        <div style="background:#FFFFFF; border:1px solid #FDE68A; border-left:4px solid #EAB308; border-radius:10px; padding:1.1rem 1.3rem; margin-bottom:1rem;">
-            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                <div>
-                    <span style="font-weight:800; color:#0F172A; font-size:1.05rem;">{uname}</span>
-                    <span style="color:#64748B; font-size:0.86rem; margin-left:8px;">({uemail})</span>
-                    <div style="color:#64748B; font-size:0.82rem; margin-top:4px;">
-                        Requested: <strong>{ureq_at or 'Recent'}</strong> | Scheduled Review: <strong>{usched_at or '30 Days'}</strong> | Reason: <em>{ureason}</em>
-                    </div>
-                </div>
-                <div style="display:flex; gap:6px;">
-                    <span style="background:#FEF3C7; color:#B45309; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">
-                        ⏳ PENDING DELETION
-                    </span>
-                    {'<span style="background:#FEE2E2; color:#B91C1C; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">⚖️ LEGAL HOLD</span>' if uheld else ''}
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        hold_span = '<span style="background:#FEE2E2; color:#B91C1C; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">⚖️ LEGAL HOLD</span>' if uheld else ''
+        card_pending = (
+            f'<div style="background:#FFFFFF; border:1px solid #FDE68A; border-left:4px solid #EAB308; border-radius:10px; padding:1.1rem 1.3rem; margin-bottom:1rem;">'
+            f'<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">'
+            f'<div><span style="font-weight:800; color:#0F172A; font-size:1.05rem;">{uname}</span>'
+            f'<span style="color:#64748B; font-size:0.86rem; margin-left:8px;">({uemail})</span>'
+            f'<div style="color:#64748B; font-size:0.82rem; margin-top:4px;">'
+            f'Requested: <strong>{ureq_at or "Recent"}</strong> | Scheduled Review: <strong>{usched_at or "30 Days"}</strong> | Reason: <em>{ureason}</em></div></div>'
+            f'<div style="display:flex; gap:6px;">'
+            f'<span style="background:#FEF3C7; color:#B45309; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:6px;">⏳ PENDING DELETION</span>'
+            f'{hold_span}</div>'
+            f'</div></div>'
+        )
+        st.markdown(card_pending, unsafe_allow_html=True)
 
         col_c1, col_c2 = st.columns([3, 1])
         with col_c1:
