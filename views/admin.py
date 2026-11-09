@@ -881,7 +881,7 @@ def render_admin_portal(admin_profile: dict):
                                             if replacement_guides:
                                                 rep_g = st.selectbox("Replace with", replacement_guides, format_func=lambda x: guide_dict[x], key=f"rep_g_sel_{a_idx}_{aid}_{gid}_{idx}")
                                                 if st.button("Confirm Replace", key=f"btn_rep_g_{a_idx}_{aid}_{gid}_{idx}", type="primary", use_container_width=True):
-                                                    ok_r, err_r = assign_guide(aid, rep_g, admin_id=admin_id, notes=f"Replacement for {gname}. {reason_g}")
+                                                    ok_r, err_r = assign_guide(aid, rep_g, admin_id=admin_id, notes=f"Replacement for {gname}. {reason_g}", replace_target_id=gid)
                                                     if ok_r:
                                                         st.session_state["unassign_mentor_msg"] = f"✅ Guide {gname} replaced with {guide_dict[rep_g]} for {aname}."
                                                         st.rerun()
@@ -928,7 +928,7 @@ def render_admin_portal(admin_profile: dict):
                                             if replacement_smes:
                                                 rep_s = st.selectbox("Replace with", replacement_smes, format_func=lambda x: sme_dict[x], key=f"rep_s_sel_{a_idx}_{aid}_{sid}_{idx}")
                                                 if st.button("Confirm Replace", key=f"btn_rep_s_{a_idx}_{aid}_{sid}_{idx}", type="primary", use_container_width=True):
-                                                    ok_sr, err_sr = assign_sme(aid, rep_s, admin_id=admin_id, notes=f"Replacement for {sname}. {reason_s}", mode="replace")
+                                                    ok_sr, err_sr = assign_sme(aid, rep_s, admin_id=admin_id, notes=f"Replacement for {sname}. {reason_s}", mode="replace", replace_target_id=sid)
                                                     if ok_sr:
                                                         st.session_state["unassign_mentor_msg"] = f"✅ Specialist {sname} replaced with {sme_dict[rep_s]} for {aname}."
                                                         st.rerun()

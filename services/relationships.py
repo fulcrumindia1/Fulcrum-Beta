@@ -222,15 +222,21 @@ def assign_guide(
     admin_id: Optional[str] = None,
     notes: str = "",
     assigned_by: Optional[str] = None,
-    mode: str = "replace"
+    mode: str = "replace",
+    replace_target_id: Optional[str] = None
 ) -> Tuple[bool, Optional[str]]:
     """Admin assigns Guide to an Aspirant with transition history and alerts.
-    mode='replace': replaces the primary Guide.
-    mode='add': assigns as Co-Guide (Guide B) alongside the primary Guide.
+    mode='replace': replaces the primary Guide or a specified replace_target_id.
+    mode='add': assigns as Co-Guide (Guide B) alongside existing Guides.
+    Requires verified Sole Admin authorization.
     """
     admin_id = admin_id or assigned_by
+    from services.roles import require_sole_admin, user_has_active_role
+    ok_admin, err_admin = require_sole_admin(actor_id=admin_id)
+    if not ok_admin:
+        return False, err_admin
+
     from services.profiles import get_profile
-    from services.roles import user_has_active_role
     from services.journey import log_meaningful_event
     from services.notifications import create_notification
 
@@ -238,9 +244,8 @@ def assign_guide(
         return False, "An entrepreneur cannot be assigned as their own Guide."
 
     guide = get_profile(guide_id)
-    is_valid_guide = bool(guide and (guide.get("role") == "guide" or user_has_active_role(guide_id, "guide")))
-    if not guide or not is_valid_guide:
-        return False, "Selected mentor is not a valid Guide."
+    if not guide or not user_has_active_role(guide_id, "guide"):
+        return False, "Selected mentor does not hold an active Guide role grant."
 
     aspirant = get_profile(aspirant_id)
     if not aspirant:
@@ -253,6 +258,8 @@ def assign_guide(
     existing_guides = curr_mentors.get("guides", [])
     existing_guide_ids = [g["id"] for g in existing_guides]
 
+    target_to_replace = replace_target_id or old_guide_id
+
     if mode == "add":
         if guide_id in existing_guide_ids:
             return False, "This mentor is already assigned as a Guide to this entrepreneur."
@@ -260,10 +267,19 @@ def assign_guide(
         primary_guide_id = old_guide_id or guide_id
         is_replacement = False
         is_co_guide = True
-    else:
-        is_replacement = bool(old_guide_id and str(old_guide_id) != str(guide_id))
-        new_guide_ids = [guide_id]
-        primary_guide_id = guide_id
+    else:  # mode == "replace"
+        if target_to_replace and target_to_replace in existing_guide_ids:
+            # Replace target mentor in guide_ids while preserving unrelated co-mentors
+            new_guide_ids = [guide_id if gid == target_to_replace else gid for gid in existing_guide_ids]
+            new_guide_ids = list(dict.fromkeys(new_guide_ids))
+            if target_to_replace == old_guide_id:
+                primary_guide_id = guide_id
+            else:
+                primary_guide_id = old_guide_id
+        else:
+            primary_guide_id = guide_id
+            new_guide_ids = [guide_id]
+        is_replacement = bool(target_to_replace and str(target_to_replace) != str(guide_id))
         is_co_guide = False
 
     backend = get_data_backend()
@@ -284,45 +300,34 @@ def assign_guide(
                 "updated_at": now_iso
             }, on_conflict="aspirant_id").execute()
 
-            # Record assignment history
+            # Record idempotent assignment history
             import uuid
-            hist_id = str(uuid.uuid4())
             action_label = "ASSIGNED" if not is_replacement else "REPLACED"
             hist_note = f"Co-Guide (Guide B) added. {notes}" if is_co_guide else notes
-            client.table("assignment_history").insert({
+            hist_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{aspirant_id}:{guide_id}:{action_label}:{now_iso[:13]}"))
+            client.table("assignment_history").upsert({
                 "id": hist_id,
                 "aspirant_id": aspirant_id,
                 "mentor_id": guide_id,
                 "mentor_role": "guide",
                 "assigned_by": admin_id,
                 "action": action_label,
-                "previous_mentor_id": old_guide_id if is_replacement else None,
+                "previous_mentor_id": target_to_replace if is_replacement else None,
                 "notes": hist_note,
                 "created_at": now_iso
-            }).execute()
+            }, on_conflict="id").execute()
 
-            # Transfer open/in-progress/waiting tickets to the new Guide if replaced
-            if is_replacement:
+            # Transfer open consultations to the replacement Guide if replaced
+            if is_replacement and target_to_replace:
                 try:
                     client.table("help_requests").update({
                         "assigned_guide_id": guide_id,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
-                except Exception:
-                    pass
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", target_to_replace).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
+                except Exception as ex_t:
+                    print(f"[Relationships] Notice updating help_requests: {ex_t}")
         except Exception as e:
-            print(f"[Relationships] Supabase guide_ids notice ({e}), trying without guide_ids")
-            try:
-                client.table("relationships").upsert({
-                    "aspirant_id": aspirant_id,
-                    "guide_id": primary_guide_id,
-                    "assigned_by": admin_id,
-                    "notes": notes,
-                    "status": "active",
-                    "updated_at": now_iso
-                }, on_conflict="aspirant_id").execute()
-            except Exception as e2:
-                print(f"[Relationships] Supabase assign_guide warning: {e2}")
+            return False, f"Failed to record Guide assignment in Supabase: {e}"
 
     else:
         # SQLite mode ONLY (when DATA_BACKEND=sqlite)
@@ -442,14 +447,27 @@ def assign_guide(
 
     return True, None
 
-def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, notes: str = "", assigned_by: Optional[str] = None, mode: str = "add") -> Tuple[bool, Optional[str]]:
+def assign_sme(
+    aspirant_id: str,
+    sme_id: str,
+    admin_id: Optional[str] = None,
+    notes: str = "",
+    assigned_by: Optional[str] = None,
+    mode: str = "add",
+    replace_target_id: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
     """Admin assigns SME to an Aspirant with transition history and alerts.
     mode="add": Appends SME to the Aspirant's advisory panel.
-    mode="replace": Overwrites previous SME assignment(s).
+    mode="replace": Replaces old SME or specific replace_target_id while preserving other panel members.
+    Requires verified Sole Admin authorization.
     """
     admin_id = admin_id or assigned_by
+    from services.roles import require_sole_admin, user_has_active_role
+    ok_admin, err_admin = require_sole_admin(actor_id=admin_id)
+    if not ok_admin:
+        return False, err_admin
+
     from services.profiles import get_profile
-    from services.roles import user_has_active_role
     from services.journey import log_meaningful_event
     from services.notifications import create_notification
 
@@ -457,9 +475,8 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
         return False, "An entrepreneur cannot be assigned as their own SME."
 
     sme = get_profile(sme_id)
-    is_valid_sme = bool(sme and (sme.get("role") == "sme" or user_has_active_role(sme_id, "sme")))
-    if not sme or not is_valid_sme:
-        return False, "Selected mentor is not a valid SME."
+    if not sme or not user_has_active_role(sme_id, "sme"):
+        return False, "Selected mentor does not hold an active SME role grant."
 
     aspirant = get_profile(aspirant_id)
     if not aspirant:
@@ -471,14 +488,21 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
     old_sme_id = old_sme["id"] if old_sme else None
     existing_sme_ids = [s["id"] for s in curr_mentors.get("smes", [])]
 
+    target_to_replace = replace_target_id or old_sme_id
+
     if mode == "add":
         if sme_id in existing_sme_ids:
             return False, "This specialist is already assigned to this entrepreneur."
         new_sme_ids = list(dict.fromkeys(existing_sme_ids + [sme_id]))
         is_replacement = False
     else:  # mode == "replace"
-        is_replacement = bool(old_sme_id and str(old_sme_id) != str(sme_id))
-        new_sme_ids = [sme_id]
+        if target_to_replace and target_to_replace in existing_sme_ids:
+            # Replace target SME in panel while preserving unrelated SMEs
+            new_sme_ids = [sme_id if sid == target_to_replace else sid for sid in existing_sme_ids]
+            new_sme_ids = list(dict.fromkeys(new_sme_ids))
+        else:
+            new_sme_ids = [sme_id]
+        is_replacement = bool(target_to_replace and str(target_to_replace) != str(sme_id))
 
     backend = get_data_backend()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -508,29 +532,30 @@ def assign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, no
                     "updated_at": now_iso
                 }, on_conflict="aspirant_id").execute()
 
-            # Record assignment history
+            # Record idempotent assignment history
             import uuid
-            hist_id = str(uuid.uuid4())
+            action_label = "REPLACED" if is_replacement else "ASSIGNED"
             hist_notes = f"[Advisory Panel Addition] {notes}" if (mode == "add" and notes) else (notes or ("[Advisory Panel Addition]" if mode == "add" else ""))
-            client.table("assignment_history").insert({
+            hist_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{aspirant_id}:{sme_id}:{action_label}:{now_iso[:13]}"))
+            client.table("assignment_history").upsert({
                 "id": hist_id,
                 "aspirant_id": aspirant_id,
                 "mentor_id": sme_id,
                 "mentor_role": "sme",
                 "assigned_by": admin_id,
-                "action": "REPLACED" if is_replacement else "ASSIGNED",
-                "previous_mentor_id": old_sme_id if is_replacement else None,
+                "action": action_label,
+                "previous_mentor_id": target_to_replace if is_replacement else None,
                 "notes": hist_notes,
                 "created_at": now_iso
-            }).execute()
-            if is_replacement:
+            }, on_conflict="id").execute()
+            if is_replacement and target_to_replace:
                 try:
                     client.table("help_requests").update({
                         "assigned_sme_id": sme_id,
                         "updated_at": now_iso
-                    }).eq("aspirant_id", aspirant_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
-                except Exception:
-                    pass
+                    }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", target_to_replace).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
+                except Exception as ex_t:
+                    print(f"[Relationships] Notice updating help_requests for SME: {ex_t}")
         except Exception as e:
             return False, f"Failed to record SME assignment in Supabase: {e}"
     else:
@@ -638,7 +663,13 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
     """Admin unassigns a dedicated Guide or Co-Guide from an Aspirant's caseload.
     Preserves historical journey events, scheme releases, and audit logs.
     Handles case handover and cache invalidation.
+    Requires verified Sole Admin authorization.
     """
+    from services.roles import require_sole_admin
+    ok_admin, err_admin = require_sole_admin(actor_id=admin_id)
+    if not ok_admin:
+        return False, err_admin
+
     from services.profiles import get_profile
     from services.journey import log_meaningful_event
     from services.notifications import create_notification
@@ -672,8 +703,8 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
             }).eq("aspirant_id", aspirant_id).execute()
 
             import uuid
-            hist_id = str(uuid.uuid4())
-            client.table("assignment_history").insert({
+            hist_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{aspirant_id}:{guide_id}:UNASSIGNED:{now_iso[:13]}"))
+            client.table("assignment_history").upsert({
                 "id": hist_id,
                 "aspirant_id": aspirant_id,
                 "mentor_id": guide_id,
@@ -683,7 +714,7 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
                 "previous_mentor_id": None,
                 "notes": f"Unassigned by Admin. Reason: {reason or 'Administrative rebalance'}",
                 "created_at": now_iso
-            }).execute()
+            }, on_conflict="id").execute()
 
             try:
                 if new_primary_guide_id:
@@ -696,8 +727,8 @@ def unassign_guide(aspirant_id: str, guide_id: str, admin_id: Optional[str] = No
                         "assigned_guide_id": None,
                         "updated_at": now_iso
                     }).eq("aspirant_id", aspirant_id).eq("assigned_guide_id", guide_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
-            except Exception:
-                pass
+            except Exception as ex_hr:
+                print(f"[Relationships] Notice: consultation handover exception: {ex_hr}")
         except Exception as e:
             return False, f"Failed to unassign Guide in Supabase: {e}"
     else:
@@ -780,7 +811,13 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
     """Admin unassigns a domain specialist (SME) from an Aspirant's advisory panel.
     Preserves historical technical advisory records, schemes, and journey events.
     Handles case handover and cache invalidation.
+    Requires verified Sole Admin authorization.
     """
+    from services.roles import require_sole_admin
+    ok_admin, err_admin = require_sole_admin(actor_id=admin_id)
+    if not ok_admin:
+        return False, err_admin
+
     from services.profiles import get_profile
     from services.journey import log_meaningful_event
     from services.notifications import create_notification
@@ -814,8 +851,8 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
             }).eq("aspirant_id", aspirant_id).execute()
 
             import uuid
-            hist_id = str(uuid.uuid4())
-            client.table("assignment_history").insert({
+            hist_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{aspirant_id}:{sme_id}:UNASSIGNED:{now_iso[:13]}"))
+            client.table("assignment_history").upsert({
                 "id": hist_id,
                 "aspirant_id": aspirant_id,
                 "mentor_id": sme_id,
@@ -825,7 +862,7 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
                 "previous_mentor_id": None,
                 "notes": f"Specialist unassigned by Admin. Reason: {reason or 'Advisory concluded'}",
                 "created_at": now_iso
-            }).execute()
+            }, on_conflict="id").execute()
 
             try:
                 if new_primary_sme_id:
@@ -838,8 +875,8 @@ def unassign_sme(aspirant_id: str, sme_id: str, admin_id: Optional[str] = None, 
                         "assigned_sme_id": None,
                         "updated_at": now_iso
                     }).eq("aspirant_id", aspirant_id).eq("assigned_sme_id", sme_id).in_("status", list(ACTIVE_TICKET_STATUSES)).execute()
-            except Exception:
-                pass
+            except Exception as ex_hr:
+                print(f"[Relationships] Notice: consultation handover exception: {ex_hr}")
         except Exception as e:
             return False, f"Failed to unassign SME in Supabase: {e}"
     else:

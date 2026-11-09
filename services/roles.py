@@ -28,10 +28,11 @@ def is_strict_admin(
 ) -> bool:
     """
     Canonical Single-Admin Identity Gate.
-    Returns True ONLY when the identity belongs to fulcrumindia1@gmail.com
+    Returns True ONLY when the identity is verified to belong to fulcrumindia1@gmail.com
     (UUID: 616304b5-aef5-4cd0-88be-2fda7ddf7f88).
     Never trusts profiles.role == 'admin', district_admin, operational_admin,
     or user_metadata.role alone.
+    Never trusts a caller-supplied email alone without verified matching UUID.
     """
     if isinstance(user_dict, dict):
         user_id = user_id or user_dict.get("id")
@@ -40,32 +41,55 @@ def is_strict_admin(
     clean_email = str(email or "").strip().lower()
     clean_uid = str(user_id or "").strip().lower()
 
-    # If email is explicitly known and is NOT fulcrumindia1@gmail.com, deny immediately
-    if clean_email and clean_email != SOLE_ADMIN_EMAIL:
-        return False
-
-    # If UUID matches SOLE_ADMIN_UUID (and email is either omitted or matches SOLE_ADMIN_EMAIL)
-    if clean_uid == SOLE_ADMIN_UUID and (not clean_email or clean_email == SOLE_ADMIN_EMAIL):
-        return True
-
-    # Lookup profile when only user_id or only email is provided
-    if clean_uid:
+    # If neither user_id nor email was supplied, inspect the active session context
+    if not clean_uid and not clean_email:
         try:
-            from services.profiles import get_profile
-            p = get_profile(clean_uid)
-            if p:
-                p_email = str(p.get("email") or "").strip().lower()
-                if p_email == SOLE_ADMIN_EMAIL:
-                    return True
-                if p_email and p_email != SOLE_ADMIN_EMAIL:
-                    return False
+            import streamlit as st
+            sess_u = st.session_state.get("user") or {}
+            clean_uid = str(sess_u.get("id") or "").strip().lower()
+            clean_email = str(sess_u.get("email") or "").strip().lower()
         except Exception:
             pass
 
-    if clean_email == SOLE_ADMIN_EMAIL and not clean_uid:
+    # If email is explicitly provided and is NOT fulcrumindia1@gmail.com, deny immediately
+    if clean_email and clean_email != SOLE_ADMIN_EMAIL:
+        return False
+
+    # If UUID is explicitly provided and is NOT SOLE_ADMIN_UUID, deny immediately
+    if clean_uid and clean_uid != SOLE_ADMIN_UUID:
+        return False
+
+    # Positive match on verified Sole Admin UUID
+    if clean_uid == SOLE_ADMIN_UUID:
+        if clean_email and clean_email != SOLE_ADMIN_EMAIL:
+            return False
         return True
 
+    # If only email was passed without UUID, verify the persistent profile actually bears SOLE_ADMIN_UUID
+    if clean_email == SOLE_ADMIN_EMAIL and not clean_uid:
+        try:
+            from services.profiles import get_profile_by_email
+            p = get_profile_by_email(clean_email)
+            if p and str(p.get("id") or "").strip().lower() == SOLE_ADMIN_UUID:
+                return True
+        except Exception:
+            pass
+
     return False
+
+
+def require_sole_admin(
+    actor_id: Optional[str] = None,
+    actor_dict: Optional[dict] = None
+) -> Tuple[bool, Optional[str]]:
+    """
+    Server-side authorization gate for privileged administrative mutations.
+    Enforces that only the verified Sole Platform Administrator (fulcrumindia1@gmail.com)
+    can execute administrative actions. Rejects unauthorized or spoofed requests.
+    """
+    if is_strict_admin(user_id=actor_id, user_dict=actor_dict):
+        return True, None
+    return False, "Unauthorized: Only the Sole Platform Administrator (fulcrumindia1@gmail.com) has authority to perform this action."
 
 
 def _get_admin_client():
@@ -100,19 +124,17 @@ def get_user_roles(user_id: str) -> List[Dict]:
     backend = get_data_backend()
     roles = []
 
-    supabase_fetched = False
     if backend == "supabase":
         client = _get_admin_client() or _get_user_client()
         if client:
             try:
                 res = client.table("user_roles").select("*").eq("user_id", user_id).execute()
                 roles = res.data or []
-                supabase_fetched = True
             except Exception as e:
                 print(f"[Roles] Supabase user_roles fetch notice for {user_id}: {e}")
-
-    if not supabase_fetched:
-        # Check SQLite fallback ONLY when running in sqlite mode or if Supabase connection failed
+                roles = []
+    else:
+        # Check SQLite ONLY when DATA_BACKEND=sqlite
         db = get_local_db()
         roles = db.get_user_roles(user_id) if hasattr(db, "get_user_roles") else []
 
@@ -192,7 +214,12 @@ def grant_role(
     Single Admin rule: Only 'guide' and 'sme' can be granted via administration.
     Strict Rule: When promoting to Guide or SME, status defaults to 'pending_nda'
     unless explicit non-NDA status is authorized.
+    Requires verified Sole Admin authorization.
     """
+    ok_admin, err_admin = require_sole_admin(actor_id=granted_by)
+    if not ok_admin:
+        return False, err_admin
+
     if role not in VALID_GRANTABLE_ROLES:
         return False, f"Unauthorized: Only {VALID_GRANTABLE_ROLES} can be granted via Fulcrum Administration."
 
@@ -305,7 +332,11 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
 
 def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    """Revokes a role grant. Aspirants can never have their base registered aspirant role revoked."""
+    """Revokes a role grant. Requires verified Sole Admin authorization."""
+    ok_admin, err_admin = require_sole_admin(actor_id=revoked_by)
+    if not ok_admin:
+        return False, err_admin
+
     from services.profiles import get_profile
     p = get_profile(user_id)
     base_role = p.get("role") if p else "aspirant"
@@ -402,8 +433,12 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
     return True, None
 
 
-def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optional[str]]:
-    """Suspends a role grant temporarily."""
+def suspend_role(user_id: str, role: str, reason: str = "", suspended_by: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """Suspends a role grant temporarily. Requires verified Sole Admin authorization."""
+    ok_admin, err_admin = require_sole_admin(actor_id=suspended_by)
+    if not ok_admin:
+        return False, err_admin
+
     if role == "aspirant":
         return False, "The base Aspirant role cannot be suspended."
 
@@ -412,35 +447,26 @@ def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optio
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("user_roles").update({
-                    "status": "suspended",
-                    "suspended_at": now_iso,
-                    "revocation_reason": reason or "Suspended by Administration",
-                    "updated_at": now_iso
-                }).eq("user_id", user_id).eq("role", role).execute()
-                if not res.data:
-                    admin.table("user_roles").upsert({
-                        "user_id": user_id,
-                        "role": role,
-                        "status": "suspended",
-                        "granted_at": now_iso,
-                        "suspended_at": now_iso,
-                        "revocation_reason": reason or "Suspended by Administration",
-                        "updated_at": now_iso
-                    }, on_conflict="user_id, role").execute()
-            except Exception as e:
-                err_str = str(e)
-                print(f"[Roles] Supabase suspend notice: {err_str}")
-                if "PGRST205" not in err_str and "user_roles" not in err_str:
-                    return False, f"Failed to suspend role in Supabase: {e}"
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            res = admin.table("user_roles").update({
+                "status": "suspended",
+                "suspended_at": now_iso,
+                "revocation_reason": reason or "Suspended by Administration",
+                "updated_at": now_iso
+            }).eq("user_id", user_id).eq("role", role).neq("status", "revoked").execute()
+            if not res or not getattr(res, "data", None):
+                return False, f"Role suspension failed in Supabase: No active grant found for role '{role}' or role is already revoked."
+        except Exception as e:
+            return False, f"Failed to suspend role in Supabase: {e}"
+        _invalidate_role_caches(user_id)
+    else:
+        db = get_local_db()
+        if hasattr(db, "update_role_status"):
+            db.update_role_status(user_id, role, "suspended", revocation_reason=reason)
+        _invalidate_role_caches(user_id)
 
-    db = get_local_db()
-    if hasattr(db, "update_role_status"):
-        db.update_role_status(user_id, role, "suspended", revocation_reason=reason)
-
-    _invalidate_role_caches(user_id)
     try:
         from services.notifications import create_notification
         from services.governance import get_primary_admin_id
@@ -450,39 +476,49 @@ def suspend_role(user_id: str, role: str, reason: str = "") -> Tuple[bool, Optio
             title=f"Role Temporarily Suspended: {role_display}",
             message=f"Your {role_display} workspace access has been temporarily suspended. Note: {reason or 'Administrative review'}.",
             notification_type="role_suspended",
-            actor_id=get_primary_admin_id()
+            actor_id=suspended_by or get_primary_admin_id()
         )
     except Exception:
         pass
     return True, None
 
 
-def reinstate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
-    """Reinstates a suspended role back to active status."""
+def reinstate_role(user_id: str, role: str, reinstated_by: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """Reinstates a suspended role back to active status. Refuses to reinstate revoked roles."""
+    ok_admin, err_admin = require_sole_admin(actor_id=reinstated_by)
+    if not ok_admin:
+        return False, err_admin
+
+    curr_roles = get_user_roles(user_id)
+    matching = next((r for r in curr_roles if r.get("role") == role), None)
+    if matching and matching.get("status") == "revoked":
+        return False, f"Cannot reinstate: The {role.upper()} role grant was revoked. Revoked roles cannot be reinstated; a new grant is required."
+
     now_iso = datetime.now(timezone.utc).isoformat()
     backend = get_data_backend()
 
     if backend == "supabase":
         admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("user_roles").update({
-                    "status": "active",
-                    "suspended_at": None,
-                    "revocation_reason": None,
-                    "updated_at": now_iso
-                }).eq("user_id", user_id).eq("role", role).execute()
-            except Exception as e:
-                err_str = str(e)
-                print(f"[Roles] Supabase reinstate notice: {err_str}")
-                if "PGRST205" not in err_str and "user_roles" not in err_str:
-                    return False, f"Failed to reinstate role in Supabase: {e}"
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            res = admin.table("user_roles").update({
+                "status": "active",
+                "suspended_at": None,
+                "revocation_reason": None,
+                "updated_at": now_iso
+            }).eq("user_id", user_id).eq("role", role).eq("status", "suspended").execute()
+            if not res or not getattr(res, "data", None):
+                return False, f"Role reinstatement failed in Supabase: Role '{role}' is not in suspended status."
+        except Exception as e:
+            return False, f"Failed to reinstate role in Supabase: {e}"
+        _invalidate_role_caches(user_id)
+    else:
+        db = get_local_db()
+        if hasattr(db, "update_role_status"):
+            db.update_role_status(user_id, role, "active")
+        _invalidate_role_caches(user_id)
 
-    db = get_local_db()
-    if hasattr(db, "update_role_status"):
-        db.update_role_status(user_id, role, "active")
-
-    _invalidate_role_caches(user_id)
     try:
         from services.notifications import create_notification
         from services.governance import get_primary_admin_id
@@ -492,15 +528,18 @@ def reinstate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
             title=f"Role Reinstated: {role_display}",
             message=f"Your {role_display} role grant has been reinstated to active status.",
             notification_type="role_reinstated",
-            actor_id=get_primary_admin_id()
+            actor_id=reinstated_by or get_primary_admin_id()
         )
     except Exception:
         pass
     return True, None
 
 
-def cancel_grant(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
-    """Cancels a pending NDA role grant."""
+def cancel_grant(user_id: str, role: str, actor_id: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """Cancels a pending NDA role grant. Requires verified Sole Admin authorization."""
+    ok_admin, err_admin = require_sole_admin(actor_id=actor_id)
+    if not ok_admin:
+        return False, err_admin
     now_iso = datetime.now(timezone.utc).isoformat()
     backend = get_data_backend()
 
