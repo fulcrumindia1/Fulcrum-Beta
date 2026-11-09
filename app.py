@@ -332,55 +332,65 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             color: #cbd5e1;
         }
 
-        /* Workspace Selector & Sidebar Selectbox — High-Contrast Rose/Pink Styling */
-        [data-testid="stSidebar"] div[data-testid="stSelectbox"],
-        [data-testid="stSidebar"] .stSelectbox,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] {
+        /* ─────────────────────────────────────────────────────────────────
+           SIDEBAR SELECTBOX & CURRENT WORKSPACE DROPDOWN
+           ───────────────────────────────────────────────────────────────── */
+        /* 1. Ensure selectbox wrapper in sidebar has NO white background */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"],
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div,
+        section[data-testid="stSidebar"] [data-baseweb="select"],
+        .st-key-sb_current_workspace,
+        .st-key-sb_current_workspace [data-testid="stSelectbox"],
+        .st-key-sb_current_workspace [data-baseweb="select"] {
+            background-color: transparent !important;
+            background: transparent !important;
             margin-bottom: 0.6rem !important;
         }
 
-        /* Outer selectbox container */
-        .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child {
-            background-color: #1a1625 !important;
-            background: #1a1625 !important;
-            border: 2px solid #F43F5E !important;
+        /* 2. The Select Box Control Itself: Dark Navy + Rose Border */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+        .st-key-sb_current_workspace div[data-baseweb="select"] > div {
+            background-color: #162032 !important;
+            background: #162032 !important;
+            border: 1.5px solid #F43F5E !important;
             border-radius: 8px !important;
             min-height: 42px !important;
-            box-shadow: 0 0 10px rgba(244, 63, 94, 0.3) !important;
+            box-shadow: 0 0 12px rgba(244, 63, 94, 0.25) !important;
         }
 
-        /* Prevent inner divs from creating weird colored square blocks */
-        .st-key-sb_current_workspace div[data-baseweb="select"] div,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] div {
+        /* 3. Hover state */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover,
+        .st-key-sb_current_workspace div[data-baseweb="select"] > div:hover {
+            border-color: #FB7185 !important;
+            background-color: #1e293b !important;
+            background: #1e293b !important;
+            box-shadow: 0 0 16px rgba(244, 63, 94, 0.45) !important;
+        }
+
+        /* 4. Ensure internal containers inside the control are transparent */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div > div,
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div * {
             background-color: transparent !important;
             background: transparent !important;
         }
 
-        .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child:hover {
-            border-color: #FB7185 !important;
-            background-color: #261933 !important;
-            box-shadow: 0 0 14px rgba(244, 63, 94, 0.5) !important;
-        }
-
-        /* Visible, crisp Rose-Pink text */
+        /* 5. Typography — Crisp, High-Contrast Pure White */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] *,
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] div,
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] span,
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] p,
         .st-key-sb_current_workspace div[data-baseweb="select"] *,
         .st-key-sb_current_workspace div[data-baseweb="select"] div,
         .st-key-sb_current_workspace div[data-baseweb="select"] span,
-        .st-key-sb_current_workspace div[data-baseweb="select"] p,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] *,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] div,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] p {
-            color: #FDA4AF !important;
+        .st-key-sb_current_workspace div[data-baseweb="select"] p {
+            color: #FFFFFF !important;
             font-weight: 700 !important;
             font-size: 0.95rem !important;
         }
 
-        /* Dropdown Chevron */
-        .st-key-sb_current_workspace div[data-baseweb="select"] svg,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] svg {
+        /* 6. Dropdown Chevron */
+        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] svg,
+        .st-key-sb_current_workspace div[data-baseweb="select"] svg {
             fill: #FB7185 !important;
             color: #FB7185 !important;
             background: transparent !important;
@@ -930,46 +940,55 @@ def main():
                 st.markdown("""
                 <style>
                 /* Scoped Workspace Dropdown — Elegant High-Contrast Dark Card & Rose Text */
-                .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child {
-                    background-color: #1a1625 !important;
-                    background: #1a1625 !important;
-                    border: 2px solid #F43F5E !important;
-                    border-radius: 8px !important;
-                    min-height: 42px !important;
-                    box-shadow: 0 0 10px rgba(244, 63, 94, 0.3) !important;
-                }
-
-                .st-key-sb_current_workspace div[data-baseweb="select"] div,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] div {
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"],
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] > div,
+                section[data-testid="stSidebar"] [data-baseweb="select"],
+                .st-key-sb_current_workspace,
+                .st-key-sb_current_workspace [data-testid="stSelectbox"],
+                .st-key-sb_current_workspace [data-baseweb="select"] {
                     background-color: transparent !important;
                     background: transparent !important;
                 }
 
-                .st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] > div:first-child:hover {
-                    border-color: #FB7185 !important;
-                    background-color: #261933 !important;
-                    box-shadow: 0 0 14px rgba(244, 63, 94, 0.5) !important;
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+                .st-key-sb_current_workspace div[data-baseweb="select"] > div {
+                    background-color: #162032 !important;
+                    background: #162032 !important;
+                    border: 1.5px solid #F43F5E !important;
+                    border-radius: 8px !important;
+                    min-height: 42px !important;
+                    box-shadow: 0 0 12px rgba(244, 63, 94, 0.25) !important;
                 }
 
-                /* Crisp, highly visible Rose-Pink typography */
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div:hover,
+                .st-key-sb_current_workspace div[data-baseweb="select"] > div:hover {
+                    border-color: #FB7185 !important;
+                    background-color: #1e293b !important;
+                    background: #1e293b !important;
+                    box-shadow: 0 0 16px rgba(244, 63, 94, 0.45) !important;
+                }
+
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div > div,
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div * {
+                    background-color: transparent !important;
+                    background: transparent !important;
+                }
+
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] *,
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] div,
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] span,
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] p,
                 .st-key-sb_current_workspace div[data-baseweb="select"] *,
                 .st-key-sb_current_workspace div[data-baseweb="select"] div,
                 .st-key-sb_current_workspace div[data-baseweb="select"] span,
-                .st-key-sb_current_workspace div[data-baseweb="select"] p,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] *,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] div,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] span,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] p {
-                    color: #FDA4AF !important;
+                .st-key-sb_current_workspace div[data-baseweb="select"] p {
+                    color: #FFFFFF !important;
                     font-weight: 700 !important;
                     font-size: 0.95rem !important;
                 }
 
-                /* Chevron icon */
-                .st-key-sb_current_workspace div[data-baseweb="select"] svg,
-                section[data-testid="stSidebar"] div[data-baseweb="select"] svg {
+                section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] svg,
+                .st-key-sb_current_workspace div[data-baseweb="select"] svg {
                     fill: #FB7185 !important;
                     color: #FB7185 !important;
                     background: transparent !important;

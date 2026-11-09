@@ -299,8 +299,10 @@ def get_user_roles(user_id: str) -> List[Dict]:
     return roles
 
 
-# Canonical alias for backward compatibility with views/legal_ui.py, views/guide.py, views/sme.py
-get_user_role_grants = get_user_roles
+# Canonical function for backward compatibility with views/legal_ui.py, views/guide.py, views/sme.py
+def get_user_role_grants(user_id: str) -> List[Dict]:
+    """Canonical function returning list of role grant dicts for backward compatibility."""
+    return get_user_roles(user_id)
 
 
 def get_active_roles(user_id: str) -> List[str]:
