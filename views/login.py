@@ -234,13 +234,38 @@ def render_login_page():
     auth_type = query_params.get("type", "")
     acc_token = query_params.get("access_token", "")
     ref_token = query_params.get("refresh_token", "")
+    auth_code = query_params.get("code", "")
+    backend = get_data_backend()
+
+    # Handle modern Supabase PKCE code exchange if redirected from reset email
+    if auth_code and backend == "supabase" and not acc_token and not st.session_state.get("sb_access_token"):
+        try:
+            from services.auth import get_supabase_client
+            client = get_supabase_client()
+            if client:
+                res = client.auth.exchange_code_for_session({"auth_code": auth_code})
+                if res and getattr(res, "session", None):
+                    st.session_state.sb_access_token = res.session.access_token
+                    st.session_state.sb_refresh_token = res.session.refresh_token
+                    acc_token = res.session.access_token
+                    ref_token = res.session.refresh_token
+                    if getattr(res, "user", None) and getattr(res.user, "email", None):
+                        st.session_state.input_fp_email = res.user.email
+                        st.session_state.input_login_email = res.user.email
+                    auth_type = "recovery"
+        except Exception as e:
+            err_text = str(e)
+            if "expired" in err_text.lower() or "invalid" in err_text.lower():
+                error_desc = "The password recovery link has expired or has already been used. Please request a new link."
+            else:
+                error_desc = f"Authentication notice: {err_text}"
 
     if acc_token:
         st.session_state.sb_access_token = acc_token
     if ref_token:
         st.session_state.sb_refresh_token = ref_token
 
-    error_desc = query_params.get("error_description") or query_params.get("error")
+    error_desc = query_params.get("error_description") or query_params.get("error") or error_desc
 
     # Centered Container Layout
     col_l, col_center, col_r = st.columns([1, 1.4, 1])

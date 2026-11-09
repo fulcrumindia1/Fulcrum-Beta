@@ -194,27 +194,26 @@ def render_admin_role_grants_tab(admin_id: str):
                                 st.error(err or "Failed to revoke role.")
 
             elif sel_status == "PENDING NDA":
-                st.info(f"Role '{sel_role.upper()}' is awaiting NDA signature by the user. As Platform Administrator, you may also directly verify and activate this role if confirmed.")
+                from services.legal import check_user_nda_accepted
+                has_existing_nda = check_user_nda_accepted(sel_manage_user, sel_role)
+                if has_existing_nda:
+                    st.info(f"Role '{sel_role.upper()}' is awaiting workspace activation. Institutional Master NDA is already verified on record. You may administratively activate this role.")
+                else:
+                    st.warning(f"Role '{sel_role.upper()}' requires the user's digital NDA execution. The mentor must log in to digitally sign the Non-Disclosure Agreement before activation.")
+
                 col_b1, col_b2, col_b3 = st.columns([1.3, 1, 1])
                 with col_b1:
-                    if st.button("✅ Verify & Activate Role", key=f"btn_act_pnd_{sel_manage_user}_{sel_role}", type="primary", use_container_width=True, help="Administratively approve and activate this role grant."):
-                        from services.roles import activate_role
-                        ok, err = activate_role(sel_manage_user, sel_role)
-                        if ok:
-                            from services.legal import record_legal_acceptance, check_user_nda_accepted
-                            if not check_user_nda_accepted(sel_manage_user, sel_role):
-                                record_legal_acceptance(
-                                    user_id=sel_manage_user,
-                                    user_email=sel_target_user.get("email", ""),
-                                    doc_type="nda_dual",
-                                    typed_name=sel_target_user.get("full_name", ""),
-                                    typed_phrase="I ACCEPT",
-                                    checkbox_confirmed=True
-                                )
-                            st.success(f"Role '{sel_role.upper()}' activated successfully! {sel_target_user.get('full_name')} is now active and available for mentor assignments.")
-                            st.rerun()
-                        else:
-                            st.error(err or "Failed to activate role.")
+                    if has_existing_nda:
+                        if st.button("✅ Verify & Activate Role", key=f"btn_act_pnd_{sel_manage_user}_{sel_role}", type="primary", use_container_width=True, help="Activate this role grant (Master NDA confirmed)."):
+                            from services.roles import activate_role
+                            ok, err = activate_role(sel_manage_user, sel_role)
+                            if ok:
+                                st.success(f"Role '{sel_role.upper()}' activated successfully! {sel_target_user.get('full_name')} is now active.")
+                                st.rerun()
+                            else:
+                                st.error(err or "Failed to activate role.")
+                    else:
+                        st.button("🔒 Awaiting User Signature", key=f"btn_act_dis_{sel_manage_user}_{sel_role}", disabled=True, use_container_width=True, help="Mentor must sign their own NDA before activation.")
                 with col_b2:
                     if st.button("❌ Cancel Grant", key="btn_cancel_grant", type="secondary", use_container_width=True):
                         ok, err = cancel_grant(sel_manage_user, sel_role)

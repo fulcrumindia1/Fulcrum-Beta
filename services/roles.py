@@ -100,17 +100,19 @@ def get_user_roles(user_id: str) -> List[Dict]:
     backend = get_data_backend()
     roles = []
 
+    supabase_fetched = False
     if backend == "supabase":
         client = _get_admin_client() or _get_user_client()
         if client:
             try:
                 res = client.table("user_roles").select("*").eq("user_id", user_id).execute()
                 roles = res.data or []
+                supabase_fetched = True
             except Exception as e:
                 print(f"[Roles] Supabase user_roles fetch notice for {user_id}: {e}")
 
-    if not roles:
-        # Check SQLite fallback whenever Supabase returns empty or fails
+    if not supabase_fetched:
+        # Check SQLite fallback ONLY when running in sqlite mode or if Supabase connection failed
         db = get_local_db()
         roles = db.get_user_roles(user_id) if hasattr(db, "get_user_roles") else []
 
@@ -258,7 +260,22 @@ assign_user_role = grant_role
 
 
 def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
-    """Activates a role (e.g. after valid NDA signature)."""
+    """Activates a role grant after verifying NDA compliance. Strictly refuses to activate revoked roles."""
+    if not user_id:
+        return False, "User ID is required."
+
+    # Safety check: Never activate an explicitly revoked role grant
+    existing_roles = get_user_roles(user_id)
+    grant = next((r for r in existing_roles if r.get("role") == role), None)
+    if grant and grant.get("status") == "revoked":
+        return False, f"Cannot activate: The {role.upper()} role grant was explicitly revoked by Administration. Re-granting is required."
+
+    # Legal integrity: Guide and SME roles strictly require a verified signed NDA
+    if role in ("guide", "sme"):
+        from services.legal import check_user_nda_accepted
+        if not check_user_nda_accepted(user_id, role):
+            return False, f"Cannot activate {role.upper()}: A verified Non-Disclosure Agreement (NDA) has not been executed."
+
     now_iso = datetime.now(timezone.utc).isoformat()
     backend = get_data_backend()
 
@@ -267,11 +284,13 @@ def activate_role(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("user_roles").update({
+            res = admin.table("user_roles").update({
                 "status": "active",
                 "activated_at": now_iso,
                 "updated_at": now_iso
-            }).eq("user_id", user_id).eq("role", role).execute()
+            }).eq("user_id", user_id).eq("role", role).neq("status", "revoked").execute()
+            if not res.data:
+                return False, f"Role activation failed in Supabase: No pending grant found for role '{role}' or role is revoked."
         except Exception as e:
             return False, f"Failed to activate role in Supabase: {e}"
         _invalidate_role_caches(user_id)
@@ -324,26 +343,44 @@ def revoke_role(user_id: str, role: str, reason: str = "", revoked_by: Optional[
         if hasattr(db, "update_role_status"):
             db.update_role_status(user_id, role, "revoked", revocation_reason=reason)
 
-    # If revoking a Guide, immediately unassign active caseload to prevent privileged data access
+    # If revoking a Guide, immediately unassign active primary or co-guide caseload
     if role == "guide":
         try:
             from services.relationships import get_all_relationships, unassign_guide
             rels = get_all_relationships()
             for rel in rels:
-                guides_list = [str(g.get("id")) for g in rel.get("guides", [])]
-                if (str(rel.get("guide_id")) == str(user_id) or str(user_id) in guides_list) and rel.get("status") == "active":
+                raw_gids = rel.get("guide_ids") or []
+                if isinstance(raw_gids, str):
+                    try: raw_gids = json.loads(raw_gids)
+                    except Exception: raw_gids = [raw_gids]
+                if not isinstance(raw_gids, list):
+                    raw_gids = []
+                if rel.get("guide_id"):
+                    raw_gids.append(str(rel["guide_id"]))
+                guides_set = {str(gid) for gid in raw_gids if gid}
+
+                if str(user_id) in guides_set and rel.get("status") == "active":
                     unassign_guide(aspirant_id=rel["aspirant_id"], guide_id=str(user_id), admin_id=revoked_by, reason=f"Mentor role revoked: {reason}")
         except Exception as e:
             print(f"[Roles] Caseload unassignment notice for revoked guide {user_id}: {e}")
 
-    # If revoking an SME, immediately unassign active technical caseload
+    # If revoking an SME, immediately unassign active primary or additional SME caseload
     if role == "sme":
         try:
             from services.relationships import get_all_relationships, unassign_sme
             rels = get_all_relationships()
             for rel in rels:
-                smes_list = [str(s.get("id")) for s in rel.get("smes", [])]
-                if (str(rel.get("sme_id")) == str(user_id) or str(user_id) in smes_list) and rel.get("status") == "active":
+                raw_sids = rel.get("sme_ids") or []
+                if isinstance(raw_sids, str):
+                    try: raw_sids = json.loads(raw_sids)
+                    except Exception: raw_sids = [raw_sids]
+                if not isinstance(raw_sids, list):
+                    raw_sids = []
+                if rel.get("sme_id"):
+                    raw_sids.append(str(rel["sme_id"]))
+                smes_set = {str(sid) for sid in raw_sids if sid}
+
+                if str(user_id) in smes_set and rel.get("status") == "active":
                     unassign_sme(aspirant_id=rel["aspirant_id"], sme_id=str(user_id), admin_id=revoked_by, reason=f"SME role revoked: {reason}")
         except Exception as e:
             print(f"[Roles] Advisory unassignment notice for revoked SME {user_id}: {e}")

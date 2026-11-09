@@ -61,9 +61,20 @@ def render_guide_portal(user_profile: dict):
     guide_id = user_profile["id"]
     guide_name = user_profile.get("full_name", "Mentor")
 
-    from services.roles import user_has_active_role
+    from services.roles import user_has_active_role, get_user_role_grants
     if not user_has_active_role(guide_id, "guide"):
-        st.error("🚫 Your Guide role grant is no longer active. Access to the Guide Workspace and assigned entrepreneur dossiers has been revoked.")
+        roles = get_user_role_grants(guide_id)
+        matching_grant = next((r for r in roles if r.get("role") == "guide"), None)
+        status = (matching_grant.get("status") if matching_grant else "none").lower()
+        if status == "pending_nda":
+            st.warning("⚠️ Your Guide role is awaiting workspace activation and NDA execution. Please complete the activation step.")
+        elif status == "suspended":
+            reason = matching_grant.get("status_reason") or "Administrative review"
+            st.warning(f"⚠️ Your Guide role is temporarily suspended ({reason}). Access to entrepreneur dossiers is on hold.")
+        elif status == "revoked":
+            st.error("🚫 Your Guide role grant has been revoked by platform administration. Access to the Guide Workspace has been removed.")
+        else:
+            st.error("🚫 Access to the Guide Workspace is restricted. You do not hold an active Guide role grant.")
         st.session_state["active_workspace"] = "aspirant"
         return
 

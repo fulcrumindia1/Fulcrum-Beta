@@ -38,9 +38,20 @@ def render_sme_portal(user_profile: dict):
     sme_name = user_profile.get("full_name", "Specialist")
     domain_focus = user_profile.get("profile_data", {}).get("expertise") or "Domain Advisory"
 
-    from services.roles import user_has_active_role
+    from services.roles import user_has_active_role, get_user_role_grants
     if not user_has_active_role(sme_id, "sme"):
-        st.error("🚫 Your SME role grant is no longer active. Access to the SME Workspace and assigned entrepreneur cases has been revoked.")
+        roles = get_user_role_grants(sme_id)
+        matching_grant = next((r for r in roles if r.get("role") == "sme"), None)
+        status = (matching_grant.get("status") if matching_grant else "none").lower()
+        if status == "pending_nda":
+            st.warning("⚠️ Your SME role is awaiting workspace activation and NDA verification. Please complete the activation step.")
+        elif status == "suspended":
+            reason = matching_grant.get("status_reason") or "Administrative review"
+            st.warning(f"⚠️ Your SME role is temporarily suspended ({reason}). Access to entrepreneur dossiers is on hold.")
+        elif status == "revoked":
+            st.error("🚫 Your SME role grant has been revoked by platform administration. Access to the SME Workspace has been removed.")
+        else:
+            st.error("🚫 Access to the SME Workspace is restricted. You do not hold an active SME role grant.")
         st.session_state["active_workspace"] = "aspirant"
         return
 

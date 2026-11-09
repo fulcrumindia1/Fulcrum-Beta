@@ -436,12 +436,14 @@ def record_legal_acceptance(
     backend = get_data_backend()
     if backend == "supabase":
         admin = get_supabase_admin_client()
-        if admin:
-            try:
-                admin.table("legal_acceptances").insert(acceptance_record).execute()
-            except Exception as e:
-                # If Supabase PostgREST has a temporary schema cache miss, fallback to local DB so user flow is not broken
-                print(f"[Legal] Supabase legal_acceptances notice: {e}. Saved to local DB fallback.")
+        if not admin:
+            return False, "Database connection unavailable."
+        try:
+            ins_res = admin.table("legal_acceptances").insert(acceptance_record).execute()
+            if not ins_res or not getattr(ins_res, "data", None):
+                return False, "Failed to persist legal acceptance record to cloud storage."
+        except Exception as e:
+            return False, f"Cloud database acceptance persistence error: {e}"
 
     # Invalidate cache
     invalidate_memo(f"terms_accepted:{user_id}")
