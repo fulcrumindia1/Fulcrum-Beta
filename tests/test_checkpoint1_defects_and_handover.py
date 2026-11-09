@@ -59,6 +59,7 @@ def test_04_selective_mentor_replacement_preserves_co_mentors(monkeypatch):
     monkeypatch.setattr("services.relationships.get_aspirant_mentors", lambda aid: mock_mentors)
     monkeypatch.setattr("services.profiles.get_profile", lambda uid: {"id": uid, "role": "guide", "full_name": "Mentor"})
     monkeypatch.setattr("services.roles.user_has_active_role", lambda uid, r: True)
+    monkeypatch.setattr("services.roles.is_assignable_mentor", lambda uid, r, **kw: (True, None))
 
     captured_upsert = {}
     mock_client = MagicMock()

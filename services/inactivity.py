@@ -230,7 +230,7 @@ def check_and_process_caseload_inactivity() -> List[Dict]:
         # Exclude archived or temporarily suspended entrepreneurs from ordinary inactivity monitoring
         from services.account_lifecycle import get_account_status
         asp_st = get_account_status(aspirant_id)
-        if asp_st.get("account_status") != "ACTIVE" or not asp_st.get("is_active"):
+        if asp_st.get("account_status") in ("ARCHIVED", "TEMPORARILY_SUSPENDED"):
             continue
 
         # ── Collect all distinct authorized Guides ──

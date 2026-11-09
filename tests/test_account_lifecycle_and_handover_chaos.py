@@ -126,6 +126,22 @@ def synthetic_users():
         db.upsert_profile(p)
         db.create_initial_journey(p["id"], f"{p['full_name']}'s Journey")
 
+    # Set up role grants and NDAs for mentors so they are assignable
+    from services.roles import grant_role, activate_role
+    from services.legal import record_legal_acceptance
+
+    grant_role(p_guide["id"], "guide", granted_by=SOLE_ADMIN_UUID)
+    record_legal_acceptance(p_guide["id"], p_guide["email"], "nda_guide", p_guide["full_name"], "I ACCEPT", True)
+    activate_role(p_guide["id"], "guide")
+
+    grant_role(p_coguide["id"], "guide", granted_by=SOLE_ADMIN_UUID)
+    record_legal_acceptance(p_coguide["id"], p_coguide["email"], "nda_guide", p_coguide["full_name"], "I ACCEPT", True)
+    activate_role(p_coguide["id"], "guide")
+
+    grant_role(p_sme["id"], "sme", granted_by=SOLE_ADMIN_UUID)
+    record_legal_acceptance(p_sme["id"], p_sme["email"], "nda_sme", p_sme["full_name"], "I ACCEPT", True)
+    activate_role(p_sme["id"], "sme")
+
     # Set up relationship: Founder has Primary Guide, Co-Guide, and Specialist SME
     from services.relationships import assign_guide, assign_sme
     assign_guide(p_founder["id"], p_guide["id"], admin_id=SOLE_ADMIN_UUID, mode="replace")

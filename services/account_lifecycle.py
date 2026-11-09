@@ -56,14 +56,23 @@ def _invalidate_account_caches(user_id: str) -> None:
 def get_account_status(user_id: str) -> Dict:
     """
     Retrieves full account lifecycle status details for a user.
-    Falls back gracefully to 'ACTIVE' for legacy records lacking explicit lifecycle columns.
+    STRICT FAIL-CLOSED POLICY (P0):
+    - Missing user ID: DENIED.
+    - Missing account record: DENIED.
+    - Supabase unavailable / network error: DENIED (no SQLite fallback in Supabase mode).
+    - Schema configuration failure: DENIED.
+    - Unknown lifecycle state: DENIED.
+    - Legacy schema record (missing migration 009 columns): maps based on existing is_active flag.
     """
-    if not user_id:
+    if not user_id or not str(user_id).strip():
         return {
-            "account_status": "ACTIVE",
-            "is_active": True,
+            "user_id": None,
+            "account_status": "DENIED",
+            "is_active": False,
+            "exists": False,
+            "error": "Missing user ID.",
             "legal_hold": False,
-            "lifecycle_reason": None,
+            "lifecycle_reason": "Missing user ID.",
             "status_updated_at": None,
             "status_updated_by": None,
             "deletion_requested_at": None,
@@ -72,7 +81,8 @@ def get_account_status(user_id: str) -> Dict:
             "retention_notes": None,
         }
 
-    cache_key = f"account_status:{user_id}"
+    clean_uid = str(user_id).strip()
+    cache_key = f"account_status:{clean_uid}"
     cached = get_memo(cache_key)
     if cached is not None:
         return cached
@@ -82,38 +92,170 @@ def get_account_status(user_id: str) -> Dict:
 
     if backend == "supabase":
         admin = get_supabase_admin_client() or get_supabase_client()
-        if admin:
-            try:
-                res = admin.table("profiles").select(
-                    "id, is_active, account_status, legal_hold, lifecycle_reason, status_updated_at, "
-                    "status_updated_by, deletion_requested_at, deletion_requested_by, "
-                    "deletion_scheduled_for, retention_notes"
-                ).eq("id", user_id).limit(1).execute()
-                if res.data and len(res.data) > 0:
-                    status_dict = res.data[0]
-            except Exception as e:
-                # If migration 009 columns are not yet present in Supabase table, query standard fields
+        if not admin:
+            res_err = {
+                "user_id": clean_uid,
+                "account_status": "DENIED",
+                "is_active": False,
+                "exists": False,
+                "error": "Authentication backend unavailable: Supabase client is not configured.",
+                "legal_hold": False,
+                "lifecycle_reason": "Database connection unavailable.",
+                "status_updated_at": None,
+                "status_updated_by": None,
+                "deletion_requested_at": None,
+                "deletion_requested_by": None,
+                "deletion_scheduled_for": None,
+                "retention_notes": None,
+            }
+            return res_err
+
+        try:
+            res = admin.table("profiles").select(
+                "id, is_active, account_status, legal_hold, lifecycle_reason, status_updated_at, "
+                "status_updated_by, deletion_requested_at, deletion_requested_by, "
+                "deletion_scheduled_for, retention_notes"
+            ).eq("id", clean_uid).limit(1).execute()
+
+            if res.data and len(res.data) > 0:
+                status_dict = res.data[0]
+            else:
+                # User record does not exist in Supabase! Fail-closed immediately.
+                res_not_found = {
+                    "user_id": clean_uid,
+                    "account_status": "DENIED",
+                    "is_active": False,
+                    "exists": False,
+                    "error": f"Account profile record not found for user ID '{clean_uid}'.",
+                    "legal_hold": False,
+                    "lifecycle_reason": "Account record does not exist.",
+                    "status_updated_at": None,
+                    "status_updated_by": None,
+                    "deletion_requested_at": None,
+                    "deletion_requested_by": None,
+                    "deletion_scheduled_for": None,
+                    "retention_notes": None,
+                }
+                set_memo(cache_key, res_not_found, ttl_seconds=5)
+                return res_not_found
+        except Exception as e:
+            err_str = str(e).lower()
+            # If migration 009 columns are not yet present in Supabase table, query standard fields
+            if "column" in err_str or "does not exist" in err_str or "42703" in err_str:
                 try:
-                    res_std = admin.table("profiles").select("id, is_active").eq("id", user_id).limit(1).execute()
+                    res_std = admin.table("profiles").select("id, is_active").eq("id", clean_uid).limit(1).execute()
                     if res_std.data and len(res_std.data) > 0:
                         status_dict = res_std.data[0]
-                except Exception:
-                    pass
+                    else:
+                        res_not_found = {
+                            "user_id": clean_uid,
+                            "account_status": "DENIED",
+                            "is_active": False,
+                            "exists": False,
+                            "error": f"Account profile record not found for user ID '{clean_uid}'.",
+                            "legal_hold": False,
+                            "lifecycle_reason": "Account record does not exist.",
+                            "status_updated_at": None,
+                            "status_updated_by": None,
+                            "deletion_requested_at": None,
+                            "deletion_requested_by": None,
+                            "deletion_scheduled_for": None,
+                            "retention_notes": None,
+                        }
+                        return res_not_found
+                except Exception as e2:
+                    return {
+                        "user_id": clean_uid,
+                        "account_status": "DENIED",
+                        "is_active": False,
+                        "exists": False,
+                        "error": f"Database schema configuration failure: {e2}",
+                        "legal_hold": False,
+                        "lifecycle_reason": "Database schema failure.",
+                        "status_updated_at": None,
+                        "status_updated_by": None,
+                        "deletion_requested_at": None,
+                        "deletion_requested_by": None,
+                        "deletion_scheduled_for": None,
+                        "retention_notes": None,
+                    }
+            else:
+                # Network or database service failure in production backend:
+                # STRICT RULE: Absolutely NO silent fallback to local SQLite in DATA_BACKEND=supabase!
+                return {
+                    "user_id": clean_uid,
+                    "account_status": "DENIED",
+                    "is_active": False,
+                    "exists": False,
+                    "error": f"Supabase backend unavailable: {e}",
+                    "legal_hold": False,
+                    "lifecycle_reason": "Backend connection failure.",
+                    "status_updated_at": None,
+                    "status_updated_by": None,
+                    "deletion_requested_at": None,
+                    "deletion_requested_by": None,
+                    "deletion_scheduled_for": None,
+                    "retention_notes": None,
+                }
     else:
+        # SQLite mode ONLY (DATA_BACKEND=sqlite)
         db = get_local_db()
-        p = db.get_profile_by_id(user_id)
-        if p:
-            status_dict = p
+        p = db.get_profile_by_id(clean_uid)
+        if not p:
+            res_not_found = {
+                "user_id": clean_uid,
+                "account_status": "DENIED",
+                "is_active": False,
+                "exists": False,
+                "error": f"Account profile record not found in local database for user ID '{clean_uid}'.",
+                "legal_hold": False,
+                "lifecycle_reason": "Account record does not exist.",
+                "status_updated_at": None,
+                "status_updated_by": None,
+                "deletion_requested_at": None,
+                "deletion_requested_by": None,
+                "deletion_scheduled_for": None,
+                "retention_notes": None,
+            }
+            set_memo(cache_key, res_not_found, ttl_seconds=5)
+            return res_not_found
+        status_dict = p
 
-    # Default to ACTIVE if column is unset or null
+    # Evaluate lifecycle state fail-closed
     raw_status = str(status_dict.get("account_status") or "").strip().upper()
-    if raw_status not in VALID_ACCOUNT_STATUSES:
-        raw_status = "ACTIVE" if status_dict.get("is_active", True) else "TEMPORARILY_SUSPENDED"
+    if raw_status and raw_status in VALID_ACCOUNT_STATUSES:
+        final_status = raw_status
+    elif not raw_status and "is_active" in status_dict:
+        # Legacy pre-migration schema record: map directly from is_active
+        is_act = bool(status_dict.get("is_active"))
+        final_status = "ACTIVE" if is_act else "TEMPORARILY_SUSPENDED"
+    else:
+        # Corrupt or unknown lifecycle status string -> fail-closed DENIED
+        return {
+            "user_id": clean_uid,
+            "account_status": "DENIED",
+            "is_active": False,
+            "exists": True,
+            "error": f"Unknown or invalid account lifecycle state: '{raw_status}'. Access denied.",
+            "legal_hold": False,
+            "lifecycle_reason": "Invalid account lifecycle state.",
+            "status_updated_at": None,
+            "status_updated_by": None,
+            "deletion_requested_at": None,
+            "deletion_requested_by": None,
+            "deletion_scheduled_for": None,
+            "retention_notes": None,
+        }
+
+    is_act_flag = bool(status_dict.get("is_active", True))
+    effective_active = bool(final_status == "ACTIVE" and is_act_flag)
 
     result = {
-        "user_id": user_id,
-        "account_status": raw_status,
-        "is_active": bool(status_dict.get("is_active", True) and raw_status == "ACTIVE"),
+        "user_id": clean_uid,
+        "account_status": final_status,
+        "is_active": effective_active,
+        "exists": True,
+        "error": None,
         "legal_hold": bool(status_dict.get("legal_hold", False)),
         "lifecycle_reason": status_dict.get("lifecycle_reason"),
         "status_updated_at": status_dict.get("status_updated_at"),
@@ -131,14 +273,18 @@ def get_account_status(user_id: str) -> Dict:
 def is_account_active(user_id: str) -> Tuple[bool, Optional[str]]:
     """
     Fast boolean authorization gate. Returns (True, None) if account is ACTIVE.
-    Returns (False, refusal_reason) if suspended, archived, or scheduled for deletion.
+    Returns (False, refusal_reason) if suspended, archived, scheduled for deletion, missing, or error.
+    Strictly fail-closed.
     """
-    if not user_id:
+    if not user_id or not str(user_id).strip():
         return False, "Missing user ID."
 
     details = get_account_status(user_id)
-    status = details.get("account_status", "ACTIVE")
+    if not details.get("exists", True) or details.get("error"):
+        err_msg = details.get("error") or "Account record not found or inaccessible."
+        return False, f"Account access denied: {err_msg}"
 
+    status = details.get("account_status")
     if status == "ACTIVE":
         if not details.get("is_active", True):
             return False, "Account access is marked inactive by administration."
@@ -151,9 +297,9 @@ def is_account_active(user_id: str) -> Tuple[bool, Optional[str]]:
         return False, f"Account is archived: {reason}. Historical records are preserved. Contact administration for restoration."
     elif status == "PENDING_DELETION":
         sched = (details.get("deletion_scheduled_for") or "")[:10]
-        return False, f"Account is pending deletion review (scheduled review: {sched}). You may cancel this request or contact administration."
+        return False, f"Account is pending deletion review (scheduled review: {sched}). Ordinary operations are restricted."
 
-    return False, f"Account is restricted (status: {status})."
+    return False, f"Account access denied: Restricted lifecycle status '{status}'."
 
 
 def suspend_account(
@@ -199,12 +345,12 @@ def suspend_account(
                 "updated_at": now_iso
             }).eq("id", user_id).execute()
 
-            # Record audit log
+            # Record audit log - fail closed if audit log cannot be persisted
             try:
-                admin.table("account_lifecycle_log").insert({
+                ins_log = admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "SUSPEND",
                     "previous_status": prev_status,
                     "new_status": "TEMPORARILY_SUSPENDED",
@@ -212,8 +358,18 @@ def suspend_account(
                     "metadata": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
+                if not ins_log or not getattr(ins_log, "data", None):
+                    admin.table("profiles").update({
+                        "account_status": prev_status,
+                        "is_active": True if prev_status == "ACTIVE" else False
+                    }).eq("id", user_id).execute()
+                    return False, "Failed to persist immutable lifecycle audit log. Suspension rolled back."
             except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+                admin.table("profiles").update({
+                    "account_status": prev_status,
+                    "is_active": True if prev_status == "ACTIVE" else False
+                }).eq("id", user_id).execute()
+                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Suspension rolled back."
         except Exception as e:
             return False, f"Failed to suspend account in Supabase: {e}"
     else:
@@ -296,10 +452,10 @@ def resume_account(
             }).eq("id", user_id).execute()
 
             try:
-                admin.table("account_lifecycle_log").insert({
+                ins_log = admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "RESUME",
                     "previous_status": curr_status,
                     "new_status": "ACTIVE",
@@ -307,8 +463,18 @@ def resume_account(
                     "metadata": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
+                if not ins_log or not getattr(ins_log, "data", None):
+                    admin.table("profiles").update({
+                        "account_status": curr_status,
+                        "is_active": False
+                    }).eq("id", user_id).execute()
+                    return False, "Failed to persist immutable lifecycle audit log. Resume rolled back."
             except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+                admin.table("profiles").update({
+                    "account_status": curr_status,
+                    "is_active": False
+                }).eq("id", user_id).execute()
+                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Resume rolled back."
         except Exception as e:
             return False, f"Failed to resume account in Supabase: {e}"
     else:
@@ -490,6 +656,7 @@ def archive_account(
     from services.relationships import get_all_relationships, unassign_guide, unassign_sme
     rels = get_all_relationships()
     uid_str = str(user_id)
+    handover_errors = []
 
     for rel in rels:
         aid = rel.get("aspirant_id")
@@ -507,12 +674,14 @@ def archive_account(
         guides_set = {str(gid) for gid in raw_gids if gid}
 
         if uid_str in guides_set:
-            unassign_guide(
+            ok_un, err_un = unassign_guide(
                 aspirant_id=aid,
                 guide_id=uid_str,
                 admin_id=actor_id,
                 reason=f"Account archived by Administration: {reason.strip()}"
             )
+            if not ok_un:
+                handover_errors.append(f"Guide unassignment failed for mentee {aid}: {err_un}")
 
         # Handle SME unassignment
         raw_sids = rel.get("sme_ids") or []
@@ -525,12 +694,19 @@ def archive_account(
         smes_set = {str(sid) for sid in raw_sids if sid}
 
         if uid_str in smes_set:
-            unassign_sme(
+            ok_un_sme, err_un_sme = unassign_sme(
                 aspirant_id=aid,
                 sme_id=uid_str,
                 admin_id=actor_id,
                 reason=f"Account archived by Administration: {reason.strip()}"
             )
+            if not ok_un_sme:
+                handover_errors.append(f"SME unassignment failed for mentee {aid}: {err_un_sme}")
+
+    # P0 Safeguard: If any mentor unassignment or consultation transfer failed,
+    # halt archival immediately to prevent orphaned caseloads!
+    if handover_errors:
+        return False, f"Archival aborted: Handover incomplete due to errors: {'; '.join(handover_errors)}"
 
     # Update account status in persistence layer
     backend = get_data_backend()
@@ -549,10 +725,10 @@ def archive_account(
             }).eq("id", user_id).execute()
 
             try:
-                admin.table("account_lifecycle_log").insert({
+                ins_log = admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "ARCHIVE",
                     "previous_status": prev_status,
                     "new_status": "ARCHIVED",
@@ -560,8 +736,20 @@ def archive_account(
                     "metadata": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
+                if not ins_log or not getattr(ins_log, "data", None):
+                    admin.table("profiles").update({
+                        "account_status": prev_status,
+                        "is_active": True if prev_status == "ACTIVE" else False
+                    }).eq("id", user_id).execute()
+                    return False, "Failed to persist immutable lifecycle audit log. Archival rolled back."
             except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+                admin.table("profiles").update({
+                    "account_status": prev_status,
+                    "is_active": True if prev_status == "ACTIVE" else False
+                }).eq("id", user_id).execute()
+                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Archival rolled back."
+        except Exception as e:
+            return False, f"Failed to archive account in Supabase: {e}"
         except Exception as e:
             return False, f"Failed to archive account in Supabase: {e}"
     else:
@@ -574,17 +762,28 @@ def archive_account(
             actor_id=actor_id,
             updated_at=now_iso
         )
-        db.log_account_lifecycle({
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "actor_id": actor_id,
-            "action": "ARCHIVE",
-            "previous_status": prev_status,
-            "new_status": "ARCHIVED",
-            "reason": reason.strip(),
-            "metadata": "{}",
-            "created_at": now_iso
-        })
+        try:
+            db.log_account_lifecycle({
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "actor_id": actor_id,
+                "action": "ARCHIVE",
+                "previous_status": prev_status,
+                "new_status": "ARCHIVED",
+                "reason": reason.strip(),
+                "metadata": "{}",
+                "created_at": now_iso
+            })
+        except Exception as e_log:
+            db.update_account_status(
+                user_id=user_id,
+                status=prev_status,
+                is_active=1 if prev_status == "ACTIVE" else 0,
+                reason="Audit log failure rollback",
+                actor_id=actor_id,
+                updated_at=now_iso
+            )
+            return False, f"Failed to persist immutable lifecycle audit log: {e_log}. Archival rolled back."
 
     _invalidate_account_caches(user_id)
     return True, None
@@ -637,10 +836,10 @@ def restore_account(
             }).eq("id", user_id).execute()
 
             try:
-                admin.table("account_lifecycle_log").insert({
+                ins_log = admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or SOLE_ADMIN_UUID,
                     "action": "RESTORE",
                     "previous_status": curr_status,
                     "new_status": "ACTIVE",
@@ -648,8 +847,18 @@ def restore_account(
                     "metadata": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
+                if not ins_log or not getattr(ins_log, "data", None):
+                    admin.table("profiles").update({
+                        "account_status": curr_status,
+                        "is_active": False
+                    }).eq("id", user_id).execute()
+                    return False, "Failed to persist immutable lifecycle audit log. Restoration rolled back."
             except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+                admin.table("profiles").update({
+                    "account_status": curr_status,
+                    "is_active": False
+                }).eq("id", user_id).execute()
+                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Restoration rolled back."
         except Exception as e:
             return False, f"Failed to restore account in Supabase: {e}"
     else:
@@ -751,10 +960,10 @@ def request_account_deletion(
             }).eq("id", user_id).execute()
 
             try:
-                admin.table("account_lifecycle_log").insert({
+                ins_log = admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or user_id,
                     "action": "REQUEST_DELETION",
                     "previous_status": curr_details.get("account_status", "ACTIVE"),
                     "new_status": "PENDING_DELETION",
@@ -762,8 +971,22 @@ def request_account_deletion(
                     "metadata": {"scheduled_for": scheduled_for, "grace_days": grace_days},
                     "created_at": now_iso
                 }).execute()
+                if not ins_log or not getattr(ins_log, "data", None):
+                    admin.table("profiles").update({
+                        "account_status": curr_details.get("account_status", "ACTIVE"),
+                        "deletion_requested_at": None,
+                        "deletion_requested_by": None,
+                        "deletion_scheduled_for": None
+                    }).eq("id", user_id).execute()
+                    return False, "Failed to persist immutable audit log in Supabase. Deletion request rolled back."
             except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+                admin.table("profiles").update({
+                    "account_status": curr_details.get("account_status", "ACTIVE"),
+                    "deletion_requested_at": None,
+                    "deletion_requested_by": None,
+                    "deletion_scheduled_for": None
+                }).eq("id", user_id).execute()
+                return False, f"Failed to persist immutable audit log: {log_err}. Deletion request rolled back."
         except Exception as e:
             return False, f"Failed to schedule account deletion in Supabase: {e}"
     else:
@@ -840,10 +1063,10 @@ def cancel_account_deletion(
             }).eq("id", user_id).execute()
 
             try:
-                admin.table("account_lifecycle_log").insert({
+                ins_log = admin.table("account_lifecycle_log").insert({
                     "id": str(uuid.uuid4()),
                     "user_id": user_id,
-                    "actor_id": actor_id,
+                    "actor_id": actor_id or user_id,
                     "action": "CANCEL_DELETION",
                     "previous_status": "PENDING_DELETION",
                     "new_status": "ACTIVE",
@@ -851,8 +1074,20 @@ def cancel_account_deletion(
                     "metadata": {"timestamp": now_iso},
                     "created_at": now_iso
                 }).execute()
+                if not ins_log or not getattr(ins_log, "data", None):
+                    admin.table("profiles").update({
+                        "account_status": "PENDING_DELETION",
+                        "deletion_requested_at": curr_details.get("deletion_requested_at"),
+                        "deletion_scheduled_for": curr_details.get("deletion_scheduled_for")
+                    }).eq("id", user_id).execute()
+                    return False, "Failed to persist immutable audit log in Supabase. Cancellation rolled back."
             except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+                admin.table("profiles").update({
+                    "account_status": "PENDING_DELETION",
+                    "deletion_requested_at": curr_details.get("deletion_requested_at"),
+                    "deletion_scheduled_for": curr_details.get("deletion_scheduled_for")
+                }).eq("id", user_id).execute()
+                return False, f"Failed to persist immutable audit log: {log_err}. Cancellation rolled back."
         except Exception as e:
             return False, f"Failed to cancel account deletion in Supabase: {e}"
     else:

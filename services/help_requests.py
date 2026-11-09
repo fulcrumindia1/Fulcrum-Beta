@@ -113,6 +113,14 @@ def create_request(
     if not subject or not message:
         return None, "Subject and message are required."
 
+    from services.account_lifecycle import get_account_status
+    acc_details = get_account_status(aspirant_id)
+    acc_st = acc_details.get("account_status", "ACTIVE")
+    if acc_st == "PENDING_DELETION":
+        return None, "Account is pending deletion review. Ordinary workflow mutations are restricted during the grace period."
+    elif acc_st != "ACTIVE":
+        return None, f"Account access is restricted (status: {acc_st}). Cannot submit help requests."
+
     # Look up assigned mentors
     assigned_guide_id = None
     assigned_sme_id = None
@@ -433,6 +441,11 @@ def list_guide_requests(guide_id: str) -> List[Dict]:
 
 def guide_respond_request(request_id: str, guide_id: str, new_status: str, response: str) -> Tuple[bool, Optional[str]]:
     """Guide responds to an assigned ticket and updates status."""
+    from services.account_lifecycle import get_account_status
+    acc_st = get_account_status(guide_id).get("account_status")
+    if acc_st in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
+        return False, f"Unauthorized: Mentor account is {acc_st}."
+
     # PART 7 — AUTHORIZATION: Verify caller is authorized
     try:
         import streamlit as st
@@ -617,6 +630,10 @@ def list_sme_requests(sme_id: str) -> List[Dict]:
 
 def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None, arg4: Optional[str] = None, new_status: Optional[str] = None, response: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """SME responds to an assigned advisory ticket and updates status."""
+    from services.account_lifecycle import get_account_status
+    acc_st = get_account_status(sme_id).get("account_status")
+    if acc_st in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
+        return False, f"Unauthorized: Mentor account is {acc_st}."
     if new_status is not None or response is not None:
         new_status = new_status or "IN_PROGRESS"
         response = response or ""

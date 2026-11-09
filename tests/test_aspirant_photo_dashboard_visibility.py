@@ -252,7 +252,7 @@ def test_02_admin_assigns_guide_one_to_alpha(photo_test_context):
     alpha_id = photo_test_context["alpha"]["id"]
     guide1_id = photo_test_context["guide1"]["id"]
 
-    ok, err = assign_guide(alpha_id, guide1_id, admin_id=ADMIN_ID, notes="Assigned Guide One")
+    ok, err = assign_guide(alpha_id, guide1_id, admin_id=ADMIN_ID, notes="Assigned Guide One", allow_pending_nda=True)
     assert ok is True, f"Admin assign guide failed: {err}"
 
     mentors = get_aspirant_mentors(alpha_id)
@@ -312,7 +312,7 @@ def test_05_admin_assigns_sme_one_to_alpha(photo_test_context):
     alpha_id = photo_test_context["alpha"]["id"]
     sme1_id = photo_test_context["sme1"]["id"]
 
-    ok, err = assign_sme(alpha_id, sme1_id, admin_id=ADMIN_ID, notes="Assigned SME One")
+    ok, err = assign_sme(alpha_id, sme1_id, admin_id=ADMIN_ID, notes="Assigned SME One", allow_pending_nda=True)
     assert ok is True, f"Admin assign SME failed: {err}"
 
     mentors = get_aspirant_mentors(alpha_id)

@@ -12,6 +12,7 @@ import streamlit as st
 from datetime import datetime, timezone
 from typing import Optional, List, Dict
 
+from services.cache import is_tab_active, get_memo, set_memo, invalidate_memo
 from services.roles import (
     is_strict_admin,
     require_sole_admin,
@@ -67,28 +68,32 @@ def render_admin_account_lifecycle_tab(admin_id: str):
     ])
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SUBTAB 1: ACTIVE ACCOUNTS
+    # SUBTAB 1: ACTIVE ACCOUNTS (Lazy rendered)
     # ─────────────────────────────────────────────────────────────────────────
     with sub_active:
-        render_subtab_active_accounts(admin_id)
+        if is_tab_active(sub_active):
+            render_subtab_active_accounts(admin_id)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SUBTAB 2: ARCHIVED ACCOUNTS
+    # SUBTAB 2: ARCHIVED ACCOUNTS (Lazy rendered)
     # ─────────────────────────────────────────────────────────────────────────
     with sub_archived:
-        render_subtab_archived_accounts(admin_id)
+        if is_tab_active(sub_archived):
+            render_subtab_archived_accounts(admin_id)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SUBTAB 3: PENDING DELETION
+    # SUBTAB 3: PENDING DELETION (Lazy rendered)
     # ─────────────────────────────────────────────────────────────────────────
     with sub_pending:
-        render_subtab_pending_deletion(admin_id)
+        if is_tab_active(sub_pending):
+            render_subtab_pending_deletion(admin_id)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SUBTAB 4: ACCOUNT ACTION HISTORY
+    # SUBTAB 4: ACCOUNT ACTION HISTORY (Lazy rendered)
     # ─────────────────────────────────────────────────────────────────────────
     with sub_history:
-        render_subtab_action_history(admin_id)
+        if is_tab_active(sub_history):
+            render_subtab_action_history(admin_id)
 
 
 def render_subtab_active_accounts(admin_id: str):

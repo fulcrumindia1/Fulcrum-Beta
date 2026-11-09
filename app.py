@@ -1059,21 +1059,35 @@ def main():
 
         if acc_status == "PENDING_DELETION":
             sched_date = (acc_lifecycle.get("deletion_scheduled_for") or "")[:10]
+            req_at = (acc_lifecycle.get("deletion_requested_at") or "")[:16].replace("T", " ")
+            has_hold = bool(acc_lifecycle.get("legal_hold"))
+            reason_str = acc_lifecycle.get("lifecycle_reason") or "User or administrative closure request"
+
             st.markdown(f"""
-            <div style="max-width:680px; margin: 1.5rem auto 1rem; background:#FFFBEB; border:1.5px solid #FDE68A; border-left:5px solid #F59E0B; border-radius:12px; padding:1.2rem 1.5rem;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+            <div style="max-width:760px; margin: 1.5rem auto 1rem; background:#FFFBEB; border:1.5px solid #FDE68A; border-left:5px solid #F59E0B; border-radius:12px; padding:1.4rem 1.6rem; box-shadow:0 2px 8px rgba(0,0,0,0.04);">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
                     <div>
-                        <div style="font-weight:800; color:#92400E; font-size:0.95rem;">⚠️ Account Scheduled for Closure (Grace Period Active)</div>
-                        <div style="color:#B45309; font-size:0.84rem; margin-top:3px;">
-                            Scheduled review date: <strong>{sched_date or 'Within 30 Days'}</strong>. No data is permanently purged during this review window.
+                        <div style="font-weight:800; color:#92400E; font-size:1.05rem; display:flex; align-items:center; gap:8px;">
+                            <span>⏳</span> Account Scheduled for Closure (30-Day Grace Period Active)
+                        </div>
+                        <div style="color:#B45309; font-size:0.86rem; margin-top:6px; line-height:1.5;">
+                            <strong>Requested On:</strong> {req_at or 'Recently'} &nbsp;|&nbsp; 
+                            <strong>Scheduled Review Date:</strong> {sched_date or 'Within 30 Days'} &nbsp;|&nbsp;
+                            <strong>Legal Hold:</strong> {'🔒 ACTIVE' if has_hold else 'None'}
+                        </div>
+                        <div style="color:#78350F; font-size:0.83rem; margin-top:4px;">
+                            <strong>Reason on record:</strong> {reason_str}
+                        </div>
+                        <div style="color:#92400E; font-size:0.82rem; margin-top:8px; background:rgba(245, 158, 11, 0.12); padding:6px 10px; border-radius:6px;">
+                            🔒 <em>Ordinary workflow modifications (new tickets, milestone updates, mentor assignments) are paused during this review window. All historical records remain 100% preserved.</em>
                         </div>
                     </div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            col_cd1, col_cd2 = st.columns([3, 1])
+            col_cd1, col_cd2 = st.columns([2, 1])
             with col_cd2:
-                if st.button("↩️ Cancel Closure Request", key="btn_cancel_deletion_banner", use_container_width=True):
+                if st.button("↩️ Cancel Closure Request", key="btn_cancel_deletion_banner", type="primary", use_container_width=True):
                     ok_c, err_c = cancel_account_deletion(user["id"], actor_id=user["id"], reason="Cancelled by user in application")
                     if ok_c:
                         st.success("Account closure cancelled! Your account remains active.")

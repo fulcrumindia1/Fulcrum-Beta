@@ -223,7 +223,8 @@ def assign_guide(
     notes: str = "",
     assigned_by: Optional[str] = None,
     mode: str = "replace",
-    replace_target_id: Optional[str] = None
+    replace_target_id: Optional[str] = None,
+    allow_pending_nda: bool = False
 ) -> Tuple[bool, Optional[str]]:
     """Admin assigns Guide to an Aspirant with transition history and alerts.
     mode='replace': replaces the primary Guide or a specified replace_target_id.
@@ -245,7 +246,12 @@ def assign_guide(
 
     guide = get_profile(guide_id)
     from services.roles import is_assignable_mentor
-    ok_assign, err_assign = is_assignable_mentor(guide_id, "guide")
+    ok_assign, err_assign = is_assignable_mentor(
+        guide_id,
+        "guide",
+        allow_pending_nda=allow_pending_nda,
+        aspirant_id=aspirant_id
+    )
     if not ok_assign:
         return False, err_assign or "Selected mentor does not hold a valid Guide role grant."
 
@@ -456,7 +462,8 @@ def assign_sme(
     notes: str = "",
     assigned_by: Optional[str] = None,
     mode: str = "add",
-    replace_target_id: Optional[str] = None
+    replace_target_id: Optional[str] = None,
+    allow_pending_nda: bool = False
 ) -> Tuple[bool, Optional[str]]:
     """Admin assigns SME to an Aspirant with transition history and alerts.
     mode="add": Appends SME to the Aspirant's advisory panel.
@@ -478,7 +485,12 @@ def assign_sme(
 
     sme = get_profile(sme_id)
     from services.roles import is_assignable_mentor
-    ok_assign, err_assign = is_assignable_mentor(sme_id, "sme")
+    ok_assign, err_assign = is_assignable_mentor(
+        sme_id,
+        "sme",
+        allow_pending_nda=allow_pending_nda,
+        aspirant_id=aspirant_id
+    )
     if not ok_assign:
         return False, err_assign or "Selected mentor does not hold a valid SME role grant."
 

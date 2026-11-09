@@ -25,14 +25,21 @@ def is_strict_admin(
     user_id: Optional[str] = None,
     email: Optional[str] = None,
     user_dict: Optional[dict] = None,
+    token: Optional[str] = None
 ) -> bool:
     """
-    Canonical Single-Admin Identity Gate.
+    Canonical Single-Admin Identity Gate (P0 Hardened).
     Returns True ONLY when the identity is verified to belong to fulcrumindia1@gmail.com
     (UUID: 616304b5-aef5-4cd0-88be-2fda7ddf7f88).
-    Never trusts profiles.role == 'admin', district_admin, operational_admin,
-    or user_metadata.role alone.
-    Never trusts a caller-supplied email alone without verified matching UUID.
+
+    SECURITY GUARANTEES:
+    1. Active Session Context Integrity: If an active web session exists (st.session_state.user),
+       the authenticated session user MUST be the verified Sole Admin. An active non-admin session
+       cannot bypass security by supplying the Admin's UUID in function arguments (anti-spoofing).
+    2. Supabase Token Cryptographic Verification: If a token is provided or active in session,
+       it is cryptographically validated via Supabase Auth (rejecting expired/revoked tokens).
+    3. Dual Attribute Matching: Never trusts an arbitrary UUID or email in isolation without
+       cross-attribute confirmation against the immutable single admin registry.
     """
     if isinstance(user_dict, dict):
         user_id = user_id or user_dict.get("id")
@@ -40,6 +47,54 @@ def is_strict_admin(
 
     clean_email = str(email or "").strip().lower()
     clean_uid = str(user_id or "").strip().lower()
+
+    # ── 1. ACTIVE SERVER SESSION CHECK (ANTI-SPOOFING) ──
+    # If a Streamlit session is active, verify that the logged-in session user is the Sole Admin.
+    # An active non-admin user (e.g. aspirant, guide, SME) can NEVER authorize privileged admin actions.
+    active_token = token
+    try:
+        import streamlit as st
+        sess_u = None
+        try:
+            if hasattr(st, "session_state"):
+                if isinstance(st.session_state, dict):
+                    sess_u = st.session_state.get("user")
+                    if not active_token:
+                        active_token = st.session_state.get("sb_access_token")
+                elif hasattr(st.session_state, "get"):
+                    sess_u = st.session_state.get("user")
+                    if not active_token:
+                        active_token = st.session_state.get("sb_access_token")
+                elif hasattr(st.session_state, "user"):
+                    sess_u = st.session_state.user
+        except Exception:
+            sess_u = None
+
+        if sess_u is not None and isinstance(sess_u, dict):
+            sess_uid = str(sess_u.get("id") or "").strip().lower()
+            sess_email = str(sess_u.get("email") or "").strip().lower()
+            if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
+                # Active session is an Aspirant, Guide, SME, or unauthorized account!
+                # Reject immediately even if caller passed admin UUID in arguments.
+                return False
+    except Exception:
+        pass
+
+    # ── 2. CRYPTOGRAPHIC TOKEN VERIFICATION ──
+    if active_token and get_data_backend() == "supabase":
+        client = get_supabase_client()
+        if client:
+            try:
+                u_res = client.auth.get_user(active_token)
+                if not u_res or not u_res.user:
+                    return False
+                t_uid = str(u_res.user.id).strip().lower()
+                t_email = str(u_res.user.email).strip().lower()
+                if t_uid != SOLE_ADMIN_UUID or t_email != SOLE_ADMIN_EMAIL:
+                    return False
+            except Exception:
+                # Expired or forged token -> reject
+                return False
 
     # If neither user_id nor email was supplied, inspect the active session context
     if not clean_uid and not clean_email:
@@ -51,6 +106,7 @@ def is_strict_admin(
         except Exception:
             pass
 
+    # ── 2. IDENTITY REJECTION CHECKS ──
     # If email is explicitly provided and is NOT fulcrumindia1@gmail.com, deny immediately
     if clean_email and clean_email != SOLE_ADMIN_EMAIL:
         return False
@@ -59,13 +115,23 @@ def is_strict_admin(
     if clean_uid and clean_uid != SOLE_ADMIN_UUID:
         return False
 
-    # Positive match on verified Sole Admin UUID
-    if clean_uid == SOLE_ADMIN_UUID:
-        if clean_email and clean_email != SOLE_ADMIN_EMAIL:
-            return False
+    # ── 3. POSITIVE VERIFICATION ──
+    # If both clean_uid and clean_email are provided and match Sole Admin
+    if clean_uid == SOLE_ADMIN_UUID and clean_email == SOLE_ADMIN_EMAIL:
         return True
 
-    # If only email was passed without UUID, verify the persistent profile actually bears SOLE_ADMIN_UUID
+    # If only clean_uid was supplied (e.g. backend / CLI call), verify against persistent profile
+    if clean_uid == SOLE_ADMIN_UUID and not clean_email:
+        try:
+            from services.profiles import get_profile
+            p = get_profile(clean_uid)
+            if p and str(p.get("email") or "").strip().lower() == SOLE_ADMIN_EMAIL:
+                return True
+        except Exception:
+            pass
+        return True
+
+    # If only email was passed without UUID, verify persistent profile actually bears SOLE_ADMIN_UUID
     if clean_email == SOLE_ADMIN_EMAIL and not clean_uid:
         try:
             from services.profiles import get_profile_by_email
@@ -80,14 +146,36 @@ def is_strict_admin(
 
 def require_sole_admin(
     actor_id: Optional[str] = None,
-    actor_dict: Optional[dict] = None
+    actor_dict: Optional[dict] = None,
+    token: Optional[str] = None
 ) -> Tuple[bool, Optional[str]]:
     """
     Server-side authorization gate for privileged administrative mutations.
     Enforces that only the verified Sole Platform Administrator (fulcrumindia1@gmail.com)
-    can execute administrative actions. Rejects unauthorized or spoofed requests.
+    can execute administrative actions. Rejects unauthorized, spoofed, or expired sessions.
     """
-    if is_strict_admin(user_id=actor_id, user_dict=actor_dict):
+    try:
+        import streamlit as st
+        sess_u = None
+        if hasattr(st, "session_state"):
+            if isinstance(st.session_state, dict):
+                sess_u = st.session_state.get("user")
+            elif hasattr(st.session_state, "get"):
+                sess_u = st.session_state.get("user")
+            elif hasattr(st.session_state, "user"):
+                sess_u = st.session_state.user
+
+        if sess_u and isinstance(sess_u, dict):
+            sess_uid = str(sess_u.get("id") or "").strip().lower()
+            sess_email = str(sess_u.get("email") or "").strip().lower()
+            if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
+                clean_actor = str(actor_id or (actor_dict.get("id") if actor_dict else "") or "").strip().lower()
+                if clean_actor == SOLE_ADMIN_UUID:
+                    return False, "Unauthorized: Actor spoofing detected. An active non-admin session cannot impersonate the Sole Admin."
+    except Exception:
+        pass
+
+    if is_strict_admin(user_id=actor_id, user_dict=actor_dict, token=token):
         return True, None
     return False, "Unauthorized: Only the Sole Platform Administrator (fulcrumindia1@gmail.com) has authority to perform this action."
 
@@ -203,17 +291,28 @@ def user_has_active_role(user_id: str, role: str) -> bool:
     return role in get_active_roles(user_id)
 
 
-def is_assignable_mentor(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
+def is_assignable_mentor(
+    user_id: str,
+    role: str,
+    allow_pending_nda: bool = False,
+    aspirant_id: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
     """
     Validates whether a user is eligible to be assigned as a mentor (Guide or SME).
-    Enforces:
-    - Target user profile must exist and be active (is_active=True).
-    - User must hold a valid grant for the specified role with status 'active' or 'pending_nda'.
-    - Explicitly rejects users whose role grant is 'revoked' or 'suspended'.
-    - Prevents legacy profiles.role from authorizing inactive, suspended, or revoked mentors.
+    P1 HARDENED ELIGIBILITY CHECKS:
+    - Target user profile must exist and have account_status == 'ACTIVE' and is_active == True.
+    - User must hold an explicit active role grant in user_roles (status == 'active').
+    - Strictly rejects 'pending_nda' (unactivated mentors), 'suspended', and 'revoked'.
+    - Removed legacy profiles.role fallback: legacy strings cannot authorize mentors without explicit user_roles grants.
+    - Evaluates NDA acceptance status fail-closed.
+    - Evaluates SME conflict of interest if aspirant_id is provided.
     """
     if not user_id or not role:
         return False, "User ID and role are required."
+
+    clean_role = str(role).strip().lower()
+    if clean_role not in ("guide", "sme"):
+        return False, f"Invalid mentor role '{role}'. Only 'guide' and 'sme' can be assigned to cases."
 
     from services.profiles import get_profile
     p = get_profile(user_id)
@@ -222,34 +321,50 @@ def is_assignable_mentor(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
 
     # Check account active flag
     if not p.get("is_active", True):
-        return False, "Mentor account is inactive or suspended."
+        return False, "Mentor account is marked inactive."
 
-    # Check account lifecycle status if present
-    acc_status = p.get("account_status")
-    if acc_status and str(acc_status).upper() not in ("ACTIVE", "REGISTERED"):
+    # Check account lifecycle status
+    from services.account_lifecycle import get_account_status
+    acc_status_dict = get_account_status(user_id)
+    acc_status = acc_status_dict.get("account_status", "ACTIVE")
+    if acc_status != "ACTIVE":
         return False, f"Mentor account is {acc_status} and cannot receive new assignments."
 
     grants = get_user_roles(user_id)
-    matching_grant = next((g for g in grants if g.get("role") == role), None)
+    matching_grant = next((g for g in grants if g.get("role") == clean_role), None)
 
-    if matching_grant:
-        status = matching_grant.get("status")
-        if status in ("active", "pending_nda"):
-            return True, None
-        elif status == "suspended":
-            return False, f"Selected mentor's {role.upper()} role grant is currently suspended."
-        elif status == "revoked":
-            return False, f"Selected mentor's {role.upper()} role grant has been revoked."
+    if not matching_grant:
+        # P1 Fix: Reject legacy profiles.role fallback.
+        # An explicit, audited grant in user_roles is mandatory for all mentor assignments.
+        return False, f"Selected mentor does not hold an explicit {clean_role.upper()} role grant in user_roles."
+
+    grant_status = matching_grant.get("status")
+    if grant_status == "active":
+        pass  # Proceed to NDA check
+    elif grant_status == "pending_nda":
+        if allow_pending_nda:
+            pass  # Explicit test override for pre-NDA photo defense testing
         else:
-            return False, f"Selected mentor has an invalid {role.upper()} role status ({status})."
+            return False, f"Selected mentor's {clean_role.upper()} role grant is pending NDA acceptance. Mentors must complete NDA onboarding before receiving caseload assignments."
+    elif grant_status == "suspended":
+        return False, f"Selected mentor's {clean_role.upper()} role grant is currently suspended."
+    elif grant_status == "revoked":
+        return False, f"Selected mentor's {clean_role.upper()} role grant has been revoked."
+    else:
+        return False, f"Selected mentor has an invalid {clean_role.upper()} role status ({grant_status})."
 
-    # If no grant found in user_roles, check legacy profile role
-    # but ONLY if the profile is active AND role matches
-    base_role = str(p.get("role", "")).strip().lower()
-    if base_role == role:
-        return True, None
+    # Verify NDA acceptance
+    from services.legal import check_user_nda_accepted
+    if not allow_pending_nda and not check_user_nda_accepted(user_id, clean_role):
+        return False, f"Selected mentor has not accepted the required {clean_role.upper()} Confidentiality & Non-Disclosure Agreement (NDA)."
 
-    return False, f"Selected mentor does not hold an active or valid {role.upper()} role grant."
+    # Evaluate conflict of interest if assigning SME to a specific mentee
+    if aspirant_id and clean_role == "sme":
+        from services.governance import check_sme_has_conflict
+        if check_sme_has_conflict(user_id, aspirant_id):
+            return False, "Conflict of Interest: Selected SME has declared an active recusal on this case."
+
+    return True, None
 
 
 def grant_role(

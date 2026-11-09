@@ -1,20 +1,31 @@
 -- ============================================================================
--- MIGRATION 009 (REVISED): ACCOUNT-WIDE LIFECYCLE, ARCHIVE & AUDIT TRAIL
+-- MIGRATION 009 (HARDENED): ACCOUNT-WIDE LIFECYCLE, ARCHIVE & AUDIT TRAIL
 -- ============================================================================
 -- Mode: Strictly Additive, Idempotent, Forward-Recoverable, Zero-Destructive-Drops
--- Reference: PHASE 3 — REVISE MIGRATION 009 BEFORE USE
+-- References:
+--   - P0 — Fix fail-open account authorization
+--   - P0 — Audit logs must really be immutable
+--   - P0 — Correct Migration 009's existing-user backfill
+--
+-- CRITICAL REFERENTIAL MODIFICATION ACKNOWLEDGEMENT:
+-- This migration explicitly alters the foreign key constraint on public.profiles.id
+-- from 'ON DELETE CASCADE' to 'ON DELETE RESTRICT'. This is an intentional security
+-- modification designed to guarantee that an Auth user deletion NEVER cascades into
+-- and destroys profiles, Journeys, Consultations, Scheme Releases, or Legal Acceptances.
 --
 -- KEY SAFEGUARDS IMPLEMENTED:
 -- 1. AUTH CASCADE IMMUNITY: Replaces ON DELETE CASCADE on profiles.id with
---    ON DELETE RESTRICT to guarantee an Auth user deletion NEVER cascades into
---    and destroys profiles, Journeys, Consultations, or Legal Acceptances.
--- 2. ROLE SEPARATION: Keeps account_status (ACTIVE, TEMPORARILY_SUSPENDED,
+--    ON DELETE RESTRICT.
+-- 2. IMMUTABLE AUDIT LOG (TRIPLE-LAYER DEFENSE):
+--    a. Table Privileges: REVOKE UPDATE, DELETE, TRUNCATE from authenticated, anon, public.
+--    b. Restrictive RLS: AS RESTRICTIVE policies FOR UPDATE and FOR DELETE USING (FALSE).
+--    c. Database Trigger: trg_immutable_account_lifecycle_log aborts any UPDATE or DELETE.
+-- 3. SAFE EXISTING-USER BACKFILL:
+--    Correctly classifies pre-migration inactive profiles (is_active = FALSE) as
+--    'TEMPORARILY_SUSPENDED', preventing them from being mistakenly marked 'ACTIVE'.
+-- 4. ROLE STATUS SEPARATION: Keeps account_status (ACTIVE, TEMPORARILY_SUSPENDED,
 --    ARCHIVED, PENDING_DELETION) strictly separate from role status
 --    (user_roles.status: active, pending_nda, suspended, revoked).
--- 3. IMMUTABLE AUDIT LOG: account_lifecycle_log stores tamper-evident timeline
---    with RLS denying UPDATE and DELETE to all roles.
--- 4. STRICT SOLE ADMIN: Restricted to fulcrumindia1@gmail.com
---    (UUID: 616304b5-aef5-4cd0-88be-2fda7ddf7f88).
 -- ============================================================================
 
 BEGIN;
@@ -26,12 +37,13 @@ BEGIN;
 DO $$
 BEGIN
     -- account_status: High-level account authorization state
+    -- Added without immediate default to avoid masking legacy is_active states during initial backfill
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'profiles' AND column_name = 'account_status'
     ) THEN
         ALTER TABLE public.profiles
-            ADD COLUMN account_status VARCHAR(30) DEFAULT 'ACTIVE';
+            ADD COLUMN account_status VARCHAR(30);
     END IF;
 
     -- legal_hold: Prevents scheduled closure or lawful erasure while compliance hold is active
@@ -107,6 +119,25 @@ BEGIN
     END IF;
 END $$;
 
+-- ----------------------------------------------------------------------------
+-- PART 2: SAFE EXISTING-USER BACKFILL (P0)
+-- ----------------------------------------------------------------------------
+-- Ensures that pre-migration inactive profiles (is_active = FALSE) are classified
+-- as 'TEMPORARILY_SUSPENDED' and NEVER accidentally elevated to 'ACTIVE'.
+UPDATE public.profiles
+SET account_status = CASE
+        WHEN is_active = FALSE THEN 'TEMPORARILY_SUSPENDED'
+        ELSE 'ACTIVE'
+    END,
+    legal_hold = COALESCE(legal_hold, FALSE),
+    status_updated_at = COALESCE(status_updated_at, updated_at, created_at, NOW())
+WHERE account_status IS NULL
+   OR (account_status = 'ACTIVE' AND is_active = FALSE);
+
+-- Now set future default to 'ACTIVE' for newly registered profiles
+ALTER TABLE public.profiles
+    ALTER COLUMN account_status SET DEFAULT 'ACTIVE';
+
 -- Enforce valid account_status domain constraint
 DO $$
 BEGIN
@@ -126,11 +157,9 @@ CREATE INDEX IF NOT EXISTS idx_profiles_account_status_active
     WHERE is_active = TRUE;
 
 -- ----------------------------------------------------------------------------
--- PART 2: REMOVE DANGEROUS CASCADE ON AUTH FOREIGN KEY (PHASE 3A)
+-- PART 3: REMOVE DANGEROUS CASCADE ON AUTH FOREIGN KEY (P0)
 -- ----------------------------------------------------------------------------
--- In the baseline schema, profiles.id REFERENCES auth.users(id) ON DELETE CASCADE.
--- If an auth user is removed, PostgreSQL cascades and destroys profiles and journeys.
--- We replace this with ON DELETE RESTRICT to guarantee referential safety.
+-- Replaces ON DELETE CASCADE with ON DELETE RESTRICT on profiles.id.
 DO $$
 BEGIN
     IF EXISTS (
@@ -145,7 +174,7 @@ BEGIN
 END $$;
 
 -- ----------------------------------------------------------------------------
--- PART 3: CREATE IMMUTABLE ACCOUNT ACTION HISTORY (LIFECYCLE AUDIT LOG)
+-- PART 4: CREATE IMMUTABLE ACCOUNT ACTION HISTORY (LIFECYCLE AUDIT LOG)
 -- ----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS public.account_lifecycle_log (
@@ -176,56 +205,85 @@ CREATE INDEX IF NOT EXISTS idx_acc_lifecycle_log_action
     ON public.account_lifecycle_log(action, created_at DESC);
 
 -- ----------------------------------------------------------------------------
--- PART 4: ROW LEVEL SECURITY (RLS) FOR ACCOUNT LIFECYCLE & ARCHIVE
+-- PART 5: TRIPLE-LAYER IMMUTABLE AUDIT LOG ENFORCEMENT (P0)
 -- ----------------------------------------------------------------------------
 
+-- Layer A: Table Privileges (DAC)
+-- Explicitly revoke UPDATE, DELETE, and TRUNCATE from all roles
+REVOKE UPDATE, DELETE, TRUNCATE ON public.account_lifecycle_log FROM authenticated, anon, public;
+GRANT SELECT, INSERT ON public.account_lifecycle_log TO authenticated;
+
+-- Layer B: Row Level Security (RLS)
 ALTER TABLE public.account_lifecycle_log ENABLE ROW LEVEL SECURITY;
 
--- Sole Admin may inspect all lifecycle audit records
-DROP POLICY IF EXISTS "Sole Admin full access to account_lifecycle_log" ON public.account_lifecycle_log;
-CREATE POLICY "Sole Admin full access to account_lifecycle_log"
+-- Sole Admin SELECT Policy (Read-Only)
+DROP POLICY IF EXISTS "Sole Admin select account_lifecycle_log" ON public.account_lifecycle_log;
+CREATE POLICY "Sole Admin select account_lifecycle_log"
     ON public.account_lifecycle_log
-    FOR ALL
+    FOR SELECT
     TO authenticated
-    USING (public.is_admin())
-    WITH CHECK (public.is_admin());
+    USING (
+        auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com'
+        OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin'
+    );
 
--- Users may view their own lifecycle timeline events
-DROP POLICY IF EXISTS "Users can view own account_lifecycle_log" ON public.account_lifecycle_log;
-CREATE POLICY "Users can view own account_lifecycle_log"
+-- User SELECT Policy (View own audit trail)
+DROP POLICY IF EXISTS "Users view own account_lifecycle_log" ON public.account_lifecycle_log;
+CREATE POLICY "Users view own account_lifecycle_log"
     ON public.account_lifecycle_log
     FOR SELECT
     TO authenticated
     USING (user_id = auth.uid());
 
--- Immutable log rule: No ordinary authenticated user can UPDATE or DELETE audit events
-DROP POLICY IF EXISTS "Deny update on account_lifecycle_log" ON public.account_lifecycle_log;
-CREATE POLICY "Deny update on account_lifecycle_log"
+-- Authenticated INSERT Policy (Append-Only)
+DROP POLICY IF EXISTS "Authenticated insert account_lifecycle_log" ON public.account_lifecycle_log;
+CREATE POLICY "Authenticated insert account_lifecycle_log"
     ON public.account_lifecycle_log
+    FOR INSERT
+    TO authenticated
+    WITH CHECK (
+        auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com'
+        OR auth.uid() = actor_id
+        OR auth.uid() = user_id
+    );
+
+-- RESTRICTIVE Policies: In PostgreSQL, AS RESTRICTIVE policies are combined with AND!
+-- They absolutely override any permissive policies and block all UPDATE/DELETE attempts.
+DROP POLICY IF EXISTS "Restrictive deny update on account_lifecycle_log" ON public.account_lifecycle_log;
+CREATE POLICY "Restrictive deny update on account_lifecycle_log"
+    ON public.account_lifecycle_log
+    AS RESTRICTIVE
     FOR UPDATE
-    TO authenticated
+    TO authenticated, anon, public
     USING (FALSE);
 
-DROP POLICY IF EXISTS "Deny delete on account_lifecycle_log" ON public.account_lifecycle_log;
-CREATE POLICY "Deny delete on account_lifecycle_log"
+DROP POLICY IF EXISTS "Restrictive deny delete on account_lifecycle_log" ON public.account_lifecycle_log;
+CREATE POLICY "Restrictive deny delete on account_lifecycle_log"
     ON public.account_lifecycle_log
+    AS RESTRICTIVE
     FOR DELETE
-    TO authenticated
+    TO authenticated, anon, public
     USING (FALSE);
 
--- ----------------------------------------------------------------------------
--- PART 5: BACKFILL EXISTING RECORDS
--- ----------------------------------------------------------------------------
+-- Layer C: Database Trigger Guard
+-- Even if executed by superuser or service role, the trigger aborts UPDATE or DELETE
+CREATE OR REPLACE FUNCTION public.enforce_account_lifecycle_log_immutability()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'ACCOUNT_LIFECYCLE_LOG IS STRICTLY APPEND-ONLY: UPDATE and DELETE operations are prohibited by institutional security policy.'
+        USING ERRCODE = 'integrity_constraint_violation';
+END;
+$$ LANGUAGE plpgsql;
 
--- Ensure all existing profiles have account_status populated based on is_active
-UPDATE public.profiles
-SET account_status = CASE
-        WHEN is_active = TRUE OR is_active IS NULL THEN 'ACTIVE'
-        ELSE 'TEMPORARILY_SUSPENDED'
-    END,
-    legal_hold = COALESCE(legal_hold, FALSE),
-    status_updated_at = COALESCE(status_updated_at, updated_at, created_at, NOW())
-WHERE account_status IS NULL;
+DROP TRIGGER IF EXISTS trg_immutable_account_lifecycle_log ON public.account_lifecycle_log;
+CREATE TRIGGER trg_immutable_account_lifecycle_log
+BEFORE UPDATE OR DELETE ON public.account_lifecycle_log
+FOR EACH ROW
+EXECUTE FUNCTION public.enforce_account_lifecycle_log_immutability();
+
+-- ----------------------------------------------------------------------------
+-- PART 6: POSTGREST SCHEMA CACHE REFRESH
+-- ----------------------------------------------------------------------------
+NOTIFY pgrst, 'reload schema';
 
 COMMIT;
-
