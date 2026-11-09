@@ -73,6 +73,7 @@ def list_schemes(
 
                 if schemes_data:
                     set_global_cache(cache_key, schemes_data, ttl_seconds=300)
+                    set_global_cache("schemes_catalogue_last_good", schemes_data, ttl_seconds=86400)
             except Exception as e:
                 print(f"[Schemes] Supabase list error: {e}")
                 if admin and admin != reader:
@@ -84,6 +85,7 @@ def list_schemes(
                         schemes_data = res_admin.data or []
                         if schemes_data:
                             set_global_cache(cache_key, schemes_data, ttl_seconds=300)
+                            set_global_cache("schemes_catalogue_last_good", schemes_data, ttl_seconds=86400)
                     except Exception:
                         schemes_data = []
                 else:
@@ -92,7 +94,15 @@ def list_schemes(
             schemes_data = []
 
         if not schemes_data:
-            schemes_data = get_local_db().list_schemes(active_only=active_only)
+            # When DATA_BACKEND=supabase, NEVER silently substitute the local SQLite database.
+            # Instead, serve the last-known-good verified catalogue cache if available, or fail cleanly.
+            lkg = get_global_cache("schemes_catalogue_last_good")
+            if lkg:
+                print("[Schemes] Warning: Serving last-known-good scheme catalogue cache during cloud query outage.")
+                schemes_data = lkg
+            else:
+                print("[Schemes] Notice: Supabase query returned no schemes and no LKG cache available; refusing silent fallback to SQLite.")
+                schemes_data = []
     else:
         schemes_data = get_local_db().list_schemes(active_only=active_only)
 

@@ -577,8 +577,8 @@ table {{ border-collapse: collapse; width: 100%; }}
 
 import threading
 
-# PART 10: Concurrency control — limit concurrent Chromium subprocesses to 2 to protect KVM2 RAM/CPU
-_PDF_CONCURRENCY_SEMAPHORE = threading.BoundedSemaphore(2)
+# PART 10: Concurrency control — restrict concurrent Chromium subprocesses to 1 on KVM 2 to protect RAM/CPU headroom
+_PDF_CONCURRENCY_SEMAPHORE = threading.BoundedSemaphore(1)
 
 # ─────────────────────────────────────────────────────────────────────────
 # PDF CONVERSION — DUAL ENGINE (Playwright Primary, ReportLab Fallback)

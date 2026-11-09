@@ -1,0 +1,71 @@
+# ==============================================================================
+# FULCRUM PRODUCTION RELEASE MANIFEST — SHA-256 CHECKSUMS
+# Package: FULCRUM_FRESH_DEPLOYMENT
+# Total Files: 64
+# ==============================================================================
+SHA-256 HASH                                                       SIZE (BYTES)   FILE PATH
+--------------------------------------------------------------------------------------------------------------
+5bbc739ba4c467dd1516c8b35b6b6a9ec78bc4434e6d812e2ccb194c46b2e3c5   614            .dockerignore
+c332b09d2a288861c1097660496c87723f7a3a1e710ba9c8d1d521515577adb1   322            .streamlit/config.toml
+7549e8b832aec130dcefe93aa1e5cf8ba73c102e94df9dd1d02d5efda0d5706e   247            Caddyfile
+7589e836caa9c81cf3ba053ad23a5ed217404d702b6b76e5199819bb4323cbe7   2452           Dockerfile
+590ea673e200bb3f3352dbd7775c5b3db607c177955ae37a3514bad3ce3343c0   62552          app.py
+b879101ef508037bfe122a223b207c9a24fa8450047d9687549e6faf321928cb   1565           docker-compose.yml
+1b3658c08e3c33b9d75f866fe4e1aafa48066dd104fce7c57b24527edf04f27d   61509          migrations/000_complete_beta_setup.sql
+6a3a420e9438c4b7d438c83d8fa793c812aa488cdfb3d614227f5fdb5c31ef90   10338          migrations/001_multi_role_and_legal.sql
+d451b2fb151cb805ed02630a6ee6add958bab29b0e74800945aeaee40cd19fd2   1596           migrations/002_journey_event_revisions.sql
+afb9e8c000ab0a5ff81e64a14b3257393f0fa1763f758f318784e42fa38094e5   3449           migrations/003_aspirant_profile_photos.sql
+a709484877395f332f4099c86493fed55171f2677a0d5f84577dde6aed0cdc4b   3351           migrations/004_consultation_actor_tracking_and_support_reviews.sql
+dfe85ab2cd1fe3d9521507292535e2c93b5a7c30bb175dbd26bae43e6d86b2a9   4291           migrations/005_tighten_aspirant_photo_security.sql
+1e26057ba0c732214eaba0d2deceacabefb8a65f699d18e1729056f2603375ef   4221           migrations/006_mentor_inactivity_and_external_contacts.sql
+4783c65454fc813075d31c8b8b1faa197115ccd4eda4fe13b90147d27ca84098   2888           migrations/007_create_missing_user_roles_and_multi_role.sql
+9208cb2bfaea8c6e48f45f3e439fe292fee8166306e2ee3461712f45357c4805   10045          migrations/008_single_admin_lock_professional_photos_and_workflow_columns.sql
+95d969e4d9647e9c2fef5ebc87d12cf9af567700cf2c31e10f130dd2bf956b67   12851          migrations/009_account_lifecycle_and_archive.sql
+b0c53aafd07f76fd481b6c8df88c80fc8d867d3de3872acb977510d6f2a4955d   293            requirements.txt
+d380a74722d194abbe8d08769d86b83a84102cdbbcd93a11f241da2bda6e5595   7790           scripts/FRESH_FULCRUM_ONLY_DEPLOY.sh
+c056d4d90e9443f2a6783394d7d0107bb9d20649d44aed5d6cfcd5b28739dc79   3475           scripts/SAFE_FULCRUM_ONLY_ROLLBACK.sh
+49285035198c521790cfe56d7fa21062d2cc69180daf1d2065a1a6195aebfd08   2875           scripts/health_check.py
+5500ad52d47468f4780576b83354f5fca25d27a0705b6b4977a9f0f8e4c372ed   974            scripts/logs.sh
+aa5eed9755fceed8eb28c678f2882610db16ab35e640f52866e5c98634d9d93e   1226           scripts/restart.sh
+2ddddd73b9e7411261d3a816371b2e64f883f5b8a8551135e2cffe672501542c   1192           scripts/status.sh
+1ce4fcfd774845c359ed2cf137324096433f7b16d6b1b3a9a776fe4d334eeb25   583684         seed/canonical_179_schemes.json
+c7d4e30cb3487ce1a2c2ecc6ecdbc4237ded667de6e83754a9f7f626d2f4aba5   720402         seed/seed_179_schemes_idempotent.sql
+73925c07bc500847b8de37a3d15436d06aafc27005b7ac74806ef1426af7a734   40             services/__init__.py
+ee9d4213fae93959c0dc64744f81bf8817fb2123bcc4d59e042942b200dd7953   52362          services/account_lifecycle.py
+74f2a06282407b419901db9899a8a2afcfb552a8eaa29b0d37d202927ae88b04   7557           services/admin_metrics.py
+7deb3f6de67c83d03b352d7402ce3550f302995ff7a2e0b6ee8771419a086afe   25284          services/aspirant_photos.py
+ee592195223d4553173cb7fb5379e2609e8c4fe24a4198bc31d329c7ec48d9d7   42655          services/auth.py
+c63516d622f3dda9cdcd5ddd07589c8b8c0c41c32c8d639c9af27c5f09be16de   5932           services/cache.py
+af9229e1115b811376b5102fdb5a259d2370d8fa6b6ac8ba8845419d9d2fae0d   10872          services/collaboration.py
+475a033742838ed56afb26731774c7b26574a44bdcf57fa200462ec1469dae45   6673           services/constants.py
+d771077bf32e38404bcfd98e4c2b83ee8852eb09560e137ec733e36e69177b1d   18099          services/external_contact.py
+d3744666a14956f315146d4739d63538761a6a70fdcd93771500a0899bd1d470   11228          services/governance.py
+e84fbd798dc598ff5bab5f0245852831913f5b719aff3b26f0be50cf87ea4d5a   59323          services/help_requests.py
+091f37186ec5b67b3b01e11ff2d2d88c128a15b0df50a1d0d1c57ad1c4b919bf   2766           services/html_to_pdf_worker.py
+436b8797860413ecb082ce653bf8fa6b8e3e2feec9c5b530b8bc1656ace6d956   37036          services/inactivity.py
+c9e32c806ab6ad6d5dbb659286c6ad522217a75895ce8511be06b8fe38d31542   46850          services/journey.py
+fa35129ed620bb66dc0dd051d4f7c03bd8096cb3d71cd8cd78b11722951d9341   32087          services/legal.py
+58413235ae016292a80d8f7d582d4a3cf67546072a8c7a54bac89a6ef467af71   122999         services/local_db.py
+34cd44741229a4d412fe27be7e2b3d8e15e3c8e409bc5cff787c9bc1ee38478c   4079           services/logger.py
+ba4be67811b272754b05b8029cc48dd08f2a49e2dab3eb945bef2f8745640544   13950          services/notifications.py
+7f79c87f2c904a07021abdd198af28b71cbb9691ec5d438b15322bf773f926f6   14342          services/pagination.py
+b0f760427e1c8139fc58fcc25faca2696ac3040d6d1612db4c1087c12a24b7c8   38304          services/pdf_generator.py
+1939d1649c51b90be7ecaf0564dace1c2252597855950c524b414211cb8cf500   24844          services/professional_photos.py
+4d0578ffa49b69e0563dac1cc6223a369115e65dc55a32788e32258c6d21caf2   32742          services/profiles.py
+cb4d38605ecae2db615846fd8349e63ecf9fcb4fb26659eadcaca9f16b7c6304   49330          services/relationships.py
+e02f7d658ae85b5e595570354aee14a4a3104a6cc54a32d3af87cdd7eb1d0f42   42931          services/roles.py
+aa03629a6f7e6cef5bad710b6a26c27568ec2bbd3689bec25186c2fea638d6c3   25561          services/scheme_matching_engine.py
+0780c1411a29f0ec15483f3bc9103733da9411585998507a1d3ea5f8ffdeb960   10134          services/scheme_reviews.py
+8aba5e363eb9992c7e7e4d3669ce03e942a45caa10966d120a48f5fdfee488e9   8320           services/scheme_rules.py
+6132a008333bf77c0c962b9d10828a25ef95e677ed82b917ce7c8ca23b50f24b   40024          services/schemes.py
+d1e9841beee3638ba6999be37c1507c112c2db01266a5551bb5ac2f75c525795   28540          services/schemes_ui.py
+0fed549fa9cec35f773d9dc4604ea19435636b62fc33b9f054fa6919e629f340   37             views/__init__.py
+d4f04456747a555682772a694a26da9ac371082f15c509af513cc521825e534d   96790          views/admin.py
+c0be3563dd5cd2ea3f8ed6fd0005f7189faa8e789ed03b0457b7ea9f3530bfbf   22026          views/admin_account_lifecycle.py
+601bcba02865fed5743e3c86626748c4c81675d50c13b708cd777288f8ee4877   54478          views/admin_governance.py
+1e040c5b98b2506165c2b29f5cb34b130774cd430749157a3cf8a80b26645c95   74649          views/aspirant.py
+f012a038305e0ddf455d4d095fafac21baf9841fcfae1fe76f2c08771158977f   105565         views/guide.py
+49e1f7fbca32b280e1f331fafe9a18b096b0bbd85de396eb6abb5848f31c2200   3867           views/journey_edit_dialog.py
+6e69b399b2b8bffcfe30d59fb77b072ae52717bcbfd79b56482eca99741719e7   12758          views/legal_ui.py
+8971b51bbebef4753be799d667a8c6bd331b7da148a236539da72fc2bf6e188c   22531          views/login.py
+cddf0aa483076b1dacb0dbb21689018da8e408e208cfe25fb9069cedfeecbbb0   70657          views/sme.py

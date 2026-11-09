@@ -1,0 +1,1069 @@
+"""
+pages/aspirant.py — Aspirant Dashboard for FULCRUM-INDIA (Cluster A)
+===================================================================
+Aspirant Experience:
+- Dashboard: Overview, Profile completion, My Guide, My SME, Schemes preview.
+- Profile: 4-part Naukri/LinkedIn profile (Personal, Professional, Business, Demographics).
+- My Guide / My SME: View assigned mentor credentials.
+- My Journey: Chronological timeline with [ + Add Journey Entry ] and edit/delete permissions.
+- Scheme Matches: Deterministic recommendations with "Why this matched".
+- Help: Raise support ticket and track status.
+"""
+
+import streamlit as st
+import html
+import inspect
+from datetime import datetime, date
+
+def _safe_esc(val, default=""):
+    """Crash-proof HTML escape that safely handles None, booleans, and non-string types."""
+    if val is None:
+        return default
+    return html.escape(str(val))
+
+from services.cache import is_tab_active
+from services.profiles import get_profile, update_aspirant_profile
+from services.relationships import get_aspirant_mentors
+from services.journey import get_journey_timeline, add_manual_aspirant_entry, soft_delete_event, get_standard_role_label, toggle_event_roadmap_inclusion
+from views.journey_edit_dialog import render_edit_journey_dialog
+from services.schemes import get_released_schemes_for_aspirant, SCHEME_APPLICATION_STAGES, update_scheme_application_stage
+from services.schemes_ui import render_fund_explorer_card
+from services.help_requests import create_request, list_requests, aspirant_respond_request
+from services.constants import (
+    MASTER_SECTORS,
+    MASTER_STAGES,
+    STAGE_DESCRIPTIONS,
+    MASTER_DISTRICTS_TN,
+    MASTER_BUSINESS_TYPES,
+    MASTER_SOCIAL_CATEGORIES,
+    MASTER_GENDERS,
+    resolve_field_choice
+)
+from services.scheme_rules import (
+    ASSISTANCE_GOALS,
+    SUPPORT_TYPES_BY_GOAL,
+    FUNDING_QUANTUM_RANGES,
+    TIMEFRAME_OPTIONS
+)
+
+def render_aspirant_portal(user_profile: dict):
+    user_id = user_profile["id"]
+    profile = get_profile(user_id) or user_profile
+
+    full_name = profile.get("full_name", "Entrepreneur")
+    completion_pct = profile.get("completion_pct", 50)
+    mentors = get_aspirant_mentors(user_id)
+    guide = mentors.get("guide")
+    sme = mentors.get("sme")
+
+    # Top Header
+    st.markdown(f"""
+    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #E2E8F0;">
+        <div>
+            <div style="font-size: 0.8rem; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; color: #2563EB;">Aspirant Dashboard</div>
+            <h1 style="font-size: 2rem; font-weight: 800; margin: 0; color: #0F172A;">Welcome, {full_name} 👋</h1>
+            <p style="font-size: 0.95rem; color: #475569; margin-top: 0.25rem;">
+                {profile.get("profile_data", {}).get("business", {}).get("business_name") or "Your Enterprise"} · {profile.get("district", "Tamil Nadu")}
+            </p>
+        </div>
+        <div style="text-align: right;">
+            <div style="font-size: 0.8rem; color: #64748B; margin-bottom: 4px;">Profile Completion: <strong style="color:#0F172A;">{completion_pct}%</strong></div>
+            <div style="width: 140px; height: 8px; background: #E2E8F0; border-radius: 100px; overflow: hidden;">
+                <div style="width: {completion_pct}%; height: 100%; background: linear-gradient(90deg, #2563EB, #10b981); border-radius: 100px;"></div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Navigation Tabs (Lazy-evaluated with native state tracking)
+    tabs = st.tabs([
+        "📊 Overview",
+        "👤 My Profile",
+        "🎬 My Journey",
+        "🤝 My Mentors",
+        "🏦 Scheme Matches",
+        "🤝 Consult a Guide or SME"
+    ], on_change="rerun", key="aspirant_nav_tabs")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 1: OVERVIEW
+    # ─────────────────────────────────────────────────────────────
+    with tabs[0]:
+      if is_tab_active(tabs[0]):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(f"""
+            <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #6366f1; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                <div style="font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px;">Profile Status</div>
+                <div style="font-size: 1.8rem; font-weight: 800; color: #0F172A; margin-top: 0.2rem;">{completion_pct}%</div>
+                <div style="font-size: 0.75rem; color: #059669; font-weight: 600;">{'Ready for Matching' if completion_pct >= 60 else 'Complete more fields'}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            all_guides_ov = mentors.get("guides") or ([guide] if guide else [])
+            g_text = ", ".join([g.get("full_name", "Guide") for g in all_guides_ov if g]) if all_guides_ov else "Pending Admin Assignment"
+            st.markdown(f"""
+            <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #10b981; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                <div style="font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px;">My Dedicated Guide</div>
+                <div style="font-size: 1.2rem; font-weight: 800; color: #0F172A; margin-top: 0.4rem;">{g_text}</div>
+                <div style="font-size: 0.75rem; color: #64748B;">{guide.get('profile_data',{}).get('expertise','Assigned by Admin') if guide else 'Contact Admin for Guide'}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            s_text = sme.get("full_name") if sme else "Not Assigned"
+            st.markdown(f"""
+            <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #f59e0b; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                <div style="font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px;">Domain SME</div>
+                <div style="font-size: 1.2rem; font-weight: 800; color: #0F172A; margin-top: 0.4rem;">{s_text}</div>
+                <div style="font-size: 0.75rem; color: #64748B;">{sme.get('profile_data',{}).get('expertise','Specialist') if sme else 'For GST, FSSAI, Patents'}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c4:
+            released_schemes = get_released_schemes_for_aspirant(user_id)
+            st.markdown(f"""
+            <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #ec4899; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
+                <div style="font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px;">Released Schemes</div>
+                <div style="font-size: 1.8rem; font-weight: 800; color: #0F172A; margin-top: 0.2rem;">{len(released_schemes)}</div>
+                <div style="font-size: 0.75rem; color: #2563EB; font-weight: 600;">Curated by Guide</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
+
+        # Recent Journey Activity Preview
+        st.subheader("🎬 Journey Highlights")
+        timeline = get_journey_timeline(user_id)
+        # Suppress internal system automation and unreleased scheme matches from founder highlights
+        active_events = [
+            e for e in (timeline or [])
+            if e.get("event_type") not in ("scheme_matched", "system_scheme_match")
+            and (e.get("event_data") or {}).get("title") != "Funding Opportunities Identified"
+            and e.get("title") != "Funding Opportunities Identified"
+            and e.get("actor_role") != "system"
+        ]
+        if active_events:
+            recent_events = active_events[:3]
+            for e in recent_events:
+                ev_data = e.get("event_data", {})
+                ev_type = e.get("event_type")
+                actor_role = e.get("actor_role", "aspirant")
+                actor_name = e.get("actor_name")
+
+                # Strictly protect Aspirant from knowing Admin exists
+                if ev_type == "guide_assigned":
+                    actor_role = "guide"
+                    actor_name = ev_data.get("guide_name") or (actor_name if actor_name != "Contributor" else None) or "Dedicated Guide"
+                    std_role = "Dedicated Guide"
+                elif ev_type == "sme_assigned":
+                    actor_role = "sme"
+                    actor_name = ev_data.get("sme_name") or (actor_name if actor_name != "Contributor" else None) or "Domain SME"
+                    std_role = "Domain SME"
+                elif actor_role == "admin":
+                    actor_role = "guide"
+                    actor_name = "Program Advisory Panel"
+                    std_role = "Advisory Panel"
+                else:
+                    if not actor_name or actor_name == "Contributor":
+                        if actor_role == "aspirant":
+                            actor_name = full_name or "Entrepreneur"
+                        elif actor_role == "guide":
+                            actor_name = "Dedicated Guide"
+                        elif actor_role == "sme":
+                            actor_name = "Domain SME"
+                        else:
+                            actor_name = "Advisory Panel"
+                    std_role = get_standard_role_label(actor_role, is_aspirant_facing=True)
+
+                role_color = "#6366f1" if actor_role == "aspirant" else "#10b981" if actor_role == "guide" else "#f59e0b" if actor_role == "sme" else "#2563eb"
+                date_str = str(e.get("event_date", ""))[:10]
+
+                # Sanitize description so the word 'Admin' NEVER appears
+                raw_desc = str(ev_data.get('description', ''))
+                raw_desc = raw_desc.replace("Admin assigned SME ", "").replace("Admin assigned ", "").replace("Admin ", "").replace("admin ", "")
+                if raw_desc.startswith("assigned "):
+                    raw_desc = "Assigned " + raw_desc[9:]
+
+                st.markdown(f"""
+                <div style="background: #FFFFFF; border: 1px solid #E2E8F0; border-left: 4px solid {role_color}; border-radius: 0 10px 10px 0; padding: 1rem 1.2rem; margin-bottom: 0.75rem; box-shadow: 0 1px 2px rgba(0,0,0,0.03);">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong style="color:#0F172A; font-size:1rem;">{ev_data.get('title') or e.get('event_type')}</strong>
+                        <span style="font-size:0.75rem; color:#64748B; font-weight:600;">{date_str}</span>
+                    </div>
+                    <div style="color:#334155; font-size:0.88rem; margin-top:0.3rem;">{raw_desc}</div>
+                    <div style="margin-top:0.4rem; font-size:0.75rem; color:{role_color}; font-weight:700;">
+                        Contributor: <strong>{actor_name}</strong> ({std_role})
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No journey records yet. Add your first entry in the 'My Journey' tab!")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 2: MY PROFILE (Naukri/LinkedIn Style)
+    # ─────────────────────────────────────────────────────────────
+    with tabs[1]:
+      if is_tab_active(tabs[1]):
+        st.markdown("### 📋 Entrepreneur Profile")
+        st.markdown("<p style='color:#475569; font-size:0.9rem;'>Keep this profile updated. Changes automatically recalculate your recommended funding schemes and record journey updates.</p>", unsafe_allow_html=True)
+
+        # ── ASPIRANT PROFILE PHOTO MANAGEMENT (Isolated from Journey/Schemes) ──
+        from services.aspirant_photos import get_aspirant_photo, upload_aspirant_photo, delete_aspirant_photo
+        user_asp_id = profile["id"]
+        current_photo = get_aspirant_photo(user_asp_id, viewer_id=user_asp_id, viewer_role="aspirant")
+
+        with st.container(border=True):
+            col_ph1, col_ph2, col_ph3 = st.columns([1.2, 3.8, 2.5])
+            with col_ph1:
+                if current_photo and current_photo.get("url"):
+                    st.markdown(f'''
+                    <div style="display:flex; justify-content:center; align-items:center; height:100%;">
+                        <img src="{current_photo['url']}" alt="Founder Headshot" style="width:84px; height:84px; border-radius:50%; object-fit:cover; border:2.5px solid #2563EB; box-shadow:0 4px 12px rgba(37,99,235,0.18);" />
+                    </div>
+                    ''', unsafe_allow_html=True)
+                else:
+                    initials = "".join([part[0].upper() for part in (profile.get("full_name") or "A").split()[:2]]) or "A"
+                    st.markdown(f'''
+                    <div style="display:flex; justify-content:center; align-items:center; height:100%;">
+                        <div style="width:84px; height:84px; border-radius:50%; background:linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%); color:#FFFFFF; display:flex; align-items:center; justify-content:center; font-size:1.6rem; font-weight:800; border:2.5px solid #DBEAFE; box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+                            {initials}
+                        </div>
+                    </div>
+                    ''', unsafe_allow_html=True)
+
+            with col_ph2:
+                st.markdown("<div style='font-size:1rem; font-weight:700; color:#0F172A; margin-top:2px;'>Founder Profile Photo</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size:0.8rem; color:#64748B;'>Upload an official founder headshot (JPG, PNG, WebP — max 5 MB).</div>", unsafe_allow_html=True)
+                if current_photo:
+                    st.caption(f"✓ Photo active ({current_photo.get('width', 0)}x{current_photo.get('height', 0)}px · {current_photo.get('content_type', 'image/webp')})")
+
+            with col_ph3:
+                uploaded_photo_file = st.file_uploader("Upload Headshot", type=["jpg", "jpeg", "png", "webp"], key="aspirant_headshot_uploader", label_visibility="collapsed")
+                if uploaded_photo_file is not None:
+                    if st.button("Save Headshot", key="btn_save_headshot", type="primary", use_container_width=True):
+                        raw_bytes = uploaded_photo_file.read()
+                        ok_up, err_up = upload_aspirant_photo(user_asp_id, raw_bytes, uploaded_photo_file.name)
+                        if ok_up:
+                            st.success("Profile photo uploaded successfully!")
+                            st.rerun()
+                        else:
+                            st.error(err_up or "Failed to upload photo.")
+                elif current_photo:
+                    if st.button("Remove Photo", key="btn_del_headshot", use_container_width=True):
+                        delete_aspirant_photo(user_asp_id)
+                        st.info("Profile photo removed.")
+                        st.rerun()
+
+        st.markdown("<div style='height:0.5rem;'></div>", unsafe_allow_html=True)
+
+        p_data = profile.get("profile_data", {})
+        cur_personal = p_data.get("personal", {})
+        cur_prof = p_data.get("professional", {})
+        cur_biz = p_data.get("business", {})
+        cur_demo = p_data.get("demographics", {})
+
+        with st.form("form_update_profile"):
+            # SECTION 1: PERSONAL
+            st.markdown("#### 1. Personal Information")
+            col_p1, col_p2, col_p3 = st.columns(3)
+            with col_p1:
+                f_name = st.text_input("Full Name *", value=profile.get("full_name", ""))
+                f_email = st.text_input("Email (Login)", value=profile.get("email", ""), disabled=True)
+            with col_p2:
+                f_phone = st.text_input("Phone *", value=profile.get("phone", ""))
+                cur_gen = cur_personal.get("gender", "Male")
+                gen_idx, gen_custom = resolve_field_choice(cur_gen, MASTER_GENDERS, "Other / Prefer Not to Say")
+                f_gender_sel = st.selectbox("Gender", MASTER_GENDERS, index=gen_idx)
+                f_gen_c = st.text_input("Custom Gender (if 'Other' selected)", value=gen_custom, key="prof_custom_gender", placeholder="Optional")
+                f_gender = f_gen_c.strip() if (f_gender_sel == "Other / Prefer Not to Say" and f_gen_c and f_gen_c.strip()) else f_gender_sel
+            with col_p3:
+                f_dob = st.text_input("Date of Birth (DD-MM-YYYY)", value=cur_personal.get("dob", "15-08-1995"))
+                f_address = st.text_input("Address", value=cur_personal.get("address", ""))
+
+            # SECTION 2: PROFESSIONAL
+            st.markdown("#### 2. Professional Background")
+            col_pr1, col_pr2 = st.columns(2)
+            with col_pr1:
+                f_edu = st.text_input("Education / Qualification", value=cur_prof.get("education", "B.Tech / Graduate"))
+                f_skills = st.text_input("Key Skills (comma separated)", value=cur_prof.get("skills", "Product Development, Organic Processing, Operations"))
+            with col_pr2:
+                f_exp = st.text_input("Previous Experience", value=cur_prof.get("experience", "3 years in food manufacturing"))
+                f_certs = st.text_input("Certifications / Training", value=cur_prof.get("certifications", "FSSAI Basic, MSME EDI Training"))
+
+            # SECTION 3: BUSINESS
+            st.markdown("#### 3. Business & Venture Details")
+            col_b1, col_b2, col_b3 = st.columns(3)
+            with col_b1:
+                b_name = st.text_input("Business Name *", value=cur_biz.get("business_name", ""), placeholder="e.g. Aztra Tech Solutions")
+                cur_btype = cur_biz.get("business_type", "Manufacturing")
+                btype_idx, btype_custom = resolve_field_choice(cur_btype, MASTER_BUSINESS_TYPES, "Other / Hybrid (Specify)")
+                b_type_sel = st.selectbox("Business Type *", MASTER_BUSINESS_TYPES, index=btype_idx)
+                b_type_custom_in = st.text_input("Custom Business Type (if 'Other' selected)", value=btype_custom, placeholder="e.g. Contract R&D / Hybrid Studio", key="prof_custom_btype")
+                b_type = b_type_custom_in.strip() if (b_type_sel == "Other / Hybrid (Specify)" and b_type_custom_in and b_type_custom_in.strip()) else b_type_sel
+
+                activity_options = [
+                    "Manufacturing / Production",
+                    "Services / Software",
+                    "Trading / Retail / Distribution",
+                    "R&D / DeepTech",
+                    "Agriculture / Farming",
+                    "Other / Hybrid"
+                ]
+                cur_act = cur_biz.get("activity", "Manufacturing / Production")
+                act_idx = activity_options.index(cur_act) if cur_act in activity_options else 0
+                b_activity = st.selectbox("Primary Commercial Activity *", activity_options, index=act_idx)
+
+            with col_b2:
+                cur_sec = cur_biz.get("sector", "Food Processing & Agribusiness")
+                sec_idx, sec_custom = resolve_field_choice(cur_sec, MASTER_SECTORS, "Other / Not Listed (Specify)")
+                b_sector_sel = st.selectbox("Industry Sector *", MASTER_SECTORS, index=sec_idx)
+                b_sec_custom_in = st.text_input("Custom Industry Sector (if 'Other' selected)", value=sec_custom, placeholder="e.g. SpaceTech, Marine Biotechnology", key="prof_custom_sec")
+                b_sector = b_sec_custom_in.strip() if (b_sector_sel == "Other / Not Listed (Specify)" and b_sec_custom_in and b_sec_custom_in.strip()) else b_sector_sel
+
+                b_subsector = st.text_input(
+                    "Subsector / Specific Activity (optional)",
+                    value=cur_biz.get("subsector", ""),
+                    placeholder="e.g. Cotton Knitwear, Retail Pharmacy, SaaS, Cold Storage",
+                    help="Specifying your exact subsector enables precision scheme matching and prevents irrelevant tech/pharma R&D mismatch."
+                )
+
+                cur_stg = cur_biz.get("stage", "Pre-Seed / Seed")
+                stg_idx, stg_custom = resolve_field_choice(cur_stg, MASTER_STAGES, "Other / Multi-Stage (Specify)", default_index=1)
+                b_stage_sel = st.selectbox("Development Stage *", MASTER_STAGES, index=stg_idx)
+                st.caption(f"ℹ️ {STAGE_DESCRIPTIONS.get(b_stage_sel, '')}")
+                b_stg_custom_in = st.text_input("Custom Development Stage (if 'Other' selected)", value=stg_custom, placeholder="e.g. Commercialization Phase", key="prof_custom_stg")
+                b_stage = b_stg_custom_in.strip() if (b_stage_sel == "Other / Multi-Stage (Specify)" and b_stg_custom_in and b_stg_custom_in.strip()) else b_stage_sel
+            with col_b3:
+                b_revenue = st.text_input("Annual Revenue / MRR", value=cur_biz.get("revenue", ""), placeholder="e.g. ₹10,00,000 / year")
+                b_team = st.number_input("Employee Count", min_value=0, max_value=500, value=int(cur_biz.get("employee_count", 1)))
+
+            b_desc = st.text_area("Business Description", value=cur_biz.get("description", ""), placeholder="Describe what products/services your enterprise manufactures or delivers...")
+
+            # SECTION 4: DEMOGRAPHICS & SPECIAL ELIGIBILITY
+            st.markdown("#### 4. Demographics & Scheme Eligibility")
+            col_d1, col_d2, col_d3 = st.columns(3)
+            with col_d1:
+                cur_dist = profile.get("district") or cur_demo.get("district") or "Chennai"
+                dist_idx, dist_custom = resolve_field_choice(cur_dist, MASTER_DISTRICTS_TN, "Other District / Non-TN (Specify)", default_index=1)
+                d_dist_sel = st.selectbox("District *", MASTER_DISTRICTS_TN, index=dist_idx)
+                d_other_dist = st.text_input("Custom District / State (if 'Other' selected)", value=dist_custom, placeholder="e.g. Bengaluru (Karnataka), Mumbai (Maharashtra)", key="profile_other_district")
+                d_final_district = d_other_dist.strip() if (d_dist_sel == "Other District / Non-TN (Specify)" and d_other_dist and d_other_dist.strip()) else d_dist_sel
+                is_tn = d_dist_sel != "Other District / Non-TN (Specify)"
+                d_state = st.text_input("State", value="Tamil Nadu" if is_tn else "Other State", disabled=True)
+            with col_d2:
+                cur_cat = cur_demo.get("founder_category", "General")
+                cat_idx, cat_custom = resolve_field_choice(cur_cat, MASTER_SOCIAL_CATEGORIES, "Other / Prefer Not to Disclose", default_index=0)
+                d_cat_sel = st.selectbox("Founder Category (for Subsidies)", MASTER_SOCIAL_CATEGORIES, index=cat_idx)
+                st.caption("ℹ️ Used for statutory affirmative quotas (e.g. Special capital subsidies for SC/ST/OBC).")
+                d_cat_custom_in = st.text_input("Custom Founder Category (if 'Other' selected)", value=cat_custom, placeholder="e.g. Special Category", key="prof_custom_cat")
+                d_cat = d_cat_custom_in.strip() if (d_cat_sel == "Other / Prefer Not to Disclose" and d_cat_custom_in and d_cat_custom_in.strip()) else d_cat_sel
+            with col_d3:
+                st.markdown("<p style='font-size:0.85rem; font-weight:600; margin-bottom:0.3rem;'>Statutory Registrations & Quotas</p>", unsafe_allow_html=True)
+                d_udyam = st.checkbox("Udyam (MSME) Registered", value=bool(cur_demo.get("is_udyam_registered", False)))
+                d_gst = st.checkbox("GST Registered", value=bool(cur_demo.get("is_gst_registered", False)))
+                d_fssai = st.checkbox("FSSAI Food License", value=bool(cur_demo.get("is_fssai_registered", False)))
+                d_drug_lic = st.checkbox("Drug License (Retail / Form 20/21)", value=bool(cur_demo.get("is_drug_license", False)))
+                d_dpiit = st.checkbox("DPIIT Recognized Startup", value=bool(cur_demo.get("is_dpiit_recognized", False)))
+                d_startuptn = st.checkbox("StartupTN Registered", value=bool(cur_demo.get("is_startuptn_registered", False)))
+                d_women = st.checkbox("Women-Led Enterprise (>=51% Women Equity)", value=bool(cur_demo.get("is_women_led", False)))
+                default_equity = int(cur_demo.get("women_equity_pct", 51 if d_women else 0))
+                d_women_equity = st.number_input("Women Co-Founder Equity %", min_value=0, max_value=100, value=default_equity, help="Total women shareholding % (Schemes like TWEES mandate >=51% women ownership).")
+                is_qualifies_women = bool(d_women or d_women_equity >= 51)
+
+            # SECTION 5: FUNDING & ASSISTANCE REQUIREMENTS (AI-BASED ENGINE MATCHING)
+            st.markdown("#### 5. Funding & Strategic Assistance Requirements")
+            st.caption("Specify your venture's strategic assistance needs. Our AI-based matching engine analyzes these parameters to help your dedicated Guide curate and unlock verified government schemes, subsidies, and credit facilities.")
+
+            cur_need = p_data.get("assistance_need", {}) if isinstance(p_data.get("assistance_need"), dict) else {}
+            col_y1, col_y2 = st.columns(2)
+            with col_y1:
+                goal_options = [g for g in ASSISTANCE_GOALS if g != "ALL"] + ["All Assistance Goals"]
+                saved_goal = cur_need.get("assistance_goal") or "Capital Grant / Seed Subsidy"
+                if saved_goal not in goal_options:
+                    saved_goal = "Capital Grant / Seed Subsidy"
+                goal_idx = goal_options.index(saved_goal)
+                sel_goal = st.selectbox("1. Primary Assistance Goal *", goal_options, index=goal_idx)
+
+            with col_y2:
+                current_goal_key = sel_goal if sel_goal in SUPPORT_TYPES_BY_GOAL else "Capital Grant / Seed Subsidy"
+                primary_subs = SUPPORT_TYPES_BY_GOAL.get(current_goal_key, ["All Support Sub-Types"])
+                all_other_subs = [s for g, subs in SUPPORT_TYPES_BY_GOAL.items() if g != current_goal_key for s in subs]
+                type_options = primary_subs + [s for s in all_other_subs if s not in primary_subs]
+
+                saved_type = cur_need.get("support_type") or primary_subs[0]
+                if saved_type not in type_options:
+                    saved_type = type_options[0]
+                type_idx = type_options.index(saved_type)
+                sel_sub_type = st.selectbox("2. Specific Support Type *", type_options, index=type_idx)
+
+            col_y3, col_y4 = st.columns(2)
+            with col_y3:
+                quantum_options = FUNDING_QUANTUM_RANGES
+                saved_quantum = cur_need.get("quantum_range") or "MICRO (< ₹5 Lakhs)"
+                if saved_quantum not in quantum_options:
+                    saved_quantum = quantum_options[1]
+                quantum_idx = quantum_options.index(saved_quantum)
+                sel_quantum = st.selectbox("3. Funding / Support Quantum *", quantum_options, index=quantum_idx)
+
+            with col_y4:
+                timeframe_options = TIMEFRAME_OPTIONS
+                saved_timeframe = cur_need.get("timeframe") or "NEAR_TERM (1 to 3 Months)"
+                if saved_timeframe not in timeframe_options:
+                    saved_timeframe = timeframe_options[2]
+                timeframe_idx = timeframe_options.index(saved_timeframe)
+                sel_timeframe = st.selectbox("4. Deployment Timeframe *", timeframe_options, index=timeframe_idx)
+
+            st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
+            btn_save = st.form_submit_button("SAVE PROFILE & UPDATE MATCHES", type="primary", use_container_width=True)
+
+            if btn_save:
+                updated, err = update_aspirant_profile(
+                    user_id=user_id,
+                    full_name=f_name,
+                    phone=f_phone,
+                    district=d_final_district,
+                    state=d_state,
+                    personal_data={"gender": f_gender, "dob": f_dob, "address": f_address},
+                    professional_data={"education": f_edu, "skills": f_skills, "experience": f_exp, "certifications": f_certs},
+                    business_data={"business_name": b_name, "business_type": b_type, "sector": b_sector, "subsector": b_subsector, "activity": b_activity, "stage": b_stage, "revenue": b_revenue, "employee_count": b_team, "description": b_desc},
+                    demographics_data={"district": d_final_district, "state": d_state, "founder_category": d_cat, "gender": f_gender, "is_udyam_registered": d_udyam, "is_gst_registered": d_gst, "is_fssai_registered": d_fssai, "is_drug_license": d_drug_lic, "is_dpiit_recognized": d_dpiit, "is_startuptn_registered": d_startuptn, "is_women_led": is_qualifies_women, "women_equity_pct": d_women_equity},
+                    assistance_need_data={"assistance_goal": sel_goal, "support_type": sel_sub_type, "quantum_range": sel_quantum, "timeframe": sel_timeframe}
+                )
+                if updated:
+                    st.success("✅ Profile updated! Scheme recommendations recalculated and Journey event logged.")
+                    st.rerun()
+                else:
+                    st.error(err or "Failed to update profile.")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 3: MY JOURNEY (The Core Movie / Timeline)
+    # ─────────────────────────────────────────────────────────────
+    with tabs[2]:
+      if is_tab_active(tabs[2]):
+        st.markdown("### 🎬 The Entrepreneur's Journey")
+        st.markdown("<p style='color:#475569; font-size:0.9rem;'>The living story of your venture. Every milestone, mentor session, and operational breakthrough is preserved here.</p>", unsafe_allow_html=True)
+
+        with st.expander("➕ Add Journey Milestone / Entry", expanded=False):
+            with st.form("form_add_journey_entry"):
+                j_title = st.text_input("Title", placeholder="e.g. Started Business, Launched Product, Made First Sale")
+                col_je1, col_je2 = st.columns(2)
+                with col_je1:
+                    j_date = st.date_input("Event Date", value=date.today())
+                with col_je2:
+                    j_cat = st.selectbox("Category", ["Inception", "Product", "Sales", "Team", "Operations", "Milestone"])
+                j_desc = st.text_area("What happened?", placeholder="Started selling millet porridge packs from our home kitchen to test customer appetite.")
+
+                if st.form_submit_button("ADD TO MY JOURNEY", type="primary"):
+                    if j_title and j_desc:
+                        ev, err = add_manual_aspirant_entry(
+                            aspirant_id=user_id,
+                            title=j_title,
+                            description=j_desc,
+                            category=j_cat,
+                            event_date=j_date.isoformat()
+                        )
+                        if ev:
+                            st.success(f"Added '{j_title}' to your Journey!")
+                            st.rerun()
+                        else:
+                            st.error(err or "Could not save entry.")
+                    else:
+                        st.warning("Please provide both title and description.")
+
+        # Display Chronological Timeline
+        if "edit_event_success" in st.session_state:
+            _e_msg = st.session_state.pop("edit_event_success")
+            st.success(_e_msg)
+            try:
+                st.toast(_e_msg, icon="✅")
+            except Exception:
+                pass
+        if "del_event_success" in st.session_state:
+            _d_msg = st.session_state.pop("del_event_success")
+            st.success(_d_msg)
+            try:
+                st.toast(_d_msg, icon="✅")
+            except Exception:
+                pass
+        if "del_event_err" in st.session_state:
+            st.error(st.session_state.pop("del_event_err"))
+
+        raw_timeline = get_journey_timeline(user_id)
+        # Filter out system scheme matching automation so founder never sees unreleased internal scheme calculations
+        timeline = [
+            e for e in (raw_timeline or [])
+            if e.get("event_type") not in ("scheme_matched", "system_scheme_match")
+            and (e.get("event_data") or {}).get("title") != "Funding Opportunities Identified"
+            and e.get("title") != "Funding Opportunities Identified"
+            and e.get("actor_role") != "system"
+        ]
+        if not timeline:
+            st.info("Your journey is waiting for its first scene. Use the form above to add an entry!")
+        else:
+            st.markdown("---")
+            for idx, event in enumerate(timeline):
+                ev_data = event.get("event_data", {})
+                ev_type = event.get("event_type")
+                actor_role = event.get("actor_role", "aspirant")
+                actor_name = event.get("actor_name")
+
+                # Strictly protect Aspirant from knowing Admin exists
+                if ev_type == "guide_assigned":
+                    actor_role = "guide"
+                    actor_name = ev_data.get("guide_name") or (actor_name if actor_name != "Contributor" else None) or "Dedicated Guide"
+                    std_role = "Dedicated Guide"
+                elif ev_type == "sme_assigned":
+                    actor_role = "sme"
+                    actor_name = ev_data.get("sme_name") or (actor_name if actor_name != "Contributor" else None) or "Domain SME"
+                    std_role = "Domain SME"
+                elif actor_role == "admin":
+                    actor_role = "guide"
+                    actor_name = "Program Advisory Panel"
+                    std_role = "Advisory Panel"
+                else:
+                    if not actor_name or actor_name == "Contributor":
+                        if actor_role == "aspirant":
+                            actor_name = full_name or "Entrepreneur"
+                        elif actor_role == "guide":
+                            actor_name = "Dedicated Guide"
+                        elif actor_role == "sme":
+                            actor_name = "Domain SME"
+                        else:
+                            actor_name = "Advisory Panel"
+                    std_role = get_standard_role_label(actor_role, is_aspirant_facing=True)
+
+                raw_title = ev_data.get("title") or event.get("event_type") or "Milestone"
+                raw_desc = str(ev_data.get("description", ""))
+                # Sanitize description so the word 'Admin' NEVER appears
+                raw_desc = raw_desc.replace("Admin assigned SME ", "").replace("Admin assigned ", "").replace("Admin ", "").replace("admin ", "")
+                if raw_desc.startswith("assigned "):
+                    raw_desc = "Assigned " + raw_desc[9:]
+
+                title = html.escape(str(raw_title))
+                desc = html.escape(str(raw_desc)).replace("\n", "<br>")
+                date_display = str(event.get("event_date", ""))[:10]
+                ev_link = ev_data.get("link") or ""
+                link_html = ""
+                if ev_link and ev_link not in str(raw_desc):
+                    link_html = f'<div style="margin-top:0.35rem; font-size:0.85rem;"><strong style="color:#0F172A;">Website:</strong> <a href="{html.escape(ev_link)}" target="_blank" style="color:#2563EB; text-decoration:underline;">{html.escape(ev_link)}</a></div>'
+                edited_badge = ""
+                if ev_data.get("last_edited_at"):
+                    ed_dt = str(ev_data["last_edited_at"])[:10]
+                    edited_badge = f'<span style="color:#94a3b8; font-size:0.72rem; margin-left:8px;">• Edited on {ed_dt}</span>'
+
+                # Role-specific styling
+                badge_bg = "#6366f1" if actor_role == "aspirant" else "#10b981" if actor_role == "guide" else "#f59e0b" if actor_role == "sme" else "#2563eb"
+
+                is_included = event.get("included_in_roadmap", True) is not False
+                if not is_included:
+                    card_border = "border:1.5px dashed #EF4444;"
+                    card_bg = "background:#FEF2F2;"
+                    status_badge = '<div style="margin-bottom:6px;"><span style="display:inline-block; font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:10px; background:#EF4444; color:#ffffff;">✕ Excluded (Marked Not Needed)</span></div>'
+                else:
+                    card_border = "border:1px solid #E2E8F0;"
+                    card_bg = "background:#FFFFFF;"
+                    status_badge = '<div style="margin-bottom:6px;"><span style="display:inline-block; font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:10px; background:#10B981; color:#ffffff;">✓ Active on Roadmap</span></div>'
+
+                col_time, col_body, col_del = st.columns([1.2, 5.0, 1.0])
+                with col_time:
+                    st.markdown(f"""
+                    <div style="font-weight:700; color:#64748B; font-size:0.9rem;">{date_display}</div>
+                    <span style="display:inline-block; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:10px; background:{badge_bg}; color:#ffffff; text-transform:uppercase;">{std_role}</span>
+                    """, unsafe_allow_html=True)
+                with col_body:
+                    card_html = (
+                        f'<div style="{card_bg} {card_border} border-radius:12px; padding:0.9rem 1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">'
+                        f'{status_badge}'
+                        f'<div style="font-weight:700; color:#0F172A; font-size:1.05rem;">{title}</div>'
+                        f'<div style="color:#334155; font-size:0.9rem; margin-top:0.3rem; line-height:1.5;">{desc}</div>'
+                        f'{link_html}'
+                        f'<div style="font-size:0.75rem; color:#64748B; margin-top:0.4rem;">Contributor: <strong>{actor_name}</strong> ({std_role}){edited_badge}</div>'
+                        f'</div>'
+                    )
+                    st.markdown(card_html, unsafe_allow_html=True)
+                with col_del:
+                    # Aspirants can edit or delete their own manual entries
+                    if actor_role == "aspirant":
+                        c_ed, c_dl = st.columns(2)
+                        with c_ed:
+                            if st.button("✏️", key=f"edit_ev_{event['id']}", help="Edit this journey entry"):
+                                render_edit_journey_dialog(event, user_id, "aspirant")
+                        with c_dl:
+                            confirm_key = f"confirm_del_ev_{event['id']}"
+                            if st.session_state.get(confirm_key):
+                                if st.button("✓ Yes", key=f"yes_del_ev_{event['id']}", type="primary", help="Confirm delete"):
+                                    st.session_state.pop(confirm_key, None)
+                                    ok, err = soft_delete_event(event["id"], user_id, "aspirant")
+                                    if ok:
+                                        st.session_state["del_event_success"] = "Entry deleted from your journey."
+                                    else:
+                                        st.session_state["del_event_err"] = err or "Could not delete entry."
+                                    st.rerun()
+                                if st.button("✕", key=f"no_del_ev_{event['id']}", help="Cancel delete"):
+                                    st.session_state.pop(confirm_key, None)
+                                    st.rerun()
+                            else:
+                                if st.button("🗑️", key=f"del_ev_{event['id']}", help="Delete your entry"):
+                                    st.session_state[confirm_key] = True
+                                    st.rerun()
+                    else:
+                        # For contributions by Guide, SME, or Admin, the founder can curate their roadmap
+                        if is_included:
+                            if st.button("✕ Not Needed", key=f"excl_{event['id']}", help="Exclude this milestone from your roadmap"):
+                                ok, err = toggle_event_roadmap_inclusion(event["id"], user_id, False)
+                                if ok:
+                                    st.session_state["del_event_success"] = "Milestone marked as Not Needed for your roadmap."
+                                else:
+                                    st.session_state["del_event_err"] = err or "Could not update milestone."
+                                st.rerun()
+                        else:
+                            if st.button("✓ Needed", key=f"incl_{event['id']}", help="Include this milestone back in your active roadmap"):
+                                ok, err = toggle_event_roadmap_inclusion(event["id"], user_id, True)
+                                if ok:
+                                    st.session_state["del_event_success"] = "Milestone included back in your active roadmap."
+                                else:
+                                    st.session_state["del_event_err"] = err or "Could not update milestone."
+                                st.rerun()
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 4: MY MENTORS
+    # ─────────────────────────────────────────────────────────────
+    with tabs[3]:
+      if is_tab_active(tabs[3]):
+        st.markdown("### 🤝 Dedicated Guidance Team")
+        col_m1, col_m2 = st.columns(2)
+
+        with col_m1:
+            guides_list = mentors.get("guides") or ([guide] if guide else [])
+            g_header = f"🧭 Your Assigned Guides ({len(guides_list)})" if len(guides_list) > 1 else "🧭 Your Assigned Guide"
+            st.markdown(f"#### {g_header}")
+            if guides_list:
+                for g_idx, g_item in enumerate(guides_list):
+                    g_p = g_item.get("profile_data", {})
+                    g_label = "Primary Dedicated Guide" if g_idx == 0 else f"Co-Guide #{g_idx + 1}"
+                    g_role_status = g_item.get("role_status", "active")
+                    status_pill = (
+                        '<span style="background:#FEF3C7; color:#92400E; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">⏸️ Temporarily Unavailable</span>'
+                        if g_role_status == "suspended" else
+                        '<span style="background:#ECFDF5; color:#065F46; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">● Active</span>'
+                    )
+                    st.markdown(f"""
+                    <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:14px; padding:1.5rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="font-size:1.3rem; font-weight:800; color:#0F172A;">{_safe_esc(g_item.get('full_name'))}</div>
+                            {status_pill}
+                        </div>
+                        <div style="color:#059669; font-size:0.85rem; font-weight:600; margin-bottom:0.75rem;">{g_label} · Dedicated Enterprise Mentor</div>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {_safe_esc(g_p.get('expertise', 'Business Guidance & Planning'))}</p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Location:</strong> {_safe_esc(g_item.get('district', 'Tamil Nadu'))}</p>
+                        <p style="font-size:0.85rem; color:#64748B; margin-top:0.75rem;"><em>"{_safe_esc(g_p.get('bio', 'Dedicated enterprise mentor assigned to assist in strategy and loan execution.'))}"</em></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("🧭 No Dedicated Guide assigned yet. A dedicated enterprise mentor will be assigned shortly.")
+
+        with col_m2:
+            smes = mentors.get("smes", [])
+            if not smes and sme:
+                smes = [sme]
+            smes_count = len(smes)
+            header_title = f"🔬 Domain Advisory Panel ({smes_count} Specialists)" if smes_count > 1 else "🔬 Your Assigned Domain SME"
+            st.markdown(f"#### {header_title}")
+            if smes:
+                for idx, s_item in enumerate(smes):
+                    s_p = s_item.get("profile_data", {})
+                    s_name = s_item.get("full_name", "Specialist")
+                    s_exp = s_p.get("expertise") or s_p.get("industry") or "Technical & Compliance Advisory"
+                    s_ind = s_p.get("industry") or "Specialized Domain"
+                    s_bio = s_p.get("bio") or "Assigned to provide specialized technical audit and compliance guidance."
+                    s_role_status = s_item.get("role_status", "active")
+                    s_status_pill = (
+                        '<span style="background:#FEF3C7; color:#92400E; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">⏸️ Temporarily Unavailable</span>'
+                        if s_role_status == "suspended" else
+                        '<span style="background:#ECFDF5; color:#065F46; font-size:0.72rem; font-weight:700; padding:2px 8px; border-radius:999px;">● Active</span>'
+                    )
+                    st.markdown(f"""
+                    <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:14px; padding:1.25rem; margin-bottom:1rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{_safe_esc(s_name)}</div>
+                            {s_status_pill}
+                        </div>
+                        <div style="color:#D97706; font-size:0.85rem; font-weight:600; margin-bottom:0.75rem;">Subject Matter Expert · Specialist #{idx+1}</div>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Specialization:</strong> {_safe_esc(s_exp)}</p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Location:</strong> {_safe_esc(s_item.get('district', 'Tamil Nadu'))}</p>
+                        <p style="font-size:0.9rem; color:#334155; margin-bottom:4px;"><strong>Industry:</strong> {_safe_esc(s_ind)}</p>
+                        <p style="font-size:0.85rem; color:#64748B; margin-top:0.75rem;"><em>"{_safe_esc(s_bio)}"</em></p>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("🔬 No Domain SME assigned yet. If you need specialized help in GST, FSSAI, or Patents, submit a request under 'Consult a Guide or SME'.")
+
+
+        st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
+        with st.expander("🛡️ Contact Fulcrum Support / Report Confidential Concern"):
+            st.caption("This report is submitted directly and confidentially to **Fulcrum Support**. Your assigned mentors will not see this communication.")
+            if not guide:
+                st.info("ℹ️ You currently do not have an active Guide assigned. Your message will be routed directly to the Fulcrum Support administration team.")
+            with st.form("confidential_complaint_form"):
+                complaint_reason = st.selectbox(
+                    "Reason for Request / Concern",
+                    [
+                        ("inactivity", "Guide is inactive / unresponsive"),
+                        ("poor_communication", "Communication difficulties"),
+                        ("conflict_of_interest", "Potential conflict of interest"),
+                        ("professional_conduct", "Professional conduct / ethics"),
+                        ("other", "General administrative / support assistance")
+                    ],
+                    format_func=lambda x: x[1]
+                )
+                complaint_details = st.text_area("Detailed context / explanation (Minimum 10 characters)*", placeholder="Please describe the issue or support needed in detail...")
+                submit_comp = st.form_submit_button("Submit Confidentially to Fulcrum Support", type="primary")
+                if submit_comp:
+                    from services.governance import submit_guide_complaint
+                    target_guide_id = guide["id"] if guide else None
+                    ok, res = submit_guide_complaint(user_id, target_guide_id, complaint_reason[0], complaint_details)
+                    if ok:
+                        st.success("Your request has been submitted confidentially to Fulcrum Support for immediate review.")
+                        st.rerun()
+                    else:
+                        st.error(res or "Failed to submit request.")
+
+            from services.governance import list_aspirant_complaints
+            my_complaints = list_aspirant_complaints(user_id)
+            if my_complaints:
+                st.markdown("##### 📋 Your Submitted Confidential Support Reports")
+                for mc in my_complaints:
+                    mc_status = str(mc.get("status", "open")).upper()
+                    mc_badge_bg = "#10B981" if mc_status == "RESOLVED" else "#3B82F6" if mc_status in ("REVIEWED", "UNDER_REVIEW") else "#F59E0B"
+                    mc_reason_raw = mc.get("reason") or mc.get("reason_category") or "Confidential Feedback"
+                    mc_reason_disp = _safe_esc(str(mc_reason_raw).replace("_", " ").title())
+                    mc_note = mc.get("resolution_notes") or ""
+                    mc_note_html = f'<div style="margin-top:4px; font-size:0.82rem; color:#1E40AF;"><strong>Fulcrum Support Update:</strong> {_safe_esc(mc_note)}</div>' if mc_note else ""
+                    st.markdown(f"""
+                    <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.75rem 1rem; margin-bottom:0.5rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-size:0.85rem; font-weight:700; color:#0F172A;">Reason: {mc_reason_disp} · {str(mc.get('created_at', ''))[:10]}</span>
+                            <span style="background:{mc_badge_bg}; color:#ffffff; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:6px;">{mc_status}</span>
+                        </div>
+                        <div style="font-size:0.82rem; color:#475569; margin-top:4px;">{_safe_esc(mc.get('details', ''))}</div>
+                        {mc_note_html}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 5: SCHEME MATCHES (Curated & Released by Guide)
+    # ─────────────────────────────────────────────────────────────
+    with tabs[4]:
+      if is_tab_active(tabs[4]):
+        st.markdown("### 🏦 Funding Intelligence & Scheme Recommendations")
+        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Review officially verified and released scheme dossiers curated for your venture by your dedicated Guide using AI scheme intelligence.</p>", unsafe_allow_html=True)
+
+        released_schemes = get_released_schemes_for_aspirant(user_id)
+
+        if not released_schemes:
+            st.markdown("""
+            <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:14px; padding:2.5rem 1.8rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.03); margin-top:0.75rem;">
+                <div style="font-size:2.5rem; margin-bottom:0.75rem;">🧭</div>
+                <h3 style="color:#0F172A; margin:0 0 0.5rem 0; font-size:1.25rem; font-weight:800;">No Schemes Released Yet</h3>
+                <p style="color:#64748B; font-size:0.95rem; max-width:580px; margin:0 auto; line-height:1.6;">
+                    Your dedicated Guide evaluates your enterprise profile and funding assistance requirements using our AI-based scheme matching engine. When appropriate funding opportunities are verified, your Guide will release them directly to your venture dashboard with personalized strategic recommendations and direct application links.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.success(f"Your Guide has released **{len(released_schemes)}** curated funding opportunities for your venture!")
+            cols_per_row = 3
+            for i in range(0, len(released_schemes), cols_per_row):
+                row_schemes = released_schemes[i : i + cols_per_row]
+                cols = st.columns(3)
+                for j, s in enumerate(row_schemes):
+                    with cols[j]:
+                        render_fund_explorer_card(s, user_id=user_id, is_aspirant=True, key_prefix=f"asp_rel_{i}_{j}")
+                        cur_stage = s.get("application_stage") or "Released"
+                        stage_idx = SCHEME_APPLICATION_STAGES.index(cur_stage) if cur_stage in SCHEME_APPLICATION_STAGES else 0
+                        with st.expander(f"📈 Application Stage: {cur_stage}", expanded=False):
+                            new_stg = st.selectbox(
+                                "Current Application Progress",
+                                options=SCHEME_APPLICATION_STAGES,
+                                index=stage_idx,
+                                key=f"sel_stg_{s['id']}_{i}_{j}"
+                            )
+                            stg_note = st.text_input(
+                                "Milestone / Reference Note (optional)",
+                                placeholder="e.g., Submitted DIC application ref #104",
+                                key=f"note_stg_{s['id']}_{i}_{j}"
+                            )
+                            if st.button("Save Progress Stage", key=f"btn_stg_{s['id']}_{i}_{j}", use_container_width=True):
+                                ok_s, msg_s = update_scheme_application_stage(
+                                    aspirant_id=user_id,
+                                    scheme_id=s["id"],
+                                    actor_id=user_id,
+                                    actor_role="aspirant",
+                                    new_stage=new_stg,
+                                    stage_note=stg_note,
+                                )
+                                if ok_s:
+                                    st.success(msg_s)
+                                    st.rerun()
+                                else:
+                                    st.error(msg_s)
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 6: CONSULT A GUIDE OR SME (Strictly Guides and SMEs)
+    # ─────────────────────────────────────────────────────────────
+    with tabs[5]:
+      if is_tab_active(tabs[5]):
+        st.markdown("### 🤝 Consult a Guide or SME")
+        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Need guidance on scheme applications, DPR preparation, GST compliance, or technical mentoring? Submit a consultation request directly to your assigned Guide or Domain SME.</p>", unsafe_allow_html=True)
+
+        mentors = get_aspirant_mentors(user_id)
+        guides_assigned = mentors.get("guides") or ([mentors.get("guide")] if mentors.get("guide") else [])
+        smes_assigned = mentors.get("smes") or ([mentors.get("sme")] if mentors.get("sme") else [])
+
+        # Build dynamic mentor recipient options (including Co-Guides and multiple SMEs)
+        mentor_choices = []
+        if guides_assigned:
+            for g_idx, g_item in enumerate(guides_assigned):
+                g_name = g_item.get("full_name") or "Dedicated Guide"
+                g_exp = g_item.get("profile_data", {}).get("expertise", "Business Guidance & Planning")
+                g_prefix = "Dedicated Guide" if g_idx == 0 else f"Co-Guide #{g_idx + 1}"
+                mentor_choices.append({
+                    "key": f"guide_{g_item['id']}",
+                    "role": "guide",
+                    "mentor_id": g_item["id"],
+                    "name": g_name,
+                    "label": f"🧭 {g_prefix} — {g_name} ({g_exp})",
+                    "available": g_item.get("role_status", "active") != "suspended"
+                })
+        else:
+            mentor_choices.append({
+                "key": "guide_none",
+                "role": "guide",
+                "mentor_id": None,
+                "name": "Dedicated Guide (Pending)",
+                "label": "🧭 Dedicated Guide — (Pending Assignment)",
+                "available": False
+            })
+
+        if smes_assigned:
+            for idx, s in enumerate(smes_assigned):
+                s_name = s.get("full_name") or f"Specialist #{idx+1}"
+                s_p = s.get("profile_data", {})
+                s_exp = s_p.get("expertise") or s_p.get("industry") or "Domain Advisory"
+                mentor_choices.append({
+                    "key": f"sme_{s['id']}",
+                    "role": "sme",
+                    "mentor_id": s["id"],
+                    "name": s_name,
+                    "label": f"🔬 Domain SME — {s_name} ({s_exp})",
+                    "available": s.get("role_status", "active") != "suspended"
+                })
+        else:
+            mentor_choices.append({
+                "key": "sme_none",
+                "role": "sme",
+                "mentor_id": None,
+                "name": "Domain SME (Unassigned)",
+                "label": "🔬 Domain SME — (No SME Assigned Yet)",
+                "available": False
+            })
+
+        with st.form("form_help"):
+            col_hp_mentor, col_hp_cat = st.columns([1, 1])
+
+            with col_hp_mentor:
+                sel_mentor_idx = st.selectbox(
+                    "Consult With (Mentor Recipient) *",
+                    options=range(len(mentor_choices)),
+                    format_func=lambda i: mentor_choices[i]["label"],
+                    help="Choose whether to consult your Dedicated Guide or a specific Domain Specialist."
+                )
+                selected_mentor = mentor_choices[sel_mentor_idx]
+
+            with col_hp_cat:
+                cat_options = {
+                    "GENERAL": "General Mentorship & Strategic Planning",
+                    "BANKING_DPR": "Banking, DPR & Project Report Review",
+                    "SCHEMES_SUBSIDIES": "Government Scheme Matching & Subsidies",
+                    "SCALING_OPERATIONS": "Venture Scaling & Operational Guidance",
+                    "GST_TAXATION": "GST, Taxation & Direct Tax Compliance",
+                    "LEGAL_COMPLIANCE": "Company Law, Contracts & Statutory Legal",
+                    "FSSAI_FOOD": "FSSAI Certification, Lab Testing & Food Standards",
+                    "PATENTS_IPR": "Patents, Trademarks & IP Protection",
+                    "OTHERS": "Others (Specify Below)"
+                }
+
+                h_cat_key = st.selectbox(
+                    "Help Topic / Category *",
+                    options=list(cat_options.keys()),
+                    format_func=lambda k: cat_options[k],
+                    help="Select the category that best describes your inquiry."
+                )
+
+            h_cat_detail = st.text_input(
+                "Custom Topic / 'Others' Details (if 'Others' selected above)",
+                placeholder="e.g., Export License, Machinery Import Clearance, Angel Tax, Pollution Board NOC",
+                help="Required when 'Others (Specify Below)' is selected as the Help Topic / Category."
+            )
+
+            h_subj = st.text_input("Subject *", placeholder="e.g., DPR Quotations Review, GST Audit Notice, PMEGP Subsidy Query")
+
+            col_hp1, col_hp2 = st.columns([3, 1])
+            with col_hp1:
+                h_msg = st.text_area("Message / Description *", placeholder="Describe exactly what you need help with...")
+            with col_hp2:
+                h_prio = st.selectbox("Priority", ["LOW", "MEDIUM", "HIGH", "URGENT"], index=1)
+
+            # Routing preview banner
+            target_role = selected_mentor["role"]
+            target_person = selected_mentor["name"]
+            target_mentor_id = selected_mentor["mentor_id"]
+            is_available = selected_mentor["available"]
+
+            if is_available:
+                st.markdown(f"""
+                <div style="background:{'#FFFBEB' if target_role == 'sme' else '#F0FDF4'}; border:1px solid {'#FDE68A' if target_role == 'sme' else '#BBF7D0'}; border-left:4px solid {'#F59E0B' if target_role == 'sme' else '#10B981'}; border-radius:0 8px 8px 0; padding:0.75rem 1rem; margin-top:0.6rem; margin-bottom:0.75rem;">
+                    <div style="font-weight:800; color:{'#92400E' if target_role == 'sme' else '#166534'}; font-size:0.88rem;">🎯 Direct Delivery: Routed to {'Domain Specialist' if target_role == 'sme' else 'Dedicated Guide'} — <strong>{target_person}</strong></div>
+                    <div style="color:{'#92400E' if target_role == 'sme' else '#166534'}; font-size:0.8rem; margin-top:2px;">Sent directly to your assigned mentor's private queue. Institutional administrators do not intermediate routine guidance tickets.</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                if target_role == "guide":
+                    st.warning("⚠️ A Dedicated Guide is not currently available or assigned. Please select an active Domain Specialist, or check back once a Guide is active.")
+                else:
+                    st.info("ℹ️ No active Domain SME is assigned yet. You may direct your consultation request to your Dedicated Guide.")
+
+            if st.form_submit_button("SUBMIT CONSULTATION REQUEST", type="primary"):
+                if not is_available:
+                    st.error(f"Cannot submit request: {target_person} is not currently available. Please select an active mentor.")
+                elif not h_subj.strip():
+                    st.error("Please provide a Subject for your inquiry.")
+                elif not h_msg.strip():
+                    st.error("Please provide a Message / Description.")
+                elif h_cat_key == "OTHERS" and not h_cat_detail.strip():
+                    st.error("Please specify your topic or issue details in the 'Custom Topic / Others Details' field.")
+                else:
+                    req, err = create_request(
+                        aspirant_id=user_id,
+                        subject=h_subj,
+                        message=h_msg,
+                        priority=h_prio,
+                        category=h_cat_key,
+                        target_role=target_role,
+                        target_mentor_id=target_mentor_id,
+                        category_detail=h_cat_detail.strip() if h_cat_detail else None
+                    )
+                    if req:
+                        st.success(f"Consultation request submitted! Routed directly to your {target_person}.")
+                        st.rerun()
+                    else:
+                        st.error(err or "Failed to submit request.")
+
+        st.markdown("#### 📋 Consultation History")
+        my_reqs = list_requests(aspirant_id=user_id)
+        if not my_reqs:
+            st.info("No consultation requests submitted yet.")
+        else:
+            for r in my_reqs:
+                st_color = "#f59e0b" if r["status"] in ("OPEN", "WAITING_ON_ASPIRANT") else "#3b82f6" if r["status"] in ("IN_PROGRESS", "REPLIED", "WAITING_ON_GUIDE_SME") else "#10b981"
+                if r.get("category") == "OTHERS" and r.get("category_detail"):
+                    cat_badge = f"OTHERS: {r.get('category_detail')}"
+                else:
+                    cat_badge = r.get("category", "GENERAL").replace("_", " ")
+
+                is_mentor_init = (r.get("request_type") == "mentor_initiated" or r.get("requester_role") in ("guide", "sme"))
+                req_role = r.get("requester_role") or ("guide" if r.get("assigned_guide_id") else "sme")
+
+                if is_mentor_init:
+                    if req_role == "guide":
+                        m_name = r.get("guide_name") or "Dedicated Guide"
+                        origin_badge = f'<span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.75rem; font-weight:800; padding:2px 8px; border-radius:6px; margin-left:8px;">🧭 INITIATED BY GUIDE: {_safe_esc(m_name)}</span>'
+                        border_color = "#10B981"
+                    else:
+                        m_name = r.get("sme_name") or "Domain Specialist"
+                        origin_badge = f'<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:2px 8px; border-radius:6px; margin-left:8px;">🔬 INITIATED BY SME: {_safe_esc(m_name)}</span>'
+                        border_color = "#F59E0B"
+                else:
+                    if r.get("target_role") == "sme":
+                        target_name = r.get("sme_name") or (f"Domain Specialist ({r.get('category', 'SME')})" if r.get("category") else "Domain Specialist")
+                    else:
+                        target_name = r.get("guide_name") or "Dedicated Guide"
+                    origin_badge = f'<span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:4px; margin-left:8px;">TARGET: {_safe_esc(target_name)}</span>'
+                    border_color = "#E2E8F0"
+
+                g_resp_html = f'<div style="background:#EFF6FF; border-left:3px solid #3B82F6; border:1px solid #BFDBFE; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#1E40AF; margin-top:0.5rem; white-space:pre-wrap;"><strong>🧭 Guide Response:</strong> {_safe_esc(r.get("guide_response"))}</div>' if r.get('guide_response') else ''
+                s_resp_html = f'<div style="background:#FFFBEB; border-left:3px solid #F59E0B; border:1px solid #FDE68A; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#92400E; margin-top:0.5rem; white-space:pre-wrap;"><strong>🔬 SME Advisory Response:</strong> {_safe_esc(r.get("sme_response"))}</div>' if r.get('sme_response') else ''
+
+                asp_reply = r.get("aspirant_response") or (r.get("admin_response", "").replace("Aspirant Reply: ", "") if str(r.get("admin_response", "")).startswith("Aspirant Reply: ") else "")
+                asp_resp_html = f'<div style="background:#F0FDF4; border-left:3px solid #10B981; border:1px solid #BBF7D0; padding:0.5rem 0.75rem; border-radius:0 6px 6px 0; font-size:0.85rem; color:#166534; margin-top:0.5rem; white-space:pre-wrap;"><strong>🌱 Your Submitted Reply / Update:</strong> {_safe_esc(asp_reply)}</div>' if asp_reply else ''
+
+                card_html = (
+                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:12px; padding:1.25rem; margin-bottom:0.85rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                    f'<div><strong style="color:#0F172A; font-size:1.05rem;">{_safe_esc(r.get("subject", "Consultation"))}</strong>'
+                    f'<span style="background:#F1F5F9; color:#475569; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:4px; margin-left:8px;">{_safe_esc(cat_badge)}</span>'
+                    f'{origin_badge}</div>'
+                    f'<span style="background:{st_color}; color:#ffffff; font-size:0.75rem; font-weight:800; padding:2px 8px; border-radius:6px;">{_safe_esc(r.get("status", "OPEN"))}</span>'
+                    f'</div>'
+                    f'<div style="color:#334155; font-size:0.9rem; margin:0.5rem 0; line-height:1.45;">{_safe_esc(r.get("message", ""))}</div>'
+                    f'{g_resp_html}'
+                    f'{s_resp_html}'
+                    f'{asp_resp_html}'
+                    f'</div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+
+                # Allow Aspirant to submit a reply or follow-up update on any active ticket
+                if r.get("status") in ("OPEN", "IN_PROGRESS", "WAITING_ON_ASPIRANT", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED"):
+                    if r.get("target_role") == "sme" or req_role == "sme":
+                        mentor_author = r.get("sme_name") or "Domain Specialist"
+                    else:
+                        mentor_author = r.get("guide_name") or "Dedicated Guide"
+                    expand_by_default = (r.get("status") in ("WAITING_ON_ASPIRANT", "ACTION_REQUIRED")) or (is_mentor_init and not asp_reply)
+                    with st.expander(f"💬 Reply / Submit Follow-Up Update to {mentor_author}", expanded=expand_by_default):
+                        with st.form(f"form_asp_reply_{r['id']}"):
+                            asp_reply_text = st.text_area(
+                                f"Your Reply / Action Updates for {mentor_author} *",
+                                placeholder="Provide requested information, clarification, or a follow-up update...",
+                                height=80,
+                                key=f"txt_asp_reply_{r['id']}"
+                            )
+                            if st.form_submit_button("🚀 SUBMIT REPLY TO MENTOR", type="primary"):
+                                if not asp_reply_text.strip():
+                                    st.warning("Please enter your reply.")
+                                else:
+                                    ok, err = aspirant_respond_request(r["id"], user_id, asp_reply_text.strip())
+                                    if ok:
+                                        st.success(f"Your reply has been submitted to {mentor_author}!")
+                                        st.rerun()
+                                    else:
+                                        st.error(err or "Failed to submit reply.")
+
+
+        st.markdown("<div style='height:1.5rem;'></div>", unsafe_allow_html=True)
+        st.markdown("### 💬 Advisory Case Discussions & Collaboration")
+        from services.collaboration import list_case_messages, create_case_message
+        case_msgs = list_case_messages(user_id, requesting_role="aspirant", viewer_id=user_id)
+        with st.expander(f"Case Discussion Board ({len(case_msgs)} messages)", expanded=False):
+            if not case_msgs:
+                st.caption("No advisory case discussion messages posted yet.")
+            else:
+                for m in case_msgs:
+                    st.markdown(f"""
+                    <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-left:3px solid #3B82F6; border-radius:8px; padding:0.8rem; margin-bottom:0.5rem;">
+                        <div style="font-size:0.85rem; font-weight:700; color:#1E293B;">{_safe_esc(m.get('title'))} <span style="font-weight:400; color:#64748B; font-size:0.75rem;">by {_safe_esc(m.get('author_name', 'Mentor'))} ({_safe_esc(m.get('author_role', '').upper())}) · {m.get('created_at', '')[:10]}</span></div>
+                        <div style="font-size:0.85rem; color:#334155; margin-top:4px;">{_safe_esc(m.get('message'))}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            with st.form("form_add_case_msg"):
+                msg_title = st.text_input("Topic / Question Title*", placeholder="e.g. Question on GST filing documentation")
+                msg_body = st.text_area("Discussion Message*", placeholder="Write your message to your Guide and SME panel...")
+                if st.form_submit_button("Post to Discussion Board"):
+                    if not msg_title.strip() or not msg_body.strip():
+                        st.warning("Please enter both title and message.")
+                    else:
+                        ok, err = create_case_message(user_id, user_id, "aspirant", msg_title, msg_body, is_private_mentor_note=False)
+                        if ok:
+                            st.success("Message posted to discussion board.")
+                            st.rerun()
+                        else:
+                            st.error(err or "Failed to post message.")

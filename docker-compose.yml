@@ -10,16 +10,24 @@ services:
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_PUBLISHABLE_KEY=${SUPABASE_PUBLISHABLE_KEY}
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}
+      - SOLE_ADMIN_UUID=${SOLE_ADMIN_UUID:-}
+      - DOMAIN=${DOMAIN:-app.fulcrumindia.online}
+      - APP_URL=${APP_URL:-https://${DOMAIN:-app.fulcrumindia.online}}
     networks:
       - fulcrum-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     deploy:
       resources:
         limits:
           cpus: '1.75'
-          memory: 3072M
+          memory: 5G
         reservations:
           cpus: '0.25'
-          memory: 256M
+          memory: 1G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
@@ -36,6 +44,11 @@ services:
       - "443:443"
     environment:
       - DOMAIN=${DOMAIN:-app.fulcrumindia.online}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

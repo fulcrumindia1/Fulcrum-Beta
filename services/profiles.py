@@ -64,60 +64,141 @@ def calculate_completion(p: Dict) -> int:
 
     return int((points / total) * 100)
 
-def get_profile(user_id: str) -> Optional[Dict]:
-    """Fetches user profile by ID using active backend with request-scoped memoization."""
+def get_profile(
+    user_id: str,
+    requesting_actor_id: Optional[str] = None,
+    is_system: bool = False
+) -> Optional[Dict]:
+    """
+    Fetches user profile by ID using active backend with actor-scoped authorization & memoization.
+
+    SECURITY GUARANTEES:
+    1. Verified Actor Authorization: Ordinary users can only access their own profile or
+       assigned mentors/mentees with verified active pairwise relationships.
+    2. Zero Implicit Privilege: A missing actor identity is NOT implicitly trusted as system.
+    3. Least-Privilege Projection: Non-admin viewers receive sanitized profiles (admin notes,
+       temporary credentials, and deletion metadata stripped).
+    4. No Cross-Backend Leakage: In Supabase mode, failed or denied cloud reads NEVER silently
+       fall back to local SQLite.
+    5. Actor-Partitioned Cache: Cache keys are partitioned by actor scope to eliminate cross-user leakage.
+    """
     if not user_id:
         return None
 
+    # Resolve requesting actor identity
+    actor_id = requesting_actor_id
+    if not actor_id:
+        try:
+            import streamlit as st
+            actor_id = st.session_state.get("user_id") or (st.session_state.get("user") or {}).get("id")
+        except Exception:
+            actor_id = None
+
+    actor_scope = str(actor_id or ("system" if is_system else "anonymous"))
+    cache_key = f"profile:{user_id}:{actor_scope}"
+
     # Check request memo cache first
-    cached = get_memo(f"profile:{user_id}")
+    cached = get_memo(cache_key)
     if cached is not None:
         return cached
 
     backend = get_data_backend()
 
     if backend == "supabase":
-        client = _get_user_client()
-        if client:
-            try:
-                res = client.table("profiles").select("*").eq("id", user_id).execute()
-                if res.data and len(res.data) > 0:
-                    p = res.data[0]
-                    p["completion_pct"] = calculate_completion(p)
-                    set_memo(f"profile:{user_id}", p, ttl_seconds=60)
-                    return p
-            except Exception as e:
-                pass
-        
-        # Admin client fallback for service lookups & background tasks
-        admin = _get_admin_client()
-        if admin:
-            try:
-                res = admin.table("profiles").select("*").eq("id", user_id).execute()
-                if res.data and len(res.data) > 0:
-                    p = res.data[0]
-                    p["completion_pct"] = calculate_completion(p)
-                    set_memo(f"profile:{user_id}", p, ttl_seconds=60)
-                    return p
-            except Exception as e:
-                pass
-        # Fallback to local DB if record not found in cloud table
-        p_loc = get_local_db().get_profile_by_id(user_id)
-        if p_loc:
-            p_loc["completion_pct"] = calculate_completion(p_loc)
-            set_memo(f"profile:{user_id}", p_loc, ttl_seconds=60)
-            return p_loc
-        return None
+        from services.roles import is_strict_admin
+        from services.account_lifecycle import get_account_status
+
+        is_admin = is_system or (actor_id and is_strict_admin(user_id=actor_id))
+        is_self = bool(actor_id and str(actor_id) == str(user_id))
+
+        authorized = False
+        if is_admin or is_self:
+            authorized = True
+        elif actor_id is not None:
+            # Verify actor account status is active
+            st_info = get_account_status(actor_id)
+            if st_info.get("account_status") == "ACTIVE" and st_info.get("is_active", True):
+                admin_cli = _get_admin_client()
+                if admin_cli:
+                    try:
+                        rel_res = admin_cli.table("relationships").select("aspirant_id, guide_id, guide_ids, sme_id, sme_ids")\
+                            .eq("status", "active")\
+                            .or_(f"aspirant_id.eq.{actor_id},guide_id.eq.{actor_id},sme_id.eq.{actor_id}")\
+                            .execute()
+                        for r in (rel_res.data or []):
+                            r_asp = str(r.get("aspirant_id") or "")
+                            r_gids = [str(gid) for gid in (r.get("guide_ids") or []) if gid]
+                            if r.get("guide_id"):
+                                r_gids.append(str(r["guide_id"]))
+                            r_sids = [str(sid) for sid in (r.get("sme_ids") or []) if sid]
+                            if r.get("sme_id"):
+                                r_sids.append(str(r["sme_id"]))
+
+                            if str(actor_id) == r_asp:
+                                if str(user_id) in r_gids or str(user_id) in r_sids:
+                                    authorized = True
+                                    break
+                            elif str(actor_id) in r_gids or str(actor_id) in r_sids:
+                                if str(user_id) == r_asp:
+                                    authorized = True
+                                    break
+                    except Exception as ex_rel:
+                        print(f"[Profiles] Relationship check notice: {ex_rel}")
+
+        if not authorized:
+            # Denied: Actor does not have verified permission to inspect this profile
+            return None
+
+        p = None
+        if is_self:
+            client = _get_user_client()
+            if client:
+                try:
+                    res = client.table("profiles").select("*").eq("id", user_id).execute()
+                    if res.data and len(res.data) > 0:
+                        p = res.data[0]
+                except Exception:
+                    pass
+
+        if not p:
+            admin = _get_admin_client()
+            if admin:
+                try:
+                    res = admin.table("profiles").select("*").eq("id", user_id).execute()
+                    if res.data and len(res.data) > 0:
+                        p = res.data[0]
+                except Exception:
+                    pass
+
+        if not p:
+            # Record not found in Supabase — STRICT: No silent SQLite fallback in Supabase mode!
+            return None
+
+        p_clean = dict(p)
+        if not is_admin and not is_self:
+            p_clean.pop("admin_notes", None)
+            p_clean.pop("temp_password_issued", None)
+            p_clean.pop("deletion_requested_by", None)
+            p_clean.pop("retention_notes", None)
+
+        p_clean["completion_pct"] = calculate_completion(p_clean)
+        set_memo(cache_key, p_clean, ttl_seconds=60)
+        return p_clean
 
     # SQLite mode ONLY (when DATA_BACKEND=sqlite)
     p = get_local_db().get_profile_by_id(user_id)
     if p:
-        p["completion_pct"] = calculate_completion(p)
-        set_memo(f"profile:{user_id}", p, ttl_seconds=60)
-        return p
+        p_clean = dict(p)
+        p_clean["completion_pct"] = calculate_completion(p_clean)
+        set_memo(cache_key, p_clean, ttl_seconds=60)
+        return p_clean
     return None
 
-def get_profiles_batch(user_ids: List[str], requesting_actor_id: Optional[str] = None) -> Dict[str, Dict]:
+def get_profiles_batch(
+    user_ids: List[str],
+    requesting_actor_id: Optional[str] = None,
+    is_system: bool = False
+) -> Dict[str, Dict]:
     """
     Batched profile retrieval with least-privilege actor-scoped authorization.
     Retrieves multiple profiles in a single query and caches them in session memo.
@@ -150,7 +231,7 @@ def get_profiles_batch(user_ids: List[str], requesting_actor_id: Optional[str] =
         except Exception:
             actor_id = None
 
-    actor_scope = str(actor_id or "system")
+    actor_scope = str(actor_id or ("system" if is_system else "anonymous"))
 
     # Check actor-scoped memo cache first (Prevents admin-level cache leakage to ordinary users)
     for uid in unique_ids:
@@ -186,13 +267,13 @@ def get_profiles_batch(user_ids: List[str], requesting_actor_id: Optional[str] =
                 from services.roles import is_strict_admin
                 from services.account_lifecycle import get_account_status
 
-                is_admin = is_strict_admin(user_id=actor_id)
+                is_admin = is_system or (actor_id and is_strict_admin(user_id=actor_id))
                 authorized_ids = set()
 
-                if is_admin or actor_id is None:
-                    # Admin or system background task -> Authorized for requested IDs
+                if is_admin:
+                    # Admin or explicit system background capability -> Authorized for requested IDs
                     authorized_ids = set(still_to_fetch)
-                else:
+                elif actor_id is not None:
                     # Non-admin user: verify account status is ACTIVE
                     st_info = get_account_status(actor_id)
                     if st_info.get("account_status") == "ACTIVE" and st_info.get("is_active", True):
@@ -219,6 +300,9 @@ def get_profiles_batch(user_ids: List[str], requesting_actor_id: Optional[str] =
                                     authorized_ids.add(r_asp)
                         except Exception as ex_rel:
                             print(f"[Profiles] Relationship authorization query error: {ex_rel}")
+                else:
+                    # Missing actor identity without system capability -> Deny all
+                    authorized_ids = set()
 
                 # Fetch ONLY the explicitly authorized subset via admin client
                 fetch_targets = [uid for uid in still_to_fetch if uid in authorized_ids]
@@ -239,15 +323,7 @@ def get_profiles_batch(user_ids: List[str], requesting_actor_id: Optional[str] =
                     except Exception as ex_adm:
                         print(f"[Profiles] Privileged fallback error: {ex_adm}")
 
-        still_missing = [uid for uid in missing_ids if uid not in result]
-        if still_missing and (actor_id is None or is_strict_admin(user_id=actor_id)):
-            db = get_local_db()
-            for uid in still_missing:
-                p = db.get_profile_by_id(uid)
-                if p:
-                    p["completion_pct"] = calculate_completion(p)
-                    set_memo(f"profile:{uid}:{actor_scope}", p, ttl_seconds=60)
-                    result[uid] = p
+        # Removed SQLite fallback in Supabase mode completely!
         return result
 
     # SQLite mode
@@ -348,6 +424,12 @@ def list_profiles_by_role(role: str) -> List[Dict]:
                 # Strictly protect: never include designated administrators in aspirants list
                 if role == "aspirant":
                     profile_rows = [p for p in profile_rows if p.get("role") != "admin"]
+
+                # For professional roles (guide, sme), user_roles is the verified source of truth!
+                # Strictly exclude any user whose role is not active in user_roles
+                # (e.g. revoked, suspended, pending NDA, or missing active grant).
+                if role in ("guide", "sme"):
+                    profile_rows = [p for p in profile_rows if p["id"] in role_uids]
 
                 # Exclude accounts that are temporarily suspended, archived, or pending deletion
                 profile_rows = [
@@ -522,7 +604,7 @@ def update_aspirant_profile(
     )
 
     updated_record["completion_pct"] = calculate_completion(updated_record)
-    set_memo(f"profile:{user_id}", updated_record, ttl_seconds=60)
+    invalidate_memo(f"profile:{user_id}")
     invalidate_memo("all_profiles")
     invalidate_memo("list_profiles_by_role:")
     invalidate_memo("active_profiles_for_role:")
@@ -598,7 +680,7 @@ def update_mentor_profile(
         pass
 
     updated_record["completion_pct"] = calculate_completion(updated_record)
-    set_memo(f"profile:{user_id}", updated_record, ttl_seconds=60)
+    invalidate_memo(f"profile:{user_id}")
     invalidate_memo("all_profiles")
     invalidate_memo("list_profiles_by_role:")
     invalidate_memo("active_profiles_for_role:")
@@ -636,7 +718,7 @@ def update_profile(user_id: str, updates: Dict) -> Tuple[Optional[Dict], Optiona
         get_local_db().upsert_profile(merged)
 
     merged["completion_pct"] = calculate_completion(merged)
-    set_memo(f"profile:{user_id}", merged, ttl_seconds=60)
+    invalidate_memo(f"profile:{user_id}")
     invalidate_memo("all_profiles")
     invalidate_memo("list_profiles_by_role:")
     invalidate_memo("active_profiles_for_role:")

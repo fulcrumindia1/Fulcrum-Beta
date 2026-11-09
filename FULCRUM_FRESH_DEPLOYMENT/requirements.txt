@@ -1,0 +1,13 @@
+# FULCRUM-INDIA (Cluster A)
+# Lightweight Production Architecture for Hostinger KVM2 & Dokploy
+# Supabase PostgreSQL + Auth Backend
+
+streamlit>=1.55.0,<=1.56.0
+supabase>=2.3.0
+pandas>=2.0.0
+plotly>=5.18.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+reportlab>=4.0.0
+playwright>=1.40.0
+psutil>=5.9.0

@@ -25,6 +25,9 @@ TEST COVERAGE:
 - Admin Command Metrics Accuracy & Multi-Role De-duplication
 """
 
+import os
+os.environ["DATA_BACKEND"] = "sqlite"
+
 import io
 import uuid
 import json
@@ -93,11 +96,18 @@ ADMIN_ID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
 ADMIN_EMAIL = "fulcrumindia1@gmail.com"
 
 
+@pytest.fixture(autouse=True)
+def force_sqlite_backend(monkeypatch):
+    monkeypatch.setenv("DATA_BACKEND", "sqlite")
+    from services.cache import invalidate_memo
+    invalidate_memo()
+
+
 @pytest.fixture(scope="module")
 def actors():
     """Provisions the exact 7 actors under the single Admin architecture."""
     db = get_local_db()
-    sb_admin = get_supabase_admin_client()
+    sb_admin = None
 
     # 1. Ensure single Admin is registered in SQLite and Supabase
     conn = db._get_conn()

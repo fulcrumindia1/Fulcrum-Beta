@@ -32,6 +32,7 @@ from services.governance import (
     resolve_guide_complaint,
     list_sme_conflicts
 )
+from services.cache import is_tab_active
 from services.inactivity import (
     list_inactivity_records,
     check_and_process_caseload_inactivity
@@ -660,9 +661,13 @@ def render_admin_sme_conflicts_tab(admin_id: str):
     smes = list_active_profiles_for_role("sme")
     conflicts = list_sme_conflicts()
 
-    tab_dir, tab_conf = st.tabs([f"🔬 SME Directory ({len(smes)})", f"⚠️ Conflict Declarations ({len(conflicts)})"])
+    tab_dir, tab_conf = st.tabs([
+        f"🔬 SME Directory ({len(smes)})",
+        f"⚠️ Conflict Declarations ({len(conflicts)})"
+    ], on_change="rerun", key="admin_gov_sme_tabs")
 
     with tab_dir:
+      if is_tab_active(tab_dir):
         for s in smes:
             p_data = s.get("profile_data", {})
             st.markdown(f"""
@@ -674,12 +679,15 @@ def render_admin_sme_conflicts_tab(admin_id: str):
             """, unsafe_allow_html=True)
 
     with tab_conf:
+      if is_tab_active(tab_conf):
         if not conflicts:
             st.info("No conflict of interest declarations on record.")
         else:
-            from services.profiles import list_all_profiles
+            from services.profiles import get_profiles_batch
             from services.relationships import unassign_sme
-            all_p = {p["id"]: p for p in list_all_profiles()}
+            sme_ids = [c.get("sme_id") for c in conflicts if c.get("sme_id")]
+            asp_ids = [c.get("aspirant_id") for c in conflicts if c.get("aspirant_id")]
+            all_p = get_profiles_batch(list(set(sme_ids + asp_ids)), requesting_actor_id=admin_id)
             for c in conflicts:
                 sme_p = all_p.get(c.get("sme_id", "")) or {}
                 asp_p = all_p.get(c.get("aspirant_id", "")) or {}
@@ -726,7 +734,10 @@ def render_admin_sme_conflicts_tab(admin_id: str):
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. CONTACT ASPIRANTS CONSOLE (WHATSAPP & GMAIL ENGAGEMENT)
 # ─────────────────────────────────────────────────────────────────────────────
-def render_admin_contact_aspirants_tab(admin_id: str, aspirants: list):
+def render_admin_contact_aspirants_tab(admin_id: str, aspirants: list = None):
+    if aspirants is None:
+        from services.profiles import list_profiles_by_role
+        aspirants = list_profiles_by_role("aspirant", requesting_actor_id=admin_id)
     from services.external_contact import (
         normalize_phone_number,
         validate_email_address,

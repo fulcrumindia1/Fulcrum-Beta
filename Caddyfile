@@ -1,4 +1,4 @@
-app.fulcrumindia.online {
+{$DOMAIN:app.fulcrumindia.online} {
     reverse_proxy fulcrum:8501
 
     encode gzip zstd

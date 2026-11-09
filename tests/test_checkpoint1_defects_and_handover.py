@@ -57,7 +57,11 @@ def test_04_selective_mentor_replacement_preserves_co_mentors(monkeypatch):
         "guides": [{"id": "g1", "full_name": "Primary Guide"}, {"id": "g2", "full_name": "Co-Guide"}]
     }
     monkeypatch.setattr("services.relationships.get_aspirant_mentors", lambda aid: mock_mentors)
-    monkeypatch.setattr("services.profiles.get_profile", lambda uid: {"id": uid, "role": "guide", "full_name": "Mentor"})
+    def fake_get_profile(uid, **kw):
+        if uid == SOLE_ADMIN_UUID:
+            return {"id": SOLE_ADMIN_UUID, "email": SOLE_ADMIN_EMAIL, "role": "admin", "full_name": "Fulcrum Administrator"}
+        return {"id": uid, "role": "guide", "full_name": "Mentor"}
+    monkeypatch.setattr("services.profiles.get_profile", fake_get_profile)
     monkeypatch.setattr("services.roles.user_has_active_role", lambda uid, r: True)
     monkeypatch.setattr("services.roles.is_assignable_mentor", lambda uid, r, **kw: (True, None))
 
@@ -98,7 +102,11 @@ def test_05_unassign_primary_guide_promotes_co_guide(monkeypatch):
         "guides": [{"id": "g1", "full_name": "Primary Guide"}, {"id": "g2", "full_name": "Co-Guide"}]
     }
     monkeypatch.setattr("services.relationships.get_aspirant_mentors", lambda aid: mock_mentors)
-    monkeypatch.setattr("services.profiles.get_profile", lambda uid: {"id": uid, "role": "guide", "full_name": "Mentor"})
+    def fake_get_profile(uid, **kw):
+        if uid == SOLE_ADMIN_UUID:
+            return {"id": SOLE_ADMIN_UUID, "email": SOLE_ADMIN_EMAIL, "role": "admin", "full_name": "Fulcrum Administrator"}
+        return {"id": uid, "role": "guide", "full_name": "Mentor"}
+    monkeypatch.setattr("services.profiles.get_profile", fake_get_profile)
 
     captured_update = {}
     mock_client = MagicMock()

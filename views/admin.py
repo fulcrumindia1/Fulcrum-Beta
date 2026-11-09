@@ -87,15 +87,18 @@ def render_admin_portal(admin_profile: dict):
                     st.success(f"Sync complete: {bf_res.get('backfilled', 0)} backfilled, {bf_res.get('already_existing', 0)} verified (Total Auth Users: {bf_res.get('total_auth_users', 0)}).")
                     st.rerun()
 
-    # Fetch stats (multi-role aware)
-    from services.roles import list_active_profiles_for_role
-    aspirants = list_active_profiles_for_role("aspirant")
-    guides = list_active_profiles_for_role("guide")
-    smes = list_active_profiles_for_role("sme")
-    all_schemes = list_schemes(active_only=False)
-    mentor_queries = list_mentor_admin_queries()
-    pending_directives = [q for q in mentor_queries if q.get("status") == "PENDING_ADMIN"]
-    active_journeys_count = count_active_journeys()
+    # Fetch real-time dashboard aggregates via lightweight database-side counts (PERF-01 optimized)
+    from services.admin_metrics import get_admin_dashboard_metrics
+    dash_metrics = get_admin_dashboard_metrics(admin_id=admin_id)
+    asp_count = dash_metrics.get("aspirants_count", 0)
+    guides_count = dash_metrics.get("guides_count", 0)
+    smes_count = dash_metrics.get("smes_count", 0)
+    active_journeys_count = dash_metrics.get("active_journeys_count", 0)
+    pending_directives_cnt = dash_metrics.get("pending_directives_count", 0)
+    schemes_count = dash_metrics.get("schemes_count", 0)
+    open_complaints_cnt = dash_metrics.get("open_complaints_count", 0)
+    pending_ssr_cnt = dash_metrics.get("pending_reviews_count", 0)
+    open_coi_cnt = dash_metrics.get("open_conflicts_count", 0)
 
     # 6 Top Metric Cards
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -103,21 +106,21 @@ def render_admin_portal(admin_profile: dict):
         st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-bottom:3px solid #6366f1; border-radius:12px; padding:0.9rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-size:0.72rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">Aspirants</div>
-            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{len(aspirants)}</div>
+            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{asp_count}</div>
         </div>
         """, unsafe_allow_html=True)
     with c2:
         st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-bottom:3px solid #10b981; border-radius:12px; padding:0.9rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-size:0.72rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">Active Guides</div>
-            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{len(guides)}</div>
+            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{guides_count}</div>
         </div>
         """, unsafe_allow_html=True)
     with c3:
         st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-bottom:3px solid #f59e0b; border-radius:12px; padding:0.9rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-size:0.72rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">Active SMEs</div>
-            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{len(smes)}</div>
+            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{smes_count}</div>
         </div>
         """, unsafe_allow_html=True)
     with c4:
@@ -131,31 +134,26 @@ def render_admin_portal(admin_profile: dict):
         st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-bottom:3px solid #ef4444; border-radius:12px; padding:0.9rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-size:0.72rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">Directives Needed</div>
-            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{len(pending_directives)}</div>
+            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{pending_directives_cnt}</div>
         </div>
         """, unsafe_allow_html=True)
     with c6:
         st.markdown(f"""
         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-bottom:3px solid #ec4899; border-radius:12px; padding:0.9rem; text-align:center; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
             <div style="font-size:0.72rem; font-weight:700; color:#64748B; text-transform:uppercase; letter-spacing:0.5px;">Schemes</div>
-            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{len(all_schemes)}</div>
+            <div style="font-size:1.75rem; font-weight:800; color:#0F172A; margin-top:2px;">{schemes_count}</div>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown("<div style='height:1.0rem;'></div>", unsafe_allow_html=True)
 
     # Global Pending Governance Triage Queue (Visible above all Admin Tabs)
-    from services.governance import list_guide_complaints, list_sme_conflicts
-    from services.scheme_reviews import list_scheme_support_reviews
-    open_complaints_cnt = len([c for c in (list_guide_complaints() or []) if str(c.get("status", "open")).upper() in ("OPEN", "PENDING", "UNDER_REVIEW")])
-    pending_ssr_cnt = len([r for r in (list_scheme_support_reviews() or []) if r.get("status") == "PENDING"])
-    open_coi_cnt = len([c for c in (list_sme_conflicts(only_conflicts=True) or []) if str(c.get("status", "DECLARED")).upper() in ("DECLARED", "OPEN", "UNDER_REVIEW")])
-    if len(pending_directives) > 0 or pending_ssr_cnt > 0 or open_complaints_cnt > 0 or open_coi_cnt > 0:
+    if pending_directives_cnt > 0 or pending_ssr_cnt > 0 or open_complaints_cnt > 0 or open_coi_cnt > 0:
         st.markdown(f"""
         <div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #F59E0B; border-radius:10px; padding:0.75rem 1.1rem; margin-bottom:1rem; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
             <div style="font-size:0.88rem; font-weight:700; color:#92400E;">⚡ Pending Governance Triage Queue</div>
             <div style="display:flex; gap:10px; font-size:0.8rem; font-weight:700; flex-wrap:wrap;">
-                <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">🏛️ {len(pending_directives)} Mentor Directives</span>
+                <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">🏛️ {pending_directives_cnt} Mentor Directives</span>
                 <span style="background:#FEF3C7; color:#B45309; padding:3px 10px; border-radius:999px;">📋 {pending_ssr_cnt} Scheme Reviews</span>
                 <span style="background:#FEE2E2; color:#991B1B; padding:3px 10px; border-radius:999px;">🛡️ {open_complaints_cnt} Open Complaints</span>
                 <span style="background:#FEF3C7; color:#92400E; padding:3px 10px; border-radius:999px;">⚖️ {open_coi_cnt} SME Conflicts</span>
@@ -185,11 +183,28 @@ def render_admin_portal(admin_profile: dict):
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
       if is_tab_active(tabs[0]):
+        from services.pagination import paginate_profiles, render_pagination_controls
         from services.roles import list_users_with_multi_roles
 
         st.subheader("Entrepreneurs Directory")
-        if not aspirants:
-            st.info("No Aspirants have signed up yet.")
+
+        c_asp_s1, c_asp_s2 = st.columns([3, 1])
+        with c_asp_s1:
+            asp_search_text = st.text_input("🔍 Search Entrepreneurs by Name or Email", placeholder="e.g. Mathew or mathew@enterprise.in", key="adm_asp_search_input")
+        with c_asp_s2:
+            asp_district_filter = st.selectbox("District Filter", ["ALL"] + list(MASTER_DISTRICTS_TN), key="adm_asp_district_filter")
+
+        cur_asp_page = st.session_state.get("adm_asp_page", 1)
+        aspirants, total_aspirants = paginate_profiles(
+            role="aspirant",
+            page=cur_asp_page,
+            page_size=25,
+            search=asp_search_text,
+            district=asp_district_filter
+        )
+
+        if not aspirants and total_aspirants == 0:
+            st.info("No Aspirants have signed up or match search criteria.")
         else:
             multi_roles_map = {u["id"]: u.get("active_roles", ["aspirant"]) for u in list_users_with_multi_roles()}
             col_sel1, col_sel2 = st.columns([2, 1])
@@ -202,11 +217,15 @@ def render_admin_portal(admin_profile: dict):
                     extra_str = f" [{', '.join(extra)}]" if extra else ""
                     return f"{a['full_name']} — {bname} ({dist}){extra_str}"
                 asp_options = {a["id"]: _format_asp_label(a) for a in aspirants}
-                selected_asp_id = st.selectbox("Select Entrepreneur to inspect", list(asp_options.keys()), format_func=lambda x: asp_options[x], key="adm_sel_asp")
+                cur_sel = st.session_state.get("adm_sel_asp")
+                default_idx = list(asp_options.keys()).index(cur_sel) if cur_sel in asp_options else 0
+                selected_asp_id = st.selectbox("Select Entrepreneur to inspect", list(asp_options.keys()), index=default_idx, format_func=lambda x: asp_options[x], key="adm_sel_asp")
+                if total_aspirants > 25:
+                    render_pagination_controls(total_aspirants, cur_asp_page, page_size=25, key_prefix="adm_asp")
             with col_sel2:
                 st.markdown("<div style='height: 1.75rem;'></div>", unsafe_allow_html=True)
 
-            curr_asp = get_profile(selected_asp_id)
+            curr_asp = get_profile(selected_asp_id, requesting_actor_id=admin_id)
             if curr_asp:
                 with col_sel2:
                     try:
@@ -515,9 +534,19 @@ def render_admin_portal(admin_profile: dict):
                     else:
                         st.warning("Please fill in all required fields.")
 
-        # Guides Table (with Batch-Prefetched Private Professional Photographs)
-        if not guides:
-            st.info("No guides currently registered. Create one above.")
+        # Guides Table (with Server-Side Pagination & Batch-Prefetched Private Professional Photographs)
+        cur_g_page = st.session_state.get("adm_g_page", 1)
+        c_gs1, c_gs2 = st.columns([3, 1])
+        with c_gs1:
+            g_search = st.text_input("🔍 Search Guides", placeholder="Search by name, email, expertise...", key="adm_g_search_box")
+        with c_gs2:
+            g_dist = st.selectbox("Guide District Filter", ["ALL"] + list(MASTER_DISTRICTS_TN), key="adm_g_dist_sel")
+
+        from services.pagination import paginate_guides, render_pagination_controls
+        guides, total_guides = paginate_guides(page=cur_g_page, page_size=25, search=g_search, district=g_dist)
+
+        if not guides and total_guides == 0:
+            st.info("No guides currently registered or matching search filters. Create one above.")
         else:
             from services.professional_photos import (
                 get_professional_photos_batch,
@@ -595,6 +624,8 @@ def render_admin_portal(admin_profile: dict):
                                     st.rerun()
                                 else:
                                     st.error(err_rm or "Remove failed.")
+            if total_guides > 25:
+                render_pagination_controls(total_guides, cur_g_page, page_size=25, key_prefix="adm_g")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 3: SMES MANAGEMENT & PROVISIONING
@@ -651,9 +682,19 @@ def render_admin_portal(admin_profile: dict):
                     else:
                         st.warning("Please fill in required fields.")
 
-        # SMEs Table (with Batch-Prefetched Private Professional Photographs)
-        if not smes:
-            st.info("No SMEs registered. Create one above.")
+        # SMEs Table (with Server-Side Pagination & Batch-Prefetched Private Professional Photographs)
+        cur_s_page = st.session_state.get("adm_s_page", 1)
+        c_ss1, c_ss2 = st.columns([3, 1])
+        with c_ss1:
+            s_search = st.text_input("🔍 Search SMEs", placeholder="Search by name, email, domain...", key="adm_s_search_box")
+        with c_ss2:
+            s_dist = st.selectbox("SME District Filter", ["ALL"] + list(MASTER_DISTRICTS_TN), key="adm_s_dist_sel")
+
+        from services.pagination import paginate_smes, render_pagination_controls
+        smes, total_smes = paginate_smes(page=cur_s_page, page_size=25, search=s_search, district=s_dist)
+
+        if not smes and total_smes == 0:
+            st.info("No SMEs registered or matching search filters. Create one above.")
         else:
             from services.professional_photos import (
                 get_professional_photos_batch,
@@ -731,6 +772,8 @@ def render_admin_portal(admin_profile: dict):
                                     st.rerun()
                                 else:
                                     st.error(err_rm or "Remove failed.")
+            if total_smes > 25:
+                render_pagination_controls(total_smes, cur_s_page, page_size=25, key_prefix="adm_s")
 
     # ─────────────────────────────────────────────────────────────
     # TAB 4: MENTOR ASSIGNMENTS (Admin Authority)
@@ -740,12 +783,27 @@ def render_admin_portal(admin_profile: dict):
         st.subheader("🎯 Assign Mentors to Entrepreneurs")
         st.markdown("<p style='color:#64748B; font-size:0.9rem;'>The Admin is the exclusive authority for pairing Aspirants with Guides and SMEs.</p>", unsafe_allow_html=True)
 
-        if not aspirants:
+        from services.pagination import paginate_profiles
+        from services.relationships import get_all_relationships, get_aspirant_mentors, assign_guide, assign_sme, unassign_guide, unassign_sme
+        from services.profiles import get_profiles_batch, list_profiles_by_role
+
+        guides = list_profiles_by_role("guide", requesting_actor_id=admin_id)
+        smes = list_profiles_by_role("sme", requesting_actor_id=admin_id)
+        guide_dict = {g["id"]: f"{g.get('full_name', 'Guide')} — {g.get('profile_data',{}).get('expertise','Guide')}" for g in guides}
+        sme_dict = {s["id"]: f"{s.get('full_name', 'SME')} — {s.get('profile_data',{}).get('expertise','SME')}" for s in smes}
+
+        c_as_sch1, c_as_sch2 = st.columns([3, 1])
+        with c_as_sch1:
+            asg_search = st.text_input("🔍 Search Entrepreneurs to Assign", placeholder="Search by name, email, or district...", key="asg_asp_search_box")
+        with c_as_sch2:
+            asg_dist = st.selectbox("Aspirant District Filter", ["ALL"] + list(MASTER_DISTRICTS_TN), key="asg_asp_dist_sel")
+
+        assignable_aspirants, total_assignable = paginate_profiles(role="aspirant", page=1, page_size=100, search=asg_search, district=asg_dist)
+
+        if not assignable_aspirants and total_assignable == 0:
             st.info("No Aspirants available for assignment yet. When entrepreneurs register, you can assign Guides and SMEs to them here.")
         else:
-            asp_dict = {a["id"]: f"{a['full_name']} ({a.get('district','Madurai')})" for a in aspirants}
-            guide_dict = {g["id"]: f"{g['full_name']} — {g.get('profile_data',{}).get('expertise','Guide')}" for g in guides}
-            sme_dict = {s["id"]: f"{s['full_name']} — {s.get('profile_data',{}).get('expertise','SME')}" for s in smes}
+            asp_dict = {a["id"]: f"{a.get('full_name', 'Entrepreneur')} ({a.get('district','Tamil Nadu')})" for a in assignable_aspirants}
 
             col_as1, col_as2 = st.columns(2)
 
@@ -819,16 +877,33 @@ def render_admin_portal(admin_profile: dict):
                 _u_msg = st.session_state.pop("unassign_mentor_msg")
                 st.success(_u_msg)
 
-            active_allocations = []
-            seen_alloc_aids = set()
-            for a in aspirants:
-                aid_curr = a.get("id")
-                if not aid_curr or aid_curr in seen_alloc_aids:
+            active_rels = get_all_relationships()
+            valid_active_rels = []
+            seen_aids = set()
+            for r in active_rels:
+                aid_curr = r.get("aspirant_id")
+                if not aid_curr or aid_curr in seen_aids:
                     continue
-                seen_alloc_aids.add(aid_curr)
-                m = get_aspirant_mentors(aid_curr)
-                if m.get("guide") or m.get("sme") or m.get("guides") or m.get("smes"):
-                    active_allocations.append((a, m))
+                has_mentor = bool(r.get("guide_id") or r.get("sme_id") or r.get("guide_ids") or r.get("sme_ids"))
+                if has_mentor:
+                    seen_aids.add(aid_curr)
+                    valid_active_rels.append(r)
+
+            if not valid_active_rels:
+                st.info("No active mentor allocations yet. Pair an entrepreneur using the forms above.")
+            else:
+                asp_ids_to_fetch = [r["aspirant_id"] for r in valid_active_rels]
+                asp_profiles_map = get_profiles_batch(asp_ids_to_fetch, requesting_actor_id=admin_id)
+
+                active_allocations = []
+                for r in valid_active_rels:
+                    aid_curr = r["aspirant_id"]
+                    asp_prof = asp_profiles_map.get(aid_curr)
+                    if not asp_prof:
+                        continue
+                    m = get_aspirant_mentors(aid_curr)
+                    if m.get("guide") or m.get("sme") or m.get("guides") or m.get("smes"):
+                        active_allocations.append((asp_prof, m))
 
             if not active_allocations:
                 st.info("No active mentor allocations yet. Pair an entrepreneur using the forms above.")
@@ -944,9 +1019,10 @@ def render_admin_portal(admin_profile: dict):
         subtab_inq, subtab_ssr = st.tabs([
             "🏛️ Mentor Directives & Inquiries",
             "📋 Scheme Support Reviews (Guide Escalations)"
-        ])
+        ], on_change="rerun", key="admin_mentor_inquiries_subtabs")
 
         with subtab_inq:
+          if is_tab_active(subtab_inq):
             st.subheader("🏛️ Mentor Inquiries & Administrative Directives")
             st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Official Program Directorate Governance: Guides and Domain SMEs submit institutional roadblocks on behalf of their assigned entrepreneurs. Review inquiries, issue binding Administrative Directives, or assign Co-Guides (Guide B) and specialized Domain SMEs. <em>(Strictly invisible to the entrepreneur)</em></p>", unsafe_allow_html=True)
 
@@ -1066,6 +1142,7 @@ def render_admin_portal(admin_profile: dict):
                                         st.error(err or "Failed to issue directive.")
 
         with subtab_ssr:
+          if is_tab_active(subtab_ssr):
             st.subheader("📋 Scheme Support Reviews & Authoritative Exceptions")
             st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Caseload Guides escalate high-potential opportunities that require administrative evaluation or policy exceptions. Review guide justifications, inspect match scores, and approve or reject schemes.</p>", unsafe_allow_html=True)
 
@@ -1326,7 +1403,7 @@ def render_admin_portal(admin_profile: dict):
     # ─────────────────────────────────────────────────────────────
     with tabs[10]:
         if is_tab_active(tabs[10]):
-            render_admin_contact_aspirants_tab(admin_id, aspirants)
+            render_admin_contact_aspirants_tab(admin_id, None)
 
     # ─────────────────────────────────────────────────────────────
     # TAB 12: SME CONFLICT GOVERNANCE

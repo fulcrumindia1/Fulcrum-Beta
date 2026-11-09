@@ -27,6 +27,9 @@ VERIFIES:
 - Step 20: Direct backend calls with forged viewer IDs or without assignment cannot bypass authorization.
 """
 
+import os
+os.environ["DATA_BACKEND"] = "sqlite"
+
 import io
 import uuid
 import json
@@ -67,6 +70,13 @@ from services.aspirant_photos import (
 )
 from services.journey import get_journey_timeline
 from services.schemes import match_schemes_for_aspirant
+from services.cache import invalidate_memo
+
+@pytest.fixture(autouse=True)
+def reset_test_env(monkeypatch):
+    """Enforce local backend and clear memoization before each test."""
+    monkeypatch.setenv("DATA_BACKEND", "sqlite")
+    invalidate_memo()
 
 # Strict Single Admin Architecture
 ADMIN_ID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
@@ -84,8 +94,13 @@ def make_test_image(width: int = 120, height: int = 120, color: tuple = (37, 99,
 @pytest.fixture(scope="module")
 def photo_test_context():
     """Sets up test actors and baseline data across local DB and Supabase."""
+    import os
+    orig_backend = os.environ.get("DATA_BACKEND")
+    os.environ["DATA_BACKEND"] = "sqlite"
+    invalidate_memo()
+
     db = get_local_db()
-    sb_admin = get_supabase_admin_client()
+    sb_admin = None
 
     # 1. Register Single Admin
     conn = db._get_conn()
@@ -216,6 +231,10 @@ def photo_test_context():
     activate_role(actors["hybrid"]["id"], "sme")
 
     yield actors
+
+    if orig_backend is not None:
+        os.environ["DATA_BACKEND"] = orig_backend
+    invalidate_memo()
 
     # Cleanup test users
     if sb_admin:

@@ -1,0 +1,50 @@
+# Git & IDE
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+
+# Secrets & Local credentials (NEVER package into Docker)
+.streamlit/secrets.toml
+.env
+*.pem
+*.key
+
+# Local SQLite databases (Disposability invariant)
+*.db
+cluster_a.db
+
+# Backups & Data Dumps
+backups/
+backups/*
+
+# Documentation, Markdown Reports & SQL files
+*.md
+*.sql
+*.txt
+DOCUMENTATION/
+brain/
+artifacts/
+
+# Temporary & Test scripts
+scratch/
+scratch/*
+tests/
+tests/*
+verify_*.py
+test_*.py
+run_full_verification.py
+import_schemes.py
+_check_*.py
+*.pdf
+*.log
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+build/
+dist/

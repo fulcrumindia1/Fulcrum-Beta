@@ -1,0 +1,952 @@
+"""
+pages/sme.py — SME Dashboard for FULCRUM-INDIA (Cluster A)
+=========================================================
+SME Experience:
+- Overview of assigned specialized advisory cases (GST, FSSAI, Patents, Legal).
+- Inspect Aspirant venture profile and full chronological Journey.
+- [ + Add Journey Entry ]: Contribute technical domain support.
+- Manage/delete only their own contributions.
+"""
+
+import streamlit as st
+import html
+import inspect
+from datetime import date
+
+def _safe_esc(val, default=""):
+    """Crash-proof HTML escape that safely handles None, booleans, and non-string types."""
+    if val is None:
+        return default
+    return html.escape(str(val))
+
+from services.cache import is_tab_active
+from services.relationships import get_assigned_aspirants_for_sme, get_assignment_history, get_aspirant_mentors
+from services.profiles import get_profile, update_mentor_profile
+from services.journey import get_journey_timeline, add_sme_contribution, soft_delete_event, get_standard_role_label
+from views.journey_edit_dialog import render_edit_journey_dialog
+from services.constants import MASTER_DISTRICTS_TN
+from services.help_requests import (
+    list_sme_requests,
+    sme_respond_request,
+    create_mentor_admin_query,
+    list_mentor_admin_queries,
+    create_mentor_consultation
+)
+
+def render_sme_portal(user_profile: dict):
+    sme_id = user_profile["id"]
+    sme_name = user_profile.get("full_name", "Specialist")
+    domain_focus = user_profile.get("profile_data", {}).get("expertise") or "Domain Advisory"
+
+    from services.roles import user_has_active_role, get_user_role_grants
+    if not user_has_active_role(sme_id, "sme"):
+        roles = get_user_role_grants(sme_id)
+        matching_grant = next((r for r in roles if r.get("role") == "sme"), None)
+        status = (matching_grant.get("status") if matching_grant else "none").lower()
+        if status == "pending_nda":
+            st.warning("⚠️ Your SME role is awaiting workspace activation and NDA verification. Please complete the activation step.")
+        elif status == "suspended":
+            reason = matching_grant.get("status_reason") or "Administrative review"
+            st.warning(f"⚠️ Your SME role is temporarily suspended ({reason}). Access to entrepreneur dossiers is on hold.")
+        elif status == "revoked":
+            st.error("🚫 Your SME role grant has been revoked by platform administration. Access to the SME Workspace has been removed.")
+        else:
+            st.error("🚫 Access to the SME Workspace is restricted. You do not hold an active SME role grant.")
+        st.session_state["active_workspace"] = "aspirant"
+        return
+
+    st.markdown(f"""
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1.5rem; padding-bottom:1rem; border-bottom:1px solid #E2E8F0;">
+        <div>
+            <div style="font-size:0.8rem; font-weight:800; text-transform:uppercase; letter-spacing:1px; color:#D97706;">SME Advisory Portal</div>
+            <h1 style="font-size:2rem; font-weight:800; margin:0; color:#0F172A;">Welcome, {sme_name}</h1>
+            <p style="font-size:0.95rem; color:#475569; margin-top:0.25rem;">
+                Subject Matter Expertise & Specialized Technical Advisory Workspace · {domain_focus}
+            </p>
+        </div>
+        <div style="text-align:right;">
+            <span style="display:inline-block; padding:4px 14px; border-radius:12px; font-size:0.85rem; font-weight:700; background:#FFFBEB; color:#D97706; border:1px solid #FDE68A;">
+                Role: Verified SME
+            </span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    tabs = st.tabs([
+        "👥 My Assigned Cases",
+        "💬 All Consultations Overview",
+        "👤 My Profile"
+    ], on_change="rerun", key="sme_nav_tabs")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 1: MY ASSIGNED CASES (CASELOAD WORKSPACE)
+    # ─────────────────────────────────────────────────────────────
+    with tabs[0]:
+      if is_tab_active(tabs[0]):
+        assigned_aspirants = get_assigned_aspirants_for_sme(sme_id)
+        if not assigned_aspirants:
+            st.info("No cases currently assigned to you. When the Admin assigns an entrepreneur to your advisory roster, or when an entrepreneur submits a domain consultation query, they will appear here.")
+        else:
+            all_sme_tickets = list_sme_requests(sme_id) or []
+            open_tickets_by_asp = {}
+            for _t in all_sme_tickets:
+                if _t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"):
+                    _aid = _t.get("aspirant_id")
+                    open_tickets_by_asp[_aid] = open_tickets_by_asp.get(_aid, 0) + 1
+
+            sorted_assigned_aspirants = sorted(
+                assigned_aspirants,
+                key=lambda a: (-open_tickets_by_asp.get(a["id"], 0), str(a.get("full_name") or "").lower())
+            )
+
+            asp_options = {}
+            for a in sorted_assigned_aspirants:
+                _open_n = open_tickets_by_asp.get(a["id"], 0)
+                _badge = f"[🔴 {_open_n} Open]" if _open_n > 0 else "[🟢 Active]"
+                _bname = a.get("profile_data", {}).get("business", {}).get("business_name", "Enterprise")
+                asp_options[a["id"]] = f"{_badge} {a['full_name']} — {_bname} ({a.get('district', 'Tamil Nadu')})"
+
+            default_idx = 0
+            if st.session_state.get("sme_selected_aspirant") in asp_options:
+                default_idx = list(asp_options.keys()).index(st.session_state["sme_selected_aspirant"])
+
+            selected_asp_id = st.selectbox(
+                "Select Entrepreneur for Domain Advisory",
+                list(asp_options.keys()),
+                format_func=lambda x: asp_options[x],
+                index=default_idx,
+                key="sme_asp_select"
+            )
+            st.session_state["sme_selected_aspirant"] = selected_asp_id
+
+            curr_asp = next((a for a in assigned_aspirants if a["id"] == selected_asp_id), None)
+            if curr_asp:
+                st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
+
+                # Calculate direct consultations from this mentee directed to this SME
+                asp_tickets = [t for t in all_sme_tickets if t.get("aspirant_id") == selected_asp_id]
+                open_cnt = sum(1 for t in asp_tickets if t.get("status") in ["OPEN", "WAITING_ON_GUIDE_SME", "IN_PROGRESS", "ACTION_REQUIRED"])
+
+                # 4 Dedicated Navigation Sections for Selected Aspirant (No Scheme Matches for SME)
+                consult_label = f"💬 Consultations ({open_cnt})" if open_cnt > 0 else "💬 Consultations"
+                sme_subtab_keys = ["profile", "journey", "guidance_team", "consultations"]
+                sme_subtab_labels = {
+                    "profile": "👤 Profile",
+                    "journey": "🎬 Journey",
+                    "guidance_team": "🤝 Guidance Team",
+                    "consultations": consult_label
+                }
+
+                sub_key = f"sme_subtab_{selected_asp_id}"
+                pending_key = f"sme_subtab_pending_{selected_asp_id}"
+                if pending_key in st.session_state:
+                    st.session_state[sub_key] = st.session_state.pop(pending_key)
+                elif sub_key not in st.session_state or st.session_state[sub_key] not in sme_subtab_keys:
+                    st.session_state[sub_key] = "profile"
+
+                active_sme_sub = st.pills(
+                    "SME Mentee Navigation",
+                    options=sme_subtab_keys,
+                    format_func=lambda k: sme_subtab_labels.get(k, k),
+                    key=sub_key,
+                    label_visibility="collapsed"
+                )
+                if not active_sme_sub:
+                    active_sme_sub = st.session_state.get(sub_key, "profile")
+
+
+                # ─────────────────────────────────────────────────────────
+                # SUBTAB 1: ASPIRANT PROFILE
+                # ─────────────────────────────────────────────────────────
+                if active_sme_sub == "profile":
+                    asp_full = get_profile(selected_asp_id) or curr_asp
+                    p_data = asp_full.get("profile_data", {})
+                    pers = p_data.get("personal", {})
+                    prof = p_data.get("professional", {})
+                    biz = p_data.get("business", {})
+                    demo = p_data.get("demographics", {})
+
+                    from services.aspirant_photos import render_aspirant_photo_header
+                    render_aspirant_photo_header(
+                        aspirant_profile=asp_full,
+                        viewer_id=user_profile["id"],
+                        viewer_role="sme",
+                        accent_color="#D97706"
+                    )
+
+                    st.markdown("#### 1. Personal Details")
+                    cp1, cp2, cp3 = st.columns(3)
+                    with cp1:
+                        st.markdown(f"**Full Name:** {asp_full.get('full_name')}")
+                        st.markdown(f"**Email:** {asp_full.get('email')}")
+                    with cp2:
+                        st.markdown(f"**Phone:** {asp_full.get('phone', 'N/A')}")
+                        st.markdown(f"**Gender:** {pers.get('gender', 'N/A')}")
+                    with cp3:
+                        st.markdown(f"**DOB:** {pers.get('dob', 'N/A')}")
+                        st.markdown(f"**Address:** {pers.get('address', 'N/A')}")
+
+                    st.markdown("---")
+
+                    st.markdown("#### 2. Professional Background")
+                    cpr1, cpr2 = st.columns(2)
+                    with cpr1:
+                        st.markdown(f"**Education / Qualification:** {prof.get('education', 'N/A')}")
+                        st.markdown(f"**Key Skills:** {prof.get('skills', 'N/A')}")
+                    with cpr2:
+                        st.markdown(f"**Experience:** {prof.get('experience', 'N/A')}")
+                        st.markdown(f"**Certifications / Training:** {prof.get('certifications', 'N/A')}")
+
+                    st.markdown("---")
+
+                    st.markdown("#### 3. Business & Venture Details")
+                    cb1, cb2, cb3 = st.columns(3)
+                    with cb1:
+                        st.markdown(f"**Business Name:** {biz.get('business_name', 'N/A')}")
+                        st.markdown(f"**Business Type:** {biz.get('business_type', 'N/A')}")
+                    with cb2:
+                        st.markdown(f"**Industry Sector:** {biz.get('sector', 'N/A')}")
+                        st.markdown(f"**Development Stage:** {biz.get('stage', 'N/A')}")
+                    with cb3:
+                        st.markdown(f"**Annual Revenue:** {biz.get('revenue', 'N/A')}")
+                        st.markdown(f"**Employee Count:** {biz.get('employee_count', 0)}")
+
+                    st.markdown("---")
+
+                    st.markdown("#### 4. Demographics & Eligibility Criteria")
+                    cd1, cd2, cd3 = st.columns(3)
+                    with cd1:
+                        st.markdown(f"**District:** {asp_full.get('district', 'N/A')}")
+                        st.markdown(f"**State:** {asp_full.get('state', 'Tamil Nadu')}")
+                    with cd2:
+                        st.markdown(f"**Founder Category:** {demo.get('founder_category', 'General')}")
+                    with cd3:
+                        dpiit_tag = "✅ Yes" if demo.get("is_dpiit_recognized") else "❌ No"
+                        tn_tag = "✅ Yes" if demo.get("is_startuptn_registered") else "❌ No"
+                        women_tag = "✅ Yes" if demo.get("is_women_led") else "❌ No"
+                        st.markdown(f"**DPIIT Recognized:** {dpiit_tag}")
+                        st.markdown(f"**StartupTN Registered:** {tn_tag}")
+                        st.markdown(f"**Women-Led Enterprise:** {women_tag}")
+
+                # ─────────────────────────────────────────────────────────
+                # SUBTAB 2: ASPIRANT JOURNEY & DOMAIN CONTRIBUTION
+                # ─────────────────────────────────────────────────────────
+                elif active_sme_sub == "journey":
+                    if f"sme_journey_success_{selected_asp_id}" in st.session_state:
+                        st.success(st.session_state.pop(f"sme_journey_success_{selected_asp_id}"))
+
+                    st.markdown(f"### Domain Mentorship: {curr_asp['full_name']}")
+
+                    with st.expander(f"➕ Log Domain Guidance for {curr_asp['full_name']}'s Journey", expanded=False):
+                        with st.form("form_sme_add_entry_sub"):
+                            col_sm1, col_sm2 = st.columns(2)
+                            with col_sm1:
+                                s_title = st.text_input("Title / Advisory Topic", placeholder="e.g. GST Registration & Invoicing Audit")
+                                s_domain_sel = st.selectbox("Specialized Domain", [
+                                    "GST & Taxation",
+                                    "FSSAI & Food Standards",
+                                    "Patents & Trademark",
+                                    "Labor & Statutory Compliance",
+                                    "Export / Import Code",
+                                    "Technical Architecture",
+                                    "Other / Specialized Compliance (Specify)"
+                                ])
+                                s_domain_custom = st.text_input("Custom Advisory Domain (if 'Other' selected above)", placeholder="e.g. Environmental Clearance (PCB)", key="sme_custom_domain_sub")
+                                s_domain = s_domain_custom.strip() if (s_domain_sel == "Other / Specialized Compliance (Specify)" and s_domain_custom and s_domain_custom.strip()) else s_domain_sel
+                            with col_sm2:
+                                s_date = st.date_input("Advisory Date", value=date.today())
+                            s_desc = st.text_area("Detailed Recommendation / Deliverable", placeholder="Explained GST threshold exemptions, set up HSN codes for millet flour, and verified bank statement reconciliation.")
+
+                            if st.form_submit_button("SAVE DOMAIN CONTRIBUTION", type="primary"):
+                                if s_title and s_desc:
+                                    ev, err = add_sme_contribution(
+                                        aspirant_id=selected_asp_id,
+                                        sme_id=sme_id,
+                                        title=s_title,
+                                        description=s_desc,
+                                        domain=s_domain,
+                                        event_date=s_date.isoformat()
+                                    )
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "journey"
+                                    if ev:
+                                        st.session_state[f"sme_journey_success_{selected_asp_id}"] = f"Added domain guidance to {curr_asp['full_name']}'s Journey!"
+                                        st.rerun()
+                                    else:
+                                        st.error(err or "Failed to record contribution.")
+                                else:
+                                    st.warning("Please fill in both title and recommendation.")
+
+                    st.markdown(f"#### Complete Journey Narrative Spine")
+                    if "del_event_success" in st.session_state:
+                        _d_msg = st.session_state.pop("del_event_success")
+                        st.success(_d_msg)
+                        try:
+                            st.toast(_d_msg, icon="✅")
+                        except Exception:
+                            pass
+                    if "del_event_err" in st.session_state:
+                        st.error(st.session_state.pop("del_event_err"))
+
+                    timeline = get_journey_timeline(selected_asp_id)
+                    if not timeline:
+                        st.info("No journey events recorded yet.")
+                    else:
+                        for event in timeline:
+                            actor_role = event.get("actor_role", "aspirant")
+                            actor_name = event.get("actor_name")
+                            if actor_role == "system":
+                                actor_name = "Platform Intelligence"
+                            elif not actor_name:
+                                if actor_role == "aspirant":
+                                    actor_name = "Entrepreneur"
+                                elif actor_role == "guide":
+                                    actor_name = "Dedicated Guide"
+                                elif actor_role == "sme":
+                                    actor_name = "Domain SME"
+                                else:
+                                    actor_name = "Advisory Council"
+                            std_role = get_standard_role_label(actor_role)
+                            ev_data = event.get("event_data", {})
+                            raw_title = ev_data.get("title") or event.get("event_type") or "Advisory Event"
+                            raw_desc = ev_data.get("description", "")
+                            title = html.escape(str(raw_title))
+                            desc = html.escape(str(raw_desc)).replace("\n", "<br>")
+                            date_display = str(event.get("event_date", ""))[:10]
+
+                            badge_bg = "#6366f1" if actor_role == "aspirant" else "#10b981" if actor_role == "guide" else "#f59e0b" if actor_role == "sme" else "#ec4899" if actor_role == "admin" else "#64748b"
+
+                            col_t, col_b, col_act = st.columns([1.2, 5.2, 0.8])
+                            with col_t:
+                                st.markdown(f"""
+                                <div style="font-weight:700; color:#64748B; font-size:0.9rem;">{date_display}</div>
+                                <span style="display:inline-block; font-size:0.7rem; font-weight:800; padding:2px 8px; border-radius:10px; background:{badge_bg}; color:#ffffff; text-transform:uppercase;">{std_role}</span>
+                                """, unsafe_allow_html=True)
+                            with col_b:
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:0.9rem 1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">
+                                    <div style="font-weight:700; color:#0F172A; font-size:1.05rem;">{title}</div>
+                                    <div style="color:#334155; font-size:0.9rem; margin-top:0.3rem; line-height:1.5;">{desc}</div>
+                                    <div style="font-size:0.75rem; color:#64748B; margin-top:0.4rem;">Contributor: <strong>{actor_name}</strong> ({std_role})</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            with col_act:
+                                if event.get("actor_id") == sme_id and actor_role == "sme":
+                                    col_se, col_sd = st.columns(2)
+                                    with col_se:
+                                        if st.button("✏️", key=f"sme_edit_{event['id']}", help="Edit your advisory contribution"):
+                                            render_edit_journey_dialog(event, sme_id, "sme")
+                                    with col_sd:
+                                        confirm_skey = f"confirm_sme_del_{event['id']}"
+                                        if st.session_state.get(confirm_skey):
+                                            if st.button("✓ Yes", key=f"yes_sme_del_{event['id']}", type="primary", help="Confirm delete"):
+                                                st.session_state.pop(confirm_skey, None)
+                                                ok, err = soft_delete_event(event["id"], sme_id, "sme")
+                                                st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "journey"
+                                                if ok:
+                                                    st.session_state["del_event_success"] = "Domain contribution deleted."
+                                                else:
+                                                    st.session_state["del_event_err"] = err or "Could not delete contribution."
+                                                st.rerun()
+                                            if st.button("✕", key=f"no_sme_del_{event['id']}", help="Cancel delete"):
+                                                st.session_state.pop(confirm_skey, None)
+                                                st.rerun()
+                                        else:
+                                            if st.button("🗑️", key=f"sme_del_sub_{event['id']}", help="Delete your contribution"):
+                                                st.session_state[confirm_skey] = True
+                                                st.rerun()
+
+                # ─────────────────────────────────────────────────────────
+                # SUBTAB 3: GUIDANCE TEAM
+                # ─────────────────────────────────────────────────────────
+                elif active_sme_sub == "guidance_team":
+                    st.markdown(f"### Guidance Team for {curr_asp['full_name']}")
+                    st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Institutional mentors and specialized domain experts collaborating on this entrepreneur's advisory roadmap.</p>", unsafe_allow_html=True)
+                    mentors = get_aspirant_mentors(selected_asp_id)
+                    m_guides = mentors.get("guides") or ([mentors.get("guide")] if mentors.get("guide") else [])
+                    m_sme = mentors.get("sme")
+                    m_smes = mentors.get("smes", [])
+                    if not m_smes and m_sme:
+                        m_smes = [m_sme]
+
+                    col_mg1, col_mg2 = st.columns(2)
+                    with col_mg1:
+                        g_hdr = f"🧭 Assigned Guides ({len(m_guides)})" if len(m_guides) > 1 else "🧭 Assigned Guide"
+                        st.markdown(f"#### {g_hdr}")
+                        if m_guides:
+                            for g_idx, g_item in enumerate(m_guides):
+                                gp = g_item.get("profile_data", {})
+                                g_role_badge = "PRIMARY GUIDE" if g_idx == 0 else f"CO-GUIDE #{g_idx + 1}"
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #10b981; border-radius:12px; padding:1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <div style="font-size:1.2rem; font-weight:800; color:#0F172A;">{_safe_esc(g_item.get('full_name'))}</div>
+                                        <span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.72rem; font-weight:800; padding:2px 8px; border-radius:6px;">{g_role_badge}</span>
+                                    </div>
+                                    <div style="color:#059669; font-weight:600; font-size:0.85rem; margin-bottom:0.5rem;">Dedicated Enterprise Mentor · {_safe_esc(g_item.get('district', 'Tamil Nadu'))}</div>
+                                    <p style="font-size:0.88rem; color:#334155; margin-bottom:4px;"><strong>Expertise:</strong> {_safe_esc(gp.get('expertise', 'Enterprise Guidance'))}</p>
+                                    <p style="font-size:0.82rem; color:#64748B; margin-top:0.5rem;"><em>"{_safe_esc(gp.get('bio', 'Assigned by Administrator'))}"</em></p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.info("No Guide assigned.")
+
+                    with col_mg2:
+                        smes_count = len(m_smes)
+                        header_label = f"🔬 Domain Advisory Panel ({smes_count} Specialists)" if smes_count > 1 else "🔬 Assigned Domain SME"
+                        st.markdown(f"#### {header_label}")
+                        if m_smes:
+                            for idx, sp_item in enumerate(m_smes):
+                                sp = sp_item.get("profile_data", {})
+                                s_name = sp_item.get("full_name", "Specialist")
+                                s_dist = sp_item.get("district", "Tamil Nadu")
+                                s_exp = sp.get("expertise") or sp.get("industry") or "Technical & Compliance Advisory"
+                                is_self = (sp_item.get("id") == sme_id)
+                                border_col = "#D97706" if is_self else "#CBD5E1"
+                                self_badge = '<span style="background:#FEF3C7; color:#B45309; font-size:0.7rem; font-weight:800; padding:2px 6px; border-radius:4px; margin-left:6px;">YOU</span>' if is_self else ''
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid {border_col}; border-left:4px solid #f59e0b; border-radius:12px; padding:1.2rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+                                    <div style="font-size:1.15rem; font-weight:800; color:#0F172A;">{s_name}{self_badge}</div>
+                                    <div style="color:#D97706; font-weight:600; font-size:0.85rem; margin-bottom:0.4rem;">{s_exp} · {s_dist}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.info("No Domain SMEs assigned.")
+
+                # ─────────────────────────────────────────────────────────
+                # SUBTAB 4: DIRECT CONSULTATIONS & DOMAIN QUERIES
+                # ─────────────────────────────────────────────────────────
+                elif active_sme_sub == "consultations":
+                    if f"sme_consult_msg_{selected_asp_id}" in st.session_state:
+                        c_succ = st.session_state.pop(f"sme_consult_msg_{selected_asp_id}")
+                        st.success(c_succ)
+                        try:
+                            st.toast(c_succ, icon="💬")
+                        except Exception:
+                            pass
+
+                    open_pill = f' <span style="background:#FEF3C7; color:#B45309; font-size:0.75rem; font-weight:800; padding:2px 8px; border-radius:6px; vertical-align:middle;">{open_cnt} Open</span>' if open_cnt > 0 else ""
+                    st.markdown(f"### Domain Consultations: {curr_asp['full_name']}{open_pill}", unsafe_allow_html=True)
+                    st.markdown(f"<p style='color:#64748B; font-size:0.9rem;'>Technical and compliance consultation requests with <strong>{curr_asp['full_name']}</strong>.</p>", unsafe_allow_html=True)
+
+                    with st.expander(f"➕ Issue Domain Advisory / Check-in to {curr_asp['full_name']}", expanded=False):
+                        with st.form(f"form_sme_init_consult_{selected_asp_id}"):
+                            c_sc1, c_sc2 = st.columns([2, 1])
+                            with c_sc1:
+                                sc_subj = st.text_input("Subject / Technical Inquiry *", placeholder="e.g. FSSAI Lab Nutrition Testing Verification Required", key=f"sc_subj_{selected_asp_id}")
+                            with c_sc2:
+                                sc_cat_options = {
+                                    "GST_TAXATION": "GST, Taxation & Direct Tax",
+                                    "LEGAL_COMPLIANCE": "Company Law & Statutory Legal",
+                                    "FSSAI_FOOD": "FSSAI & Lab Testing Standards",
+                                    "PATENTS_IPR": "Patents & Trademark Protection",
+                                    "OTHERS": "Other Specialized Technical Guidance"
+                                }
+                                sc_cat = st.selectbox("Domain Category", list(sc_cat_options.keys()), format_func=lambda k: sc_cat_options[k], key=f"sc_cat_{selected_asp_id}")
+
+                            sc_prio = st.selectbox("Priority", ["LOW", "MEDIUM", "HIGH", "URGENT"], index=1, key=f"sc_prio_{selected_asp_id}")
+                            sc_msg = st.text_area("Advisory Instructions / Action Required *", placeholder=f"Specify what technical documentation or compliance proof {curr_asp['full_name']} must provide...", height=90, key=f"sc_msg_{selected_asp_id}")
+
+                            if st.form_submit_button("🚀 SEND ADVISORY NOTICE TO ASPIRANT", type="primary"):
+                                if not sc_subj.strip():
+                                    st.warning("Please provide a subject for this advisory.")
+                                elif not sc_msg.strip():
+                                    st.warning("Please provide the advisory instructions / action required.")
+                                else:
+                                    req, err = create_mentor_consultation(
+                                        mentor_id=sme_id,
+                                        mentor_role="sme",
+                                        aspirant_id=selected_asp_id,
+                                        subject=sc_subj.strip(),
+                                        message=sc_msg.strip(),
+                                        priority=sc_prio,
+                                        category=sc_cat
+                                    )
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                    if req:
+                                        st.session_state[f"sme_consult_msg_{selected_asp_id}"] = f"Advisory notice dispatched to {curr_asp['full_name']}!"
+                                        st.rerun()
+                                    else:
+                                        st.error(err or "Failed to dispatch advisory notice.")
+
+                    from services.governance import check_sme_has_conflict
+                    if check_sme_has_conflict(sme_id, selected_asp_id):
+                        st.warning("⚖️ Conflict of Interest Declared — advisory responses on this case are paused pending Admin reassignment.")
+
+                    if not asp_tickets:
+                        st.info(f"No domain advisory requests currently recorded with {curr_asp['full_name']}. You may initiate a domain check-in above.")
+                    else:
+                        for t in asp_tickets:
+                            t_status = t.get("status", "OPEN")
+                            st_color = "#f59e0b" if t_status in ("OPEN", "WAITING_ON_ASPIRANT") else "#dc2626" if t_status == "WAITING_ON_GUIDE_SME" else "#3b82f6" if t_status in ["IN_PROGRESS", "REPLIED"] else "#10b981" if t_status == "RESOLVED" else "#ef4444"
+                            is_mentor_init = (t.get("request_type") == "mentor_initiated" or t.get("requester_role") == "sme")
+
+                            escaped_subject = _safe_esc(t.get('subject', 'Advisory Request'))
+                            escaped_asp_name = _safe_esc(t.get('aspirant_name') or curr_asp.get('full_name', 'Entrepreneur'))
+                            escaped_asp_email = _safe_esc(t.get('aspirant_email') or curr_asp.get('email', ''))
+                            escaped_message = _safe_esc(t.get('message', '')).replace('\n', '<br>')
+
+                            if is_mentor_init:
+                                origin_badge = '<span style="font-size:0.75rem; font-weight:800; background:#D97706; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:6px;">🔬 INITIATED BY YOU</span>'
+                                from_line = f'Advisory directive issued by you to: <strong style="color:#0F172A;">{escaped_asp_name}</strong>'
+                            else:
+                                origin_badge = '<span style="font-size:0.75rem; font-weight:800; background:#3B82F6; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:6px;">🌱 FROM FOUNDER</span>'
+                                from_line = f'From: <strong style="color:#0F172A;">{escaped_asp_name}</strong> ({escaped_asp_email})'
+
+                            sme_resp_html = ""
+                            if t.get('sme_response'):
+                                r_text = t.get('sme_response') or ""
+                                sme_resp_html = f'<div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:3px solid #f59e0b; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#92400E; margin-top:0.5rem; white-space:pre-wrap;"><strong>Your Specialist Advisory Note:</strong> {_safe_esc(r_text)}</div>'
+
+                            asp_resp_html = ""
+                            asp_reply = t.get('aspirant_response') or (t.get('admin_response', '').replace('Aspirant Reply: ', '') if str(t.get('admin_response', '')).startswith('Aspirant Reply: ') else '')
+                            if asp_reply:
+                                a_resp = _safe_esc(asp_reply).replace('\n', '<br>')
+                                asp_resp_html = f'<div style="background:#EFF6FF; border:1px solid #BFDBFE; border-left:3px solid #3B82F6; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#1E40AF; margin-top:0.5rem; white-space:pre-wrap;"><strong>🌱 Founder Response / Updates:</strong> {a_resp}</div>'
+
+                            card_html = (
+                                f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 12px 12px 0; padding:1.2rem; margin-bottom:0.8rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                                f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                                f'<div><span style="font-size:1.1rem; font-weight:800; color:#0F172A;">{escaped_subject}</span>'
+                                f'<span style="font-size:0.75rem; font-weight:800; background:{st_color}; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:8px;">{t_status}</span>'
+                                f'<span style="font-size:0.75rem; font-weight:700; background:#FEF3C7; color:#B45309; padding:2px 8px; border-radius:6px; margin-left:4px;">{t.get("category","GENERAL")}</span>'
+                                f'<span style="font-size:0.75rem; font-weight:700; background:#F1F5F9; color:#475569; padding:2px 8px; border-radius:6px; margin-left:4px;">{t.get("priority","MEDIUM")}</span>'
+                                f'{origin_badge}</div>'
+                                f'<div style="font-size:0.8rem; color:#64748B;">{str(t.get("created_at",""))[:16]}</div>'
+                                f'</div>'
+                                f'<div style="font-size:0.85rem; color:#64748B; margin:4px 0;">{from_line}</div>'
+                                f'<div style="font-size:0.9rem; color:#334155; margin-top:0.4rem; line-height:1.45;">{escaped_message}</div>'
+                                f'{sme_resp_html}'
+                                f'{asp_resp_html}'
+                                f'</div>'
+                            )
+                            st.markdown(card_html, unsafe_allow_html=True)
+
+                            if t_status in ["OPEN", "IN_PROGRESS", "REPLIED", "WAITING_ON_GUIDE_SME", "WAITING_ON_ASPIRANT", "ACTION_REQUIRED"]:
+                                with st.expander(f"💬 Provide Advisory Guidance / Update Status for '{t.get('subject')}'", expanded=False):
+                                    with st.form(f"form_sme_resp_sub_{t['id']}"):
+                                        c_sr1, c_sr2 = st.columns([1, 2])
+                                        with c_sr1:
+                                            new_sme_st = st.selectbox(
+                                                "Update Status",
+                                                ["WAITING_ON_ASPIRANT", "IN_PROGRESS", "RESOLVED"],
+                                                format_func=lambda x: "Awaiting Founder Action / Documents" if x == "WAITING_ON_ASPIRANT" else ("In Progress (Ongoing Advisory)" if x == "IN_PROGRESS" else "Resolved (Complete)"),
+                                                key=f"sel_sme_st_sub_{t['id']}"
+                                            )
+                                        with c_sr2:
+                                            sme_resp_text = st.text_area("Advisory Guidance / Technical Memorandum *", placeholder="Provide technical recommendations, statutory compliance steps, or confirm resolution...", height=80, key=f"txt_sme_resp_sub_{t['id']}")
+
+                                        if st.form_submit_button("Submit Guidance & Update Ticket", type="primary"):
+                                            if not sme_resp_text.strip():
+                                                st.warning("Please enter your advisory response.")
+                                            else:
+                                                ok, err = sme_respond_request(t["id"], sme_id, new_sme_st, sme_resp_text.strip())
+                                                st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                                if ok:
+                                                    st.session_state[f"sme_consult_msg_{selected_asp_id}"] = "Advisory response recorded and student notified!"
+                                                    st.rerun()
+                                                else:
+                                                    st.error(err or "Failed to record response.")
+
+                    # ── CASE DISCUSSIONS & PRIVATE MENTOR NOTES (SME COLLABORATION) ──
+                    st.markdown("---")
+                    st.subheader(f"💬 Case Discussions & Private Advisory Notes ({curr_asp['full_name']})")
+                    st.caption("Collaborate with the assigned Guide and entrepreneur. Notes flagged as Private are shared only with the Guide & Program Directorate.")
+                    from services.collaboration import list_case_messages, create_case_message
+                    sme_case_msgs = list_case_messages(selected_asp_id, requesting_role="sme", viewer_id=sme_id)
+                    with st.expander(f"📋 View / Post Case Discussion Messages ({len(sme_case_msgs)} messages)", expanded=False):
+                        if not sme_case_msgs:
+                            st.info("No case discussion messages logged yet for this venture.")
+                        else:
+                            for m in sme_case_msgs:
+                                is_priv = m.get("is_private_mentor_note")
+                                border_color = "#DC2626" if is_priv else "#D97706"
+                                badge_text = "🔒 PRIVATE MENTOR NOTE (Hidden from Founder)" if is_priv else "🌐 OPEN CASE DISCUSSION"
+                                st.markdown(f"""
+                                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {border_color}; border-radius:10px; padding:0.9rem; margin-bottom:0.6rem;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                                        <div style="font-weight:700; color:#1E293B;">{_safe_esc(m.get('title'))}</div>
+                                        <div style="font-size:0.72rem; font-weight:700; color:{border_color};">{badge_text}</div>
+                                    </div>
+                                    <div style="font-size:0.75rem; color:#64748B; margin-top:2px;">by {_safe_esc(m.get('author_name', 'Mentor'))} ({_safe_esc(m.get('author_role', '').upper())}) · {m.get('created_at', '')[:10]}</div>
+                                    <div style="font-size:0.85rem; color:#334155; margin-top:6px;">{_safe_esc(m.get('message'))}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                        with st.form(f"form_sme_case_msg_{selected_asp_id}"):
+                            s_msg_title = st.text_input("Note / Discussion Subject*", placeholder="e.g. Technical compliance observation or lab testing note")
+                            s_msg_body = st.text_area("Detailed Note / Message*", placeholder="Write technical note or co-mentor coordination message...")
+                            s_priv_check = st.checkbox("🔒 Mark as Private Mentor Advisory Note (Visible to Guide, SME & Admin only; hidden from entrepreneur)", value=False)
+                            if st.form_submit_button("Post Case Message", type="primary"):
+                                if not s_msg_title.strip() or not s_msg_body.strip():
+                                    st.warning("Please provide title and message.")
+                                else:
+                                    ok_cm, err_cm = create_case_message(selected_asp_id, sme_id, "sme", s_msg_title, s_msg_body, is_private_mentor_note=s_priv_check)
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                    if ok_cm:
+                                        st.session_state[f"sme_consult_msg_{selected_asp_id}"] = "Case message posted successfully!"
+                                        st.rerun()
+                                    else:
+                                        st.error(err_cm or "Failed to post case message.")
+
+                    # ── INSTITUTIONAL ROADBLOCKS & ADMIN DIRECTIVES ──
+                    st.markdown("---")
+                    st.subheader("🏛️ Institutional Roadblocks & Governance Declarations")
+                    st.markdown(f"<p style='color:#64748B; font-size:0.9rem;'>Encountering statutory hurdles, testing lab certification blocks, or requiring administrative intervention for <strong>{curr_asp['full_name']}</strong>? Request an official administrative directive from the Program Directorate. <em>(Strictly invisible to the entrepreneur)</em></p>", unsafe_allow_html=True)
+
+                    sme_admin_queries = list_mentor_admin_queries(mentor_id=sme_id, aspirant_id=selected_asp_id)
+                    if sme_admin_queries:
+                        st.markdown("##### 📜 Directorate Inquiries & Issued Directives")
+                        for q in sme_admin_queries:
+                            q_st = q.get("status", "PENDING_ADMIN")
+                            q_color = "#f59e0b" if q_st == "PENDING_ADMIN" else "#10b981"
+                            q_sub = _safe_esc(q.get("subject"), default="Institutional Query")
+                            q_msg = _safe_esc(q.get("message"), default="").replace("\n", "<br>")
+
+                            directive_html = ""
+                            if q.get("admin_directive"):
+                                ad_text = _safe_esc(q.get("admin_directive"), default="").replace("\n", "<br>")
+                                dir_time = str(q.get("directive_issued_at", ""))[:16]
+                                directive_html = (
+                                    f'<div style="background:#F0FDF4; border:1px solid #86EFAC; border-left:4px solid #16A34A; border-radius:0 8px 8px 0; padding:0.75rem 1rem; margin-top:0.6rem;">'
+                                    f'<div style="font-weight:800; color:#15803D; font-size:0.88rem; display:flex; justify-content:space-between;">'
+                                    f'<span>🏛️ Official Directorate Directive</span>'
+                                    f'<span style="font-size:0.75rem; color:#166534; font-weight:600;">Issued: {dir_time}</span>'
+                                    f'</div>'
+                                    f'<div style="font-size:0.9rem; color:#14532D; margin-top:0.35rem; line-height:1.5;">{ad_text}</div>'
+                                    f'</div>'
+                                )
+
+                            card_html = (
+                                f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {q_color}; border-radius:0 10px 10px 0; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 2px rgba(0,0,0,0.03);">'
+                                f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                                f'<div>'
+                                f'<span style="font-weight:700; color:#0F172A; font-size:1rem;">{q_sub}</span>'
+                                f'<span style="font-size:0.72rem; font-weight:800; background:{q_color}; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:6px;">{q_st}</span>'
+                                f'<span style="font-size:0.72rem; font-weight:700; background:#F1F5F9; color:#475569; padding:2px 8px; border-radius:6px; margin-left:4px;">Priority: {q.get("priority","MEDIUM")}</span>'
+                                f'</div>'
+                                f'<div style="font-size:0.78rem; color:#64748B;">{str(q.get("created_at",""))[:16]}</div>'
+                                f'</div>'
+                                f'<div style="font-size:0.88rem; color:#334155; margin-top:0.4rem; line-height:1.45;">{q_msg}</div>'
+                                f'{directive_html}'
+                                f'</div>'
+                            )
+                            st.markdown(card_html, unsafe_allow_html=True)
+
+                    with st.expander(f"➕ Request Institutional Support / Admin Directive for {curr_asp['full_name']}", expanded=False):
+                        with st.form(f"form_sme_admin_query_{selected_asp_id}"):
+                            c_aq1, c_aq2 = st.columns([3, 1])
+                            with c_aq1:
+                                q_subject = st.text_input("Institutional Subject / Blockage *", placeholder="e.g. FSSAI Central Lab Testing clearance or DIC compliance subsidy", key=f"saq_sub_{selected_asp_id}")
+                            with c_aq2:
+                                q_priority = st.selectbox("Urgency / Priority", ["MEDIUM", "HIGH", "URGENT"], index=0, key=f"saq_pri_{selected_asp_id}")
+
+                            q_desc = st.text_area("Detailed Roadblock Context & Required Administrative Intervention *", placeholder="Describe statutory blockage, regulatory delays, or if additional co-guidance is needed...", height=90, key=f"saq_desc_{selected_asp_id}")
+
+                            if st.form_submit_button("Submit Request to Directorate", type="primary"):
+                                if not q_subject.strip() or not q_desc.strip():
+                                    st.warning("Please provide both a subject and roadblock details.")
+                                else:
+                                    q_res, q_err = create_mentor_admin_query(
+                                        mentor_id=sme_id,
+                                        mentor_role="sme",
+                                        aspirant_id=selected_asp_id,
+                                        subject=q_subject.strip(),
+                                        message=q_desc.strip(),
+                                        priority=q_priority
+                                    )
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                    if q_res:
+                                        st.session_state[f"sme_consult_msg_{selected_asp_id}"] = "Administrative request submitted to Program Directorate! Admin will issue official directives."
+                                        st.rerun()
+                                    else:
+                                        st.error(q_err or "Failed to submit request.")
+
+                    with st.expander(f"⚖️ Declare Conflict of Interest for {curr_asp['full_name']}", expanded=False):
+                        st.caption("If you discover a financial, commercial, or personal conflict of interest with this venture, declare it here for Program Directorate review and reassignment.")
+                        from services.governance import declare_sme_conflict
+                        with st.form(f"form_sme_coi_{selected_asp_id}"):
+                            coi_type = st.radio(
+                                "Conflict Status",
+                                options=[False, True],
+                                format_func=lambda v: "✅ No Conflict of Interest (Independent Advisory)" if not v else "⚠️ Conflict of Interest Identified (Request Reassignment)",
+                                horizontal=True,
+                                key=f"sme_coi_radio_{selected_asp_id}"
+                            )
+                            coi_details = st.text_area(
+                                "Declaration Details / Context",
+                                placeholder="Provide details if a conflict exists, or optional attestation note...",
+                                height=70,
+                                key=f"sme_coi_det_{selected_asp_id}"
+                            )
+                            if st.form_submit_button("Record Conflict of Interest Declaration"):
+                                if coi_type and not coi_details.strip():
+                                    st.warning("Please describe the conflict of interest so Administration can reassign the case.")
+                                else:
+                                    ok_coi, err_coi = declare_sme_conflict(sme_id, selected_asp_id, bool(coi_type), coi_details.strip())
+                                    st.session_state[f"sme_subtab_pending_{selected_asp_id}"] = "consultations"
+                                    if ok_coi:
+                                        st.session_state[f"sme_consult_msg_{selected_asp_id}"] = "Conflict of Interest declaration recorded with Program Directorate."
+                                        st.rerun()
+                                    else:
+                                        st.error(err_coi or "Failed to record declaration.")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 2: SME ALL CONSULTATIONS OVERVIEW
+    # ─────────────────────────────────────────────────────────────
+    with tabs[1]:
+      if is_tab_active(tabs[1]):
+        st.subheader("💬 All Domain Consultations Overview")
+        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Specialized consultation queries submitted by entrepreneurs requiring your domain expertise across your entire caseload.</p>", unsafe_allow_html=True)
+
+        col_sf1, col_sf2 = st.columns([3, 1])
+        with col_sf2:
+            sme_status_filter = st.selectbox(
+                "Filter Status",
+                ["ALL", "AWAITING_ACTION", "IN_PROGRESS", "RESOLVED"],
+                format_func=lambda x: "All Consultations" if x == "ALL" else ("⚡ Awaiting Action" if x == "AWAITING_ACTION" else ("🔄 In Progress / Awaiting Founder" if x == "IN_PROGRESS" else "✅ Resolved")),
+                key="sme_hr_status_filter"
+            )
+
+        sme_tickets = list_sme_requests(sme_id) or []
+        if sme_status_filter == "AWAITING_ACTION":
+            sme_tickets = [t for t in sme_tickets if t.get("status") in ("OPEN", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED")]
+        elif sme_status_filter == "IN_PROGRESS":
+            sme_tickets = [t for t in sme_tickets if t.get("status") in ("IN_PROGRESS", "WAITING_ON_ASPIRANT")]
+        elif sme_status_filter == "RESOLVED":
+            sme_tickets = [t for t in sme_tickets if t.get("status") == "RESOLVED"]
+
+        if not sme_tickets:
+            st.info("No domain advisory requests currently pending for your specialization.")
+        else:
+            for t in sme_tickets:
+                t_status = t.get("status", "OPEN")
+                st_color = "#f59e0b" if t_status in ("OPEN", "WAITING_ON_ASPIRANT") else "#dc2626" if t_status == "WAITING_ON_GUIDE_SME" else "#3b82f6" if t_status == "IN_PROGRESS" else "#10b981" if t_status == "RESOLVED" else "#ef4444"
+
+                escaped_subject = _safe_esc(t.get('subject', 'Advisory Request'))
+                escaped_asp_name = _safe_esc(t.get('aspirant_name') or 'Entrepreneur')
+                escaped_asp_email = _safe_esc(t.get('aspirant_email') or '')
+                escaped_message = _safe_esc(t.get('message', '')).replace('\n', '<br>')
+
+                sme_resp_html = ""
+                if t.get('sme_response'):
+                    r_text = t.get('sme_response') or ""
+                    sme_resp_html = f'<div style="background:#FFFBEB; border:1px solid #FDE68A; border-left:3px solid #f59e0b; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#92400E; margin-top:0.5rem; white-space:pre-wrap;"><strong>Specialist Advisory Note:</strong> {_safe_esc(r_text)}</div>'
+
+                asp_reply_html = ""
+                if t.get('aspirant_response'):
+                    a_resp = _safe_esc(t.get('aspirant_response') or '').replace('\n', '<br>')
+                    asp_reply_html = f'<div style="background:#EFF6FF; border:1px solid #BFDBFE; border-left:3px solid #3B82F6; border-radius:0 6px 6px 0; padding:0.5rem 0.8rem; font-size:0.86rem; color:#1E40AF; margin-top:0.5rem; white-space:pre-wrap;"><strong>Founder Reply:</strong> {a_resp}</div>'
+
+                card_html = (
+                    f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {st_color}; border-radius:0 12px 12px 0; padding:1.2rem; margin-bottom:0.8rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+                    f'<div style="display:flex; justify-content:space-between; align-items:center;">'
+                    f'<div><span style="font-size:1.1rem; font-weight:800; color:#0F172A;">{escaped_subject}</span>'
+                    f'<span style="font-size:0.75rem; font-weight:800; background:{st_color}; color:#ffffff; padding:2px 8px; border-radius:6px; margin-left:8px;">{t_status}</span>'
+                    f'<span style="font-size:0.75rem; font-weight:700; background:#FEF3C7; color:#B45309; padding:2px 8px; border-radius:6px; margin-left:4px;">{t.get("category","GENERAL")}</span>'
+                    f'<span style="font-size:0.75rem; font-weight:700; background:#F1F5F9; color:#475569; padding:2px 8px; border-radius:6px; margin-left:4px;">{t.get("priority","MEDIUM")}</span></div>'
+                    f'<div style="font-size:0.8rem; color:#64748B;">{str(t.get("created_at",""))[:16]}</div>'
+                    f'</div>'
+                    f'<div style="font-size:0.85rem; color:#64748B; margin:4px 0;">From: <strong style="color:#0F172A;">{escaped_asp_name}</strong> ({escaped_asp_email})</div>'
+                    f'<div style="font-size:0.9rem; color:#334155; margin-top:0.4rem; line-height:1.45;">{escaped_message}</div>'
+                    f'{asp_reply_html}'
+                    f'{sme_resp_html}'
+                    f'</div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+
+                col_btn_sc, _ = st.columns([1, 3])
+                with col_btn_sc:
+                    if st.button("Open Case →", key=f"btn_open_case_ov_{t['id']}_{t.get('aspirant_id')}"):
+                        st.session_state["sme_selected_aspirant"] = t.get("aspirant_id")
+                        st.rerun()
+
+                if t_status != "RESOLVED":
+                    with st.expander(f"💬 Provide Advisory Guidance for '{t.get('subject')}'", expanded=False):
+                        with st.form(f"form_sme_resp_ov_{t['id']}"):
+                            c_sr1, c_sr2 = st.columns([1, 2])
+                            with c_sr1:
+                                new_sme_st = st.selectbox(
+                                    "Update Status",
+                                    ["WAITING_ON_ASPIRANT", "IN_PROGRESS", "RESOLVED"],
+                                    format_func=lambda x: "Awaiting Founder Action / Documents" if x == "WAITING_ON_ASPIRANT" else ("In Progress (Ongoing Advisory)" if x == "IN_PROGRESS" else "Resolved (Complete)"),
+                                    key=f"sel_sme_st_ov_{t['id']}"
+                                )
+                            with c_sr2:
+                                sme_resp_text = st.text_area("Advisory Guidance / Technical Memorandum *", placeholder="Provide technical recommendations, statutory compliance steps, or confirm resolution...", height=80, key=f"txt_sme_resp_ov_{t['id']}")
+
+                            if st.form_submit_button("Submit Guidance & Update Ticket", type="primary"):
+                                if not sme_resp_text.strip():
+                                    st.warning("Please enter your advisory response.")
+                                else:
+                                    ok, err = sme_respond_request(t["id"], sme_id, new_sme_st, sme_resp_text.strip())
+                                    if ok:
+                                        st.success("Advisory response recorded and student notified!")
+                                        st.rerun()
+                                    else:
+                                        st.error(err or "Failed to record response.")
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 3: SME PROFILE & ASSIGNMENT HISTORY
+    # ─────────────────────────────────────────────────────────────
+    with tabs[2]:
+      if is_tab_active(tabs[2]):
+        st.subheader("👤 My SME Specialist Profile")
+        st.markdown("<p style='color:#64748B; font-size:0.9rem;'>Manage your domain advisory credentials, industry specializations, and view your case assignment transitions.</p>", unsafe_allow_html=True)
+
+        cur_profile = get_profile(sme_id) or user_profile
+        cur_data = cur_profile.get("profile_data", {})
+        if isinstance(cur_data, str):
+            import json
+            try:
+                cur_data = json.loads(cur_data)
+            except Exception:
+                cur_data = {}
+
+        # Profile Card + Private Professional Photograph
+        from services.professional_photos import (
+            get_professional_photo_url,
+            upload_professional_photo,
+            delete_professional_photo,
+            render_professional_avatar_html,
+        )
+        sme_photo_url = get_professional_photo_url(
+            viewer_id=sme_id,
+            subject_user_id=sme_id,
+            viewer_email=cur_profile.get("email"),
+        )
+        avatar_96_html = render_professional_avatar_html(
+            full_name=cur_profile.get("full_name") or "Subject Matter Expert",
+            photo_url=sme_photo_url,
+            size_px=96,
+            role="sme",
+        )
+
+        bio_text = _safe_esc(cur_data.get("bio"))
+        bio_html = f'<div style="font-size:0.85rem; color:#64748B; margin-top:0.4rem; font-style:italic;">"{bio_text}"</div>' if bio_text else ''
+        p_name = _safe_esc(cur_profile.get('full_name') or 'Subject Matter Expert')
+        p_dist = _safe_esc(cur_profile.get('district') or 'Tamil Nadu')
+        p_email = _safe_esc(cur_profile.get('email') or '')
+        p_phone = _safe_esc(cur_profile.get('phone') or 'Not Set')
+        p_exp = _safe_esc(cur_data.get('expertise') or 'Technical Compliance & Advisory')
+        p_ind = _safe_esc(cur_data.get('industry') or 'Multi-Sector')
+
+        card_html = (
+            f'<div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid #f59e0b; border-radius:0 12px 12px 0; padding:1.25rem; margin-bottom:1.25rem; box-shadow:0 1px 3px rgba(0,0,0,0.04);">'
+            f'<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;">'
+            f'<div style="display:flex; align-items:flex-start; gap:1.1rem;">'
+            f'{avatar_96_html}'
+            f'<div>'
+            f'<h3 style="margin:0; color:#0F172A; font-size:1.35rem;">{p_name}</h3>'
+            f'<div style="color:#D97706; font-weight:700; font-size:0.9rem; margin-top:2px;">Subject Matter Expert · {p_dist}</div>'
+            f'<div style="color:#475569; font-size:0.85rem; margin-top:0.35rem;">'
+            f'<strong>Email:</strong> {p_email} | <strong>Phone:</strong> {p_phone}'
+            f'</div>'
+            f'<div style="color:#334155; font-size:0.88rem; margin-top:0.4rem;">'
+            f'<strong>Specialization Domain:</strong> {p_exp}'
+            f'</div>'
+            f'<div style="color:#334155; font-size:0.85rem; margin-top:0.2rem;">'
+            f'<strong>Industry Focus:</strong> {p_ind}'
+            f'</div>'
+            f'{bio_html}'
+            f'</div>'
+            f'</div>'
+            f'<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">VERIFIED SME</span>'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(card_html, unsafe_allow_html=True)
+
+        with st.expander("📷 Manage My Private Professional Photograph", expanded=False):
+            st.caption("🔒 **Strict Confidentiality:** Your professional photograph is visible **only** to you and the Platform Administrator (`fulcrumindia1@gmail.com`). It is never displayed to Aspirants or other mentors. If you hold both Guide and SME roles, your single professional photograph is automatically shared across both mentor profiles.")
+            col_sph_up, col_sph_act = st.columns([3, 1])
+            with col_sph_up:
+                up_sme_photo = st.file_uploader(
+                    "Upload / Replace Professional Headshot (JPG, PNG, WEBP · Max 5 MB · Auto-cropped to 320×320)",
+                    type=["jpg", "jpeg", "png", "webp"],
+                    key=f"sme_prof_photo_uploader_{sme_id}"
+                )
+            with col_sph_act:
+                st.write("")
+                st.write("")
+                if st.button("⬆️ Save Headshot", type="primary", use_container_width=True, key=f"btn_save_sme_photo_{sme_id}"):
+                    if not up_sme_photo:
+                        st.warning("Please select an image file first.")
+                    else:
+                        ok_ph, err_ph = upload_professional_photo(
+                            subject_user_id=sme_id,
+                            file_bytes=up_sme_photo.getvalue(),
+                            uploaded_by=sme_id,
+                            filename=up_sme_photo.name,
+                            actor_email=cur_profile.get("email"),
+                        )
+                        if ok_ph:
+                            st.success("Professional photograph saved!")
+                            st.rerun()
+                        else:
+                            st.error(err_ph or "Failed to upload photograph.")
+                if sme_photo_url:
+                    if st.button("🗑️ Remove Photo", use_container_width=True, key=f"btn_del_sme_photo_{sme_id}"):
+                        ok_rm, err_rm = delete_professional_photo(
+                            subject_user_id=sme_id,
+                            actor_id=sme_id,
+                            actor_email=cur_profile.get("email"),
+                        )
+                        if ok_rm:
+                            st.success("Professional photograph removed.")
+                            st.rerun()
+                        else:
+                            st.error(err_rm or "Failed to remove photograph.")
+
+        with st.expander("✏️ Edit My Specialist Profile & Credentials", expanded=False):
+            with st.form("form_edit_sme_profile"):
+                col_sp1, col_sp2 = st.columns(2)
+                with col_sp1:
+                    es_name = st.text_input("Full Name *", value=cur_profile.get("full_name", ""))
+                    es_phone = st.text_input("Phone Number *", value=cur_profile.get("phone", ""), placeholder="e.g. 9876543212")
+                with col_sp2:
+                    cur_loc = cur_profile.get("district", "Chennai")
+                    dist_idx = MASTER_DISTRICTS_TN.index(cur_loc) if cur_loc in MASTER_DISTRICTS_TN else 13
+                    es_loc = st.selectbox("Location / District *", MASTER_DISTRICTS_TN, index=dist_idx, key="sme_prof_dist")
+                    es_exp = st.text_input("Specialization Domain *", value=cur_data.get("expertise", ""), placeholder="e.g. GST Auditing, Taxation, Corporate Compliance")
+                es_ind = st.text_input("Industry Focus", value=cur_data.get("industry", ""), placeholder="e.g. Food Processing, Export, Manufacturing")
+                es_bio = st.text_area("Professional Summary & Certifications", value=cur_data.get("bio", ""), placeholder="Describe your credentials, advisory experience, and certifications...", height=100)
+
+                if st.form_submit_button("SAVE PROFILE CHANGES", type="primary", use_container_width=True):
+                    if es_name.strip() and es_exp.strip():
+                        upd_p, upd_err = update_mentor_profile(
+                            user_id=sme_id,
+                            full_name=es_name.strip(),
+                            phone=es_phone.strip(),
+                            district=es_loc,
+                            expertise=es_exp.strip(),
+                            bio=es_bio.strip(),
+                            industry=es_ind.strip()
+                        )
+                        if upd_p:
+                            st.success("Your SME profile has been updated successfully!")
+                            st.rerun()
+                        else:
+                            st.error(upd_err or "Failed to update profile.")
+                    else:
+                        st.warning("Please fill in your name and specialization domain.")
+
+        st.markdown("#### 📜 Case Assignment & Transition History")
+        st.markdown("<p style='color:#64748B; font-size:0.85rem;'>Historical record of specialized cases assigned to you, including administrative reassignments.</p>", unsafe_allow_html=True)
+
+        sme_history_rows = get_assignment_history(mentor_id=sme_id)
+        if not sme_history_rows:
+            st.info("No transition history recorded yet.")
+        else:
+            for h in sme_history_rows:
+                act = h.get("action", "ASSIGNED")
+                act_color = "#10b981" if act == "ASSIGNED" else "#f59e0b" if act == "REPLACED" else "#ef4444"
+                st.markdown(f"""
+                <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:0.75rem 1rem; margin-bottom:0.5rem; display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <span style="background:{act_color}; color:#fff; font-size:0.7rem; font-weight:800; padding:2px 6px; border-radius:4px; margin-right:6px;">{act}</span>
+                        <strong style="color:#0F172A; font-size:0.9rem;">{h.get('aspirant_name', 'Student')}</strong>
+                        <span style="color:#64748B; font-size:0.8rem; margin-left:6px;">({h.get('notes') or 'No notes'})</span>
+                    </div>
+                    <div style="color:#94A3B8; font-size:0.8rem;">{str(h.get('created_at',''))[:16]}</div>
+                </div>
+                """, unsafe_allow_html=True)

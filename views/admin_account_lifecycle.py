@@ -66,7 +66,7 @@ def render_admin_account_lifecycle_tab(admin_id: str):
         "🗄️ Archived Accounts",
         "⏳ Pending Deletion (Grace Review)",
         "📜 Account Action History"
-    ])
+    ], on_change="rerun", key="admin_lifecycle_subtabs")
 
     # ─────────────────────────────────────────────────────────────────────────
     # SUBTAB 1: ACTIVE ACCOUNTS (Lazy rendered)
@@ -100,60 +100,26 @@ def render_admin_account_lifecycle_tab(admin_id: str):
 def render_subtab_active_accounts(admin_id: str):
     st.markdown("### 🟢 Active & Paused Accounts Directory")
 
-    all_users = list_users_with_multi_roles()
-    active_or_paused = [
-        u for u in all_users
-        if str(u.get("account_status", "ACTIVE")).upper() in ("ACTIVE", "TEMPORARILY_SUSPENDED")
-    ]
+    from services.pagination import paginate_accounts, render_pagination_controls
 
-    total_active = sum(1 for u in active_or_paused if str(u.get("account_status", "ACTIVE")).upper() == "ACTIVE")
-    total_paused = sum(1 for u in active_or_paused if str(u.get("account_status", "ACTIVE")).upper() == "TEMPORARILY_SUSPENDED")
-    total_held = sum(1 for u in active_or_paused if u.get("legal_hold"))
-
-    c_m1, c_m2, c_m3, c_m4 = st.columns(4)
-    with c_m1:
-        st.metric("Active Accounts", total_active)
-    with c_m2:
-        st.metric("Temporarily Suspended", total_paused)
-    with c_m3:
-        st.metric("Under Legal Hold", total_held)
-    with c_m4:
-        st.metric("Total In Scope", len(active_or_paused))
-
-    st.write("")
+    cur_page = st.session_state.get("alc_act_page", 1)
 
     # Filters
-    col_f1, col_f2, col_f3 = st.columns([2, 1, 1])
+    col_f1, col_f2 = st.columns([3, 1])
     with col_f1:
         search_query = st.text_input("🔍 Search by Name or Email", placeholder="e.g. Pravin, Madurai, email@domain.in", key="alc_search_active")
     with col_f2:
-        role_filter = st.selectbox("Role Filter", ["ALL", "aspirant", "guide", "sme", "admin"], key="alc_role_active")
-    with col_f3:
-        status_filter = st.selectbox("Status Filter", ["ALL", "ACTIVE", "TEMPORARILY_SUSPENDED"], key="alc_status_active")
+        status_filter = st.selectbox("Status Filter", ["active_and_paused", "ACTIVE", "TEMPORARILY_SUSPENDED"], format_func=lambda x: "All Active & Paused" if x == "active_and_paused" else x, key="alc_status_active")
 
-    filtered = active_or_paused
-    if search_query.strip():
-        q = search_query.strip().lower()
-        filtered = [
-            u for u in filtered
-            if q in str(u.get("full_name", "")).lower()
-            or q in str(u.get("email", "")).lower()
-            or q in str(u.get("district", "")).lower()
-        ]
+    filtered, total_count = paginate_accounts(status=status_filter, page=cur_page, page_size=25, search=search_query)
 
-    if role_filter != "ALL":
-        filtered = [u for u in filtered if role_filter in (u.get("active_roles") or [u.get("role")])]
+    st.caption(f"Showing page {cur_page} ({len(filtered)} of {total_count} accounts matching filters).")
 
-    if status_filter != "ALL":
-        filtered = [u for u in filtered if str(u.get("account_status", "ACTIVE")).upper() == status_filter]
-
-    st.caption(f"Showing {len(filtered)} accounts matching filters.")
-
-    if not filtered:
+    if not filtered and total_count == 0:
         st.info("No accounts match your criteria.")
         return
 
-    for u in filtered[:40]:
+    for u in filtered:
         uid = u["id"]
         uname = u.get("full_name") or "User"
         uemail = u.get("email") or ""
@@ -263,6 +229,9 @@ def render_subtab_active_accounts(admin_id: str):
                         else:
                             st.error(err_h or "Failed to update legal hold.")
 
+    if total_count > 25:
+        render_pagination_controls(total_count, cur_page, page_size=25, key_prefix="alc_act")
+
 
 def render_subtab_archived_accounts(admin_id: str):
     st.markdown("### 🗄️ Archived Accounts Registry")
@@ -274,10 +243,15 @@ def render_subtab_archived_accounts(admin_id: str):
     </p>
     """, unsafe_allow_html=True)
 
-    archived_users = list_accounts_by_status("ARCHIVED")
-    st.metric("Total Archived Accounts", len(archived_users))
+    from services.pagination import paginate_accounts, render_pagination_controls
 
-    if not archived_users:
+    cur_arc_page = st.session_state.get("alc_arc_page", 1)
+    arc_search = st.text_input("🔍 Search Archived Accounts", placeholder="Search by name or email...", key="alc_search_archived")
+
+    archived_users, total_archived = paginate_accounts(status="ARCHIVED", page=cur_arc_page, page_size=25, search=arc_search)
+    st.metric("Total Archived Accounts", total_archived)
+
+    if not archived_users and total_archived == 0:
         st.info("No accounts are currently archived.")
         return
 
@@ -314,6 +288,9 @@ def render_subtab_archived_accounts(admin_id: str):
                 else:
                     st.error(err_res or "Failed to restore account.")
 
+    if total_archived > 25:
+        render_pagination_controls(total_archived, cur_arc_page, page_size=25, key_prefix="alc_arc")
+
 
 def render_subtab_pending_deletion(admin_id: str):
     st.markdown("### ⏳ Accounts Pending Deletion Review")
@@ -328,10 +305,15 @@ def render_subtab_pending_deletion(admin_id: str):
         unsafe_allow_html=True
     )
 
-    pending_users = list_accounts_by_status("PENDING_DELETION")
-    st.metric("Accounts in Grace Window", len(pending_users))
+    from services.pagination import paginate_accounts, render_pagination_controls
 
-    if not pending_users:
+    cur_del_page = st.session_state.get("alc_del_page", 1)
+    del_search = st.text_input("🔍 Search Pending Closures", placeholder="Search by name or email...", key="alc_search_pending")
+
+    pending_users, total_pending = paginate_accounts(status="PENDING_DELETION", page=cur_del_page, page_size=25, search=del_search)
+    st.metric("Accounts in Grace Window", total_pending)
+
+    if not pending_users and total_pending == 0:
         st.info("No accounts are currently pending deletion review.")
         return
 
@@ -372,6 +354,9 @@ def render_subtab_pending_deletion(admin_id: str):
                     st.rerun()
                 else:
                     st.error(err_c or "Failed to cancel closure.")
+
+    if total_pending > 25:
+        render_pagination_controls(total_pending, cur_del_page, page_size=25, key_prefix="alc_del")
 
 
 def render_subtab_action_history(admin_id: str):

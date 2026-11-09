@@ -19,13 +19,24 @@ cluster_a.db
 backups/
 backups/*
 
-# Temporary & Test files
+# Documentation, Markdown Reports & SQL files
+*.md
+*.sql
+*.txt
+DOCUMENTATION/
+brain/
+artifacts/
+
+# Temporary & Test scripts
 scratch/
 scratch/*
 tests/
 tests/*
 verify_*.py
 test_*.py
+run_full_verification.py
+import_schemes.py
+_check_*.py
 *.pdf
 *.log
 

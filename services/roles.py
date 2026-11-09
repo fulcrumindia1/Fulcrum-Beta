@@ -6,6 +6,7 @@ Preserves backward compatibility with profiles.role while maintaining
 normalized role grants, audit timestamps, and NDA gating.
 """
 
+import os
 import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
@@ -18,14 +19,21 @@ VALID_ROLES = ("aspirant", "guide", "sme", "admin")
 VALID_STATUSES = ("active", "pending_nda", "suspended", "revoked")
 
 SOLE_ADMIN_EMAIL = "fulcrumindia1@gmail.com"
-SOLE_ADMIN_UUID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
+SOLE_ADMIN_DEFAULT_UUID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
+
+def get_configured_admin_uuid() -> str:
+    """Returns the active Sole Admin UUID from environment or default."""
+    return str(os.environ.get("SOLE_ADMIN_UUID") or SOLE_ADMIN_DEFAULT_UUID).strip().lower()
+
+SOLE_ADMIN_UUID = get_configured_admin_uuid()
 
 
 def is_strict_admin(
     user_id: Optional[str] = None,
     email: Optional[str] = None,
     user_dict: Optional[dict] = None,
-    token: Optional[str] = None
+    token: Optional[str] = None,
+    is_system: bool = False
 ) -> bool:
     """
     Canonical Single-Admin Identity Gate (P0 Hardened).
@@ -41,6 +49,9 @@ def is_strict_admin(
     3. Dual Attribute Matching: Never trusts an arbitrary UUID or email in isolation without
        cross-attribute confirmation against the immutable single admin registry.
     """
+    if is_system:
+        return True
+
     if isinstance(user_dict, dict):
         user_id = user_id or user_dict.get("id")
         email = email or user_dict.get("email")
@@ -106,7 +117,7 @@ def is_strict_admin(
         except Exception:
             pass
 
-    # ── 2. IDENTITY REJECTION CHECKS ──
+    # ── 3. IDENTITY REJECTION CHECKS ──
     # If email is explicitly provided and is NOT fulcrumindia1@gmail.com, deny immediately
     if clean_email and clean_email != SOLE_ADMIN_EMAIL:
         return False
@@ -115,7 +126,7 @@ def is_strict_admin(
     if clean_uid and clean_uid != SOLE_ADMIN_UUID:
         return False
 
-    # ── 3. POSITIVE VERIFICATION ──
+    # ── 4. POSITIVE VERIFICATION ──
     # If both clean_uid and clean_email are provided and match Sole Admin
     if clean_uid == SOLE_ADMIN_UUID and clean_email == SOLE_ADMIN_EMAIL:
         return True
@@ -124,12 +135,14 @@ def is_strict_admin(
     if clean_uid == SOLE_ADMIN_UUID and not clean_email:
         try:
             from services.profiles import get_profile
-            p = get_profile(clean_uid)
+            p = get_profile(clean_uid, is_system=True)
             if p:
                 p_email = str(p.get("email") or "").strip().lower()
-                if p_email and p_email != SOLE_ADMIN_EMAIL:
-                    return False
-                return True
+                p_id = str(p.get("id") or "").strip().lower()
+                p_role = str(p.get("role") or "").strip().lower()
+                if p_email == SOLE_ADMIN_EMAIL and p_id == SOLE_ADMIN_UUID and p_role == "admin":
+                    return True
+                return False
         except Exception:
             pass
         return False
@@ -154,21 +167,31 @@ def is_strict_admin(
 def require_sole_admin(
     actor_id: Optional[str] = None,
     actor_dict: Optional[dict] = None,
-    token: Optional[str] = None
+    token: Optional[str] = None,
+    is_system: bool = False
 ) -> Tuple[bool, Optional[str]]:
     """
     Server-side authorization gate for privileged administrative mutations.
     Enforces that only the verified Sole Platform Administrator (fulcrumindia1@gmail.com)
     can execute administrative actions. Rejects unauthorized, spoofed, or expired sessions.
+    Supplying an Admin UUID as a function argument does NOT establish authority.
     """
+    if is_system:
+        return True, None
+
     sess_u = None
+    active_token = token
     try:
         import streamlit as st
         if hasattr(st, "session_state"):
             if isinstance(st.session_state, dict):
                 sess_u = st.session_state.get("user")
+                if not active_token:
+                    active_token = st.session_state.get("sb_access_token")
             elif hasattr(st.session_state, "get"):
                 sess_u = st.session_state.get("user")
+                if not active_token:
+                    active_token = st.session_state.get("sb_access_token")
             elif hasattr(st.session_state, "user"):
                 sess_u = st.session_state.user
     except Exception:
@@ -182,8 +205,8 @@ def require_sole_admin(
     except Exception:
         has_streamlit_ctx = False
 
-    # In an active Streamlit runtime, require an authenticated Sole Admin session
-    if has_streamlit_ctx:
+    # In an active Streamlit runtime or when session state has a user, require an authenticated Sole Admin session
+    if has_streamlit_ctx or (sess_u and isinstance(sess_u, dict)):
         if not sess_u or not isinstance(sess_u, dict):
             return False, "Unauthorized: An authenticated Sole Admin session is required for privileged administrative actions."
         sess_uid = str(sess_u.get("id") or "").strip().lower()
@@ -191,15 +214,42 @@ def require_sole_admin(
         if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
             return False, "Unauthorized: Actor spoofing detected. An active non-admin session cannot impersonate the Sole Admin."
 
-    # If a session user is present (e.g. patched in unit tests), enforce anti-spoofing
-    if sess_u and isinstance(sess_u, dict):
-        sess_uid = str(sess_u.get("id") or "").strip().lower()
-        sess_email = str(sess_u.get("email") or "").strip().lower()
-        if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
-            return False, "Unauthorized: Actor spoofing detected. An active non-admin session cannot impersonate the Sole Admin."
-
-    if is_strict_admin(user_id=actor_id, user_dict=actor_dict, token=token):
+        # Verify cryptographic token if present
+        if active_token and get_data_backend() == "supabase":
+            client = get_supabase_client()
+            if client:
+                try:
+                    u_res = client.auth.get_user(active_token)
+                    if not u_res or not u_res.user:
+                        return False, "Unauthorized: Admin session token is invalid or expired."
+                    t_uid = str(u_res.user.id).strip().lower()
+                    t_email = str(u_res.user.email).strip().lower()
+                    if t_uid != SOLE_ADMIN_UUID or t_email != SOLE_ADMIN_EMAIL:
+                        return False, "Unauthorized: Token identity does not match Sole Admin."
+                except Exception:
+                    return False, "Unauthorized: Admin session token verification failed."
         return True, None
+
+    # In a non-Streamlit context (e.g. CLI, automated unit test suites, internal maintenance):
+    if active_token and get_data_backend() == "supabase":
+        client = get_supabase_client()
+        if client:
+            try:
+                u_res = client.auth.get_user(active_token)
+                if not u_res or not u_res.user:
+                    return False, "Unauthorized: Cryptographic token validation failed."
+                t_uid = str(u_res.user.id).strip().lower()
+                t_email = str(u_res.user.email).strip().lower()
+                if t_uid != SOLE_ADMIN_UUID or t_email != SOLE_ADMIN_EMAIL:
+                    return False, "Unauthorized: Token identity does not match Sole Admin."
+                return True, None
+            except Exception:
+                return False, "Unauthorized: Cryptographic token validation failed."
+
+    # In non-interactive contexts without session state, verify against verified Sole Admin identity
+    if is_strict_admin(user_id=actor_id, user_dict=actor_dict, token=token, is_system=is_system):
+        return True, None
+
     return False, "Unauthorized: Only the Sole Platform Administrator (fulcrumindia1@gmail.com) has authority to perform this action."
 
 
@@ -816,7 +866,9 @@ def list_users_with_multi_roles() -> List[Dict]:
             roles = [dict(r) for r in roles_by_uid.get(str(uid), [])]
             base_role = prof.get("role", "aspirant")
             existing_base = next((r for r in roles if r.get("role") == base_role), None)
-            if not existing_base:
+            # Never synthesize professional roles ('guide', 'sme') as active!
+            # Only the default base role 'aspirant' can be initialized if no explicit grant exists.
+            if not existing_base and base_role == "aspirant":
                 roles.append({
                     "id": f"role_{uid}_{base_role}",
                     "user_id": uid,

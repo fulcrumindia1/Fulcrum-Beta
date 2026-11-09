@@ -7,10 +7,10 @@ textColor = "#0F172A"
 font = "sans serif"
 
 [server]
-runOnSave = true
+runOnSave = false
 headless = true
-enableCORS = false
-enableXsrfProtection = false
+enableCORS = true
+enableXsrfProtection = true
 maxUploadSize = 5
 
 [client]

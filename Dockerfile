@@ -67,12 +67,12 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 # Production startup command
 CMD ["streamlit", "run", "app.py", \
-     "--server.port=8501", \
-     "--server.address=0.0.0.0", \
-     "--server.enableCORS=false", \
-     "--server.enableXsrfProtection=true", \
-     "--theme.base=light", \
-     "--theme.primaryColor=#2563EB", \
-     "--theme.backgroundColor=#F8FAFC", \
-     "--theme.secondaryBackgroundColor=#FFFFFF", \
-     "--theme.textColor=#0F172A"]
+    "--server.port=8501", \
+    "--server.address=0.0.0.0", \
+    "--server.enableCORS=true", \
+    "--server.enableXsrfProtection=true", \
+    "--theme.base=light", \
+    "--theme.primaryColor=#2563EB", \
+    "--theme.backgroundColor=#F8FAFC", \
+    "--theme.secondaryBackgroundColor=#FFFFFF", \
+    "--theme.textColor=#0F172A"]
