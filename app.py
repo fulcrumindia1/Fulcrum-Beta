@@ -1,8 +1,9 @@
 """
 app.py — Main Application Router & Entrypoint for FULCRUM-INDIA (Cluster A)
 ==========================================================================
-Institutional Core Relationship, Profile, Journey & Scheme Intelligence System.
+Institutional Enterprise Guidance System.
 Lightweight, secure, and maintainable Streamlit application backed by Supabase.
+Build version: 2026.11.09-v2.1
 
 UI/UX & Governance:
 - Clean Light / Institutional Login Surface (White theme, Avenir typography)
