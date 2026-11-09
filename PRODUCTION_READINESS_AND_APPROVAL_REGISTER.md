@@ -1,9 +1,10 @@
-# FULCRUM-BETA — PRODUCTION READINESS & APPROVAL REGISTER
+# FULCRUM-BETA (6) — PRODUCTION READINESS & APPROVAL REGISTER
 
-**Project:** FULCRUM-BETA (Account Lifecycle & Archive, Safe Mentor Handovers, Codebase Blind Spot Audit)  
-**Branch:** `dev/account-lifecycle-and-archive`  
+**Project:** FULCRUM-BETA (Beta 6 Complete Security, Data-Integrity & Workflow Stabilization)  
+**Branch:** `dev/beta-6-stabilization` (Commit `1fef858`)  
 **Date:** November 2026  
-**Target Authority:** Sole Platform Administrator (`fulcrumindia1@gmail.com`)
+**Target Authority:** Sole Platform Administrator (`fulcrumindia1@gmail.com` | `616304b5-aef5-4cd0-88be-2fda7ddf7f88`)  
+**Production Gate Status:** **STAGING VERIFIED — PRODUCTION APPROVAL WITHHELD PENDING OWNER AUTHORIZATION**
 
 ---
 
@@ -13,26 +14,25 @@ In strict compliance with the **Owner Authorization Mandate**:
 - **ZERO Production SQL Executed:** No SQL statements, schema modifications, or manual queries were run against the live production database.
 - **ZERO Real User Accounts Affected:** No live user accounts, statuses, credentials, or assignments were modified or deleted.
 - **ZERO Supabase Auth Purging:** No live Supabase Auth users were deleted or altered.
-- **ZERO Production Merges/Deployments:** All code, migrations, and test scripts reside strictly in the isolated development branch `dev/account-lifecycle-and-archive`.
-
-The system is fully developed, tested in staging, and packaged for formal review and sign-off.
+- **ZERO Production Merges/Deployments:** All code, migrations, and test scripts reside strictly in the isolated development branch `dev/beta-6-stabilization`.
 
 ---
 
-## 2. Production Readiness Checklist
+## 2. Beta 6 Security & Operational Readiness Checklist
 
 | Readiness Criterion | Target Standard | Verification Evidence | Status |
 | :--- | :--- | :--- | :---: |
-| **Defect 1: Co-Guide / SME Revocation** | Raw keys (`guide_ids`, `sme_ids`) cleaned | `tests/test_checkpoint1_defects_and_handover.py` | **READY** |
-| **Defect 2: Mentor Handover Safety** | Co-mentors promoted; open tickets queued | `tests/test_account_lifecycle_and_handover_chaos.py` | **READY** |
-| **Defect 3: Sole Admin Auth Enforcement** | Strict server-side check against `fulcrumindia1@gmail.com` | `services/roles.py`, `services/account_lifecycle.py` | **READY** |
-| **Defect 4: False-Success / Silent Fallback** | Fail-closed error handling in photos & roles | `services/aspirant_photos.py`, `services/roles.py` | **READY** |
-| **Defect 5: Quarantined Cleanup Scripts** | Disabled fatal exit; hardcoded lists cleared | `scripts/remove_requested_accounts.py` | **READY** |
-| **Account Lifecycle Gate** | Account status separate from `user_roles.status` | `services/account_lifecycle.py`, `app.py` | **READY** |
-| **Migration 009 Safety** | 100% additive; `ON DELETE RESTRICT` protection | `MIGRATION_009_REVISED.sql` | **READY** |
-| **13th Admin Tab UI/UX** | 4 subtabs fully functional; zero impact on Tabs 1-12 | `views/admin_account_lifecycle.py`, `views/admin.py` | **READY** |
-| **Regression Test Suite** | 100% pass rate across entire repo | 130/130 Pytest tests passing | **READY** |
-| **Audit Documentation** | 12 comprehensive deliverables compiled | Available in repository root | **READY** |
+| **Verified Admin Actor Context** | Active Streamlit session verification and token check; anti-spoofing blocks non-admin callers | `services/roles.py`, `tests/test_beta_6_audit_security.py` | **READY** |
+| **Fail-Closed Account Lifecycle Gating** | Missing/corrupt accounts denied; `DENIED` status blocked at login and rendered with barrier screen | `services/auth.py`, `app.py`, `tests/test_beta_6_audit_security.py` | **READY** |
+| **Collaboration Authorization & Isolation** | Unauthenticated callers blocked from viewing private notes; unassigned mentors blocked from writing notes; no SQLite fallback | `services/collaboration.py`, `tests/test_beta_6_audit_security.py` | **READY** |
+| **Handover Error Handling & Integrity** | Consultation transfer failures surfaced as hard errors; zero masked partial failures | `services/relationships.py`, `tests/test_beta_6_audit_security.py` | **READY** |
+| **Cloud Photo Storage Failure Handling** | Storage deletion errors returned explicitly as failures; redundant SQLite operations removed | `services/*_photos.py`, `tests/test_beta_6_audit_security.py` | **READY** |
+| **Elimination of Synthetic Roles** | Missing `user_roles` records strictly default to `["aspirant"]`; stale profile roles cannot grant professional access | `services/roles.py`, `tests/test_beta_6_audit_security.py` | **READY** |
+| **Append-Only Audit Log RLS Protection** | RLS policy `lifecycle_log_insert_strict` restricts inserts to Sole Admin or self-deletion; prohibits UPDATE and DELETE | `MIGRATION_009_REVISED.sql`, Staging verification | **READY** |
+| **Cross-Role Photo Privacy** | Professional Guide/SME photos strictly masked from Aspirants; signed URLs have 300s expiration | `services/professional_photos.py`, `tests/test_single_admin_and_photos.py` | **READY** |
+| **UI/UX & Tab Integrity Preserved** | Existing dashboards, navigation, cards, and styling intact; exactly 13 Admin tabs maintained | `app.py`, `views/admin.py`, browser E2E workflows | **READY** |
+| **Regression Test Suite** | 100% pass rate across entire repo (0 failures, 0 skipped) | 159/159 Pytest tests passing | **READY** |
+| **Artifact Documentation** | 15 comprehensive deliverables compiled | Available in Brain Artifact Directory & Repo Root | **READY** |
 
 ---
 
@@ -46,8 +46,10 @@ When the Sole Platform Administrator grants explicit production approval, execut
 
 ### Step 1: Execute Additive SQL Migration
 In the Supabase SQL Editor, execute the contents of `MIGRATION_009_REVISED.sql`:
-- Adds 7 lifecycle columns to `public.profiles`.
+- Adds 10 lifecycle columns to `public.profiles`.
 - Creates `public.account_lifecycle_log` with Row Level Security.
+- Creates composite performance indexes.
+- Idempotently backfills existing users to `account_status = 'ACTIVE'`.
 - Replaces `ON DELETE CASCADE` with `ON DELETE RESTRICT` on `profiles_id_fkey`.
 - Runs in a single transaction (`BEGIN ... COMMIT`).
 
