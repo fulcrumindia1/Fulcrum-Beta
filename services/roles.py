@@ -203,6 +203,55 @@ def user_has_active_role(user_id: str, role: str) -> bool:
     return role in get_active_roles(user_id)
 
 
+def is_assignable_mentor(user_id: str, role: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validates whether a user is eligible to be assigned as a mentor (Guide or SME).
+    Enforces:
+    - Target user profile must exist and be active (is_active=True).
+    - User must hold a valid grant for the specified role with status 'active' or 'pending_nda'.
+    - Explicitly rejects users whose role grant is 'revoked' or 'suspended'.
+    - Prevents legacy profiles.role from authorizing inactive, suspended, or revoked mentors.
+    """
+    if not user_id or not role:
+        return False, "User ID and role are required."
+
+    from services.profiles import get_profile
+    p = get_profile(user_id)
+    if not p:
+        return False, "Mentor profile not found."
+
+    # Check account active flag
+    if not p.get("is_active", True):
+        return False, "Mentor account is inactive or suspended."
+
+    # Check account lifecycle status if present
+    acc_status = p.get("account_status")
+    if acc_status and str(acc_status).upper() not in ("ACTIVE", "REGISTERED"):
+        return False, f"Mentor account is {acc_status} and cannot receive new assignments."
+
+    grants = get_user_roles(user_id)
+    matching_grant = next((g for g in grants if g.get("role") == role), None)
+
+    if matching_grant:
+        status = matching_grant.get("status")
+        if status in ("active", "pending_nda"):
+            return True, None
+        elif status == "suspended":
+            return False, f"Selected mentor's {role.upper()} role grant is currently suspended."
+        elif status == "revoked":
+            return False, f"Selected mentor's {role.upper()} role grant has been revoked."
+        else:
+            return False, f"Selected mentor has an invalid {role.upper()} role status ({status})."
+
+    # If no grant found in user_roles, check legacy profile role
+    # but ONLY if the profile is active AND role matches
+    base_role = str(p.get("role", "")).strip().lower()
+    if base_role == role:
+        return True, None
+
+    return False, f"Selected mentor does not hold an active or valid {role.upper()} role grant."
+
+
 def grant_role(
     user_id: str,
     role: str,

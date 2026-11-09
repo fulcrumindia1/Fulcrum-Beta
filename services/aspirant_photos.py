@@ -512,25 +512,7 @@ def upload_aspirant_photo(
 
             return True, None
         except Exception as e:
-            # Fallback to local_db if cloud storage fails, so user is never blocked
-            try:
-                local_db = get_local_db()
-                local_db.upsert_aspirant_photo({
-                    "id": obj_id,
-                    "user_id": user_id,
-                    "storage_bucket": STORAGE_BUCKET,
-                    "storage_path": storage_path,
-                    "content_type": content_type,
-                    "file_size_bytes": len(processed_bytes),
-                    "width": width,
-                    "height": height,
-                    "image_blob": processed_bytes,
-                    "updated_at": now_iso
-                })
-                print(f"[AspirantPhotos] Saved to local DB fallback after cloud storage error: {e}")
-                return True, None
-            except Exception:
-                return False, f"Failed to persist profile photo to cloud storage: {e}"
+            return False, f"Failed to persist profile photo to cloud storage: {e}"
 
     # Local SQLite Mode (Active only when DATA_BACKEND=sqlite)
     local_db = get_local_db()

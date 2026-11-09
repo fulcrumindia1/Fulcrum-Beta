@@ -1109,3 +1109,81 @@ def update_journey_event(
 
     invalidate_memo(f"journey:{ev['aspirant_id']}")
     return True, None
+
+
+def mark_journey_completed(
+    aspirant_id: str,
+    actor_id: str,
+    notes: str = ""
+) -> Tuple[bool, Optional[str]]:
+    """
+    Marks an entrepreneur's Journey as successfully completed (Alumni Status).
+    Distinct from account archival:
+    - Sets journeys.status = 'completed' and stage = 'scale'.
+    - Records a prominent milestone Journey event.
+    - Generates celebration notification to the founder.
+    - Keeps account active so alumni retain access to their journey and dossier.
+    """
+    if not aspirant_id:
+        return False, "Aspirant ID is required."
+
+    from services.roles import require_sole_admin
+    ok_admin, err_admin = require_sole_admin(actor_id=actor_id)
+    if not ok_admin:
+        return False, err_admin
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        admin = get_supabase_admin_client()
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            admin.table("journeys").update({
+                "status": "completed",
+                "stage": "scale",
+                "updated_at": now_iso
+            }).eq("aspirant_id", aspirant_id).execute()
+        except Exception as e:
+            return False, f"Failed to mark journey completed in Supabase: {e}"
+    else:
+        db = get_local_db()
+        conn = db._get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE journeys SET status = 'completed', stage = 'scale', updated_at = ? WHERE aspirant_id = ?", (now_iso, aspirant_id))
+        conn.commit()
+        conn.close()
+
+    # Log meaningful milestone Journey event
+    event_data = {
+        "title": "🎓 Incubation Programme Completed (Alumni Status)",
+        "description": notes.strip() or "Entrepreneur has successfully satisfied core incubation milestones and graduated to Alumni status.",
+        "category": "MILESTONE",
+        "actor_role": "admin",
+        "actor_id": actor_id
+    }
+    log_meaningful_event(
+        aspirant_id=aspirant_id,
+        actor_id=actor_id,
+        actor_role="admin",
+        event_type="MILESTONE_ACHIEVED",
+        title="🎓 Incubation Programme Completed (Alumni Status)",
+        description=event_data["description"],
+        metadata=event_data
+    )
+
+    try:
+        from services.notifications import create_notification
+        create_notification(
+            user_id=aspirant_id,
+            title="🎓 Congratulations! Incubation Programme Completed",
+            message="Your enterprise journey has achieved Alumni status! Your full venture dossier and roadmap remain accessible anytime.",
+            notification_type="programme_completed",
+            actor_id=actor_id
+        )
+    except Exception:
+        pass
+
+    invalidate_memo(f"journey:{aspirant_id}")
+    return True, None

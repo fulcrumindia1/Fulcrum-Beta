@@ -244,8 +244,10 @@ def assign_guide(
         return False, "An entrepreneur cannot be assigned as their own Guide."
 
     guide = get_profile(guide_id)
-    if not guide or not user_has_active_role(guide_id, "guide"):
-        return False, "Selected mentor does not hold an active Guide role grant."
+    from services.roles import is_assignable_mentor
+    ok_assign, err_assign = is_assignable_mentor(guide_id, "guide")
+    if not ok_assign:
+        return False, err_assign or "Selected mentor does not hold a valid Guide role grant."
 
     aspirant = get_profile(aspirant_id)
     if not aspirant:
@@ -475,8 +477,10 @@ def assign_sme(
         return False, "An entrepreneur cannot be assigned as their own SME."
 
     sme = get_profile(sme_id)
-    if not sme or not user_has_active_role(sme_id, "sme"):
-        return False, "Selected mentor does not hold an active SME role grant."
+    from services.roles import is_assignable_mentor
+    ok_assign, err_assign = is_assignable_mentor(sme_id, "sme")
+    if not ok_assign:
+        return False, err_assign or "Selected mentor does not hold a valid SME role grant."
 
     aspirant = get_profile(aspirant_id)
     if not aspirant:

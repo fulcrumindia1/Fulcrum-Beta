@@ -175,7 +175,7 @@ def render_admin_role_grants_tab(admin_id: str):
                         if not reason.strip():
                             st.warning("Please enter a reason.")
                         else:
-                            ok, err = suspend_role(sel_manage_user, sel_role, reason=reason.strip())
+                            ok, err = suspend_role(sel_manage_user, sel_role, reason=reason.strip(), suspended_by=admin_id)
                             if ok:
                                 st.success(f"Role '{sel_role.upper()}' suspended.")
                                 st.rerun()
@@ -237,7 +237,7 @@ def render_admin_role_grants_tab(admin_id: str):
                 col_b1, col_b2 = st.columns(2)
                 with col_b1:
                     if st.button("▶️ Reinstate Role", key="btn_reinstate_role", type="primary", use_container_width=True):
-                        ok, err = reinstate_role(sel_manage_user, sel_role)
+                        ok, err = reinstate_role(sel_manage_user, sel_role, reinstated_by=admin_id)
                         if ok:
                             st.success(f"Role '{sel_role.upper()}' reinstated to active status.")
                             st.rerun()

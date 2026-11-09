@@ -176,7 +176,8 @@ def render_admin_portal(admin_profile: dict):
         "🛡️ Confidential Complaints",
         "⏱️ Inactivity Monitor",
         "💬 Contact Aspirants",
-        "⚖️ SME Conflict Governance"
+        "⚖️ SME Conflict Governance",
+        "🗄️ Account Lifecycle & Archive"
     ], on_change="rerun", key="admin_main_tabs")
 
     # ─────────────────────────────────────────────────────────────
@@ -1333,3 +1334,11 @@ def render_admin_portal(admin_profile: dict):
     with tabs[11]:
         if is_tab_active(tabs[11]):
             render_admin_sme_conflicts_tab(admin_id)
+
+    # ─────────────────────────────────────────────────────────────
+    # TAB 13: ACCOUNT LIFECYCLE & ARCHIVE
+    # ─────────────────────────────────────────────────────────────
+    with tabs[12]:
+        if is_tab_active(tabs[12]):
+            from views.admin_account_lifecycle import render_admin_account_lifecycle_tab
+            render_admin_account_lifecycle_tab(admin_id)

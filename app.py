@@ -1023,6 +1023,64 @@ def main():
     if not is_logged_in:
         render_login_page()
     else:
+        # 0. Account Lifecycle Status Gate (Enforced across all active browser sessions)
+        from services.account_lifecycle import get_account_status, cancel_account_deletion
+        acc_lifecycle = get_account_status(user["id"])
+        acc_status = acc_lifecycle.get("account_status", "ACTIVE")
+
+        if acc_status in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
+            status_title = "Account Suspended" if acc_status == "TEMPORARILY_SUSPENDED" else "Account Archived"
+            status_desc = "temporarily paused by Administration" if acc_status == "TEMPORARILY_SUSPENDED" else "archived by institutional policy"
+            reason_txt = acc_lifecycle.get("lifecycle_reason") or "Administrative compliance review"
+            st.markdown(f"""
+            <div style="max-width:620px; margin: 3rem auto; background:#FFFFFF; border:1.5px solid #E2E8F0; border-top:4px solid #EF4444; border-radius:14px; padding:2.2rem; box-shadow:0 4px 16px rgba(0,0,0,0.06);">
+                <div style="display:flex; align-items:center; gap:14px; margin-bottom:1rem;">
+                    <div style="font-size:2.2rem;">🔒</div>
+                    <div>
+                        <h2 style="margin:0; font-size:1.4rem; color:#0F172A;">{status_title}</h2>
+                        <div style="color:#64748B; font-size:0.88rem; margin-top:2px;">Your account has been {status_desc}.</div>
+                    </div>
+                </div>
+                <div style="background:#FEF2F2; border:1px solid #FEE2E2; border-radius:8px; padding:0.9rem 1.1rem; margin-bottom:1.25rem;">
+                    <span style="font-weight:700; color:#991B1B; font-size:0.88rem;">Reason on Record:</span>
+                    <div style="color:#B91C1C; font-size:0.84rem; margin-top:3px;">{reason_txt}</div>
+                </div>
+                <p style="color:#334155; font-size:0.92rem; line-height:1.55;">
+                    Historical records, Journey milestones, and legal attestations remain securely preserved in Fulcrum's institutional registry. For questions or to request account reactivation, please contact the Platform Administrator at <a href="mailto:fulcrumindia1@gmail.com" style="color:#2563EB; font-weight:600;">fulcrumindia1@gmail.com</a>.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            col_l1, col_l2, col_l3 = st.columns([1, 1, 1])
+            with col_l2:
+                if st.button("🚪 Sign Out", key="btn_suspended_logout", type="primary", use_container_width=True):
+                    logout_user()
+                    st.rerun()
+            return
+
+        if acc_status == "PENDING_DELETION":
+            sched_date = (acc_lifecycle.get("deletion_scheduled_for") or "")[:10]
+            st.markdown(f"""
+            <div style="max-width:680px; margin: 1.5rem auto 1rem; background:#FFFBEB; border:1.5px solid #FDE68A; border-left:5px solid #F59E0B; border-radius:12px; padding:1.2rem 1.5rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                    <div>
+                        <div style="font-weight:800; color:#92400E; font-size:0.95rem;">⚠️ Account Scheduled for Closure (Grace Period Active)</div>
+                        <div style="color:#B45309; font-size:0.84rem; margin-top:3px;">
+                            Scheduled review date: <strong>{sched_date or 'Within 30 Days'}</strong>. No data is permanently purged during this review window.
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            col_cd1, col_cd2 = st.columns([3, 1])
+            with col_cd2:
+                if st.button("↩️ Cancel Closure Request", key="btn_cancel_deletion_banner", use_container_width=True):
+                    ok_c, err_c = cancel_account_deletion(user["id"], actor_id=user["id"], reason="Cancelled by user in application")
+                    if ok_c:
+                        st.success("Account closure cancelled! Your account remains active.")
+                        st.rerun()
+                    else:
+                        st.error(err_c or "Failed to cancel closure.")
+
         # Check if user was provisioned with a temporary password and must set a permanent password
         user_prof_data = user.get("profile_data") or {}
         if isinstance(user_prof_data, str):

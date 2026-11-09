@@ -274,6 +274,13 @@ def list_profiles_by_role(role: str) -> List[Dict]:
                 if role == "aspirant":
                     profile_rows = [p for p in profile_rows if p.get("role") != "admin"]
 
+                # Exclude accounts that are temporarily suspended, archived, or pending deletion
+                profile_rows = [
+                    p for p in profile_rows
+                    if str(p.get("account_status") or "ACTIVE").upper() == "ACTIVE"
+                    and p.get("is_active", True)
+                ]
+
                 # Sort by created_at desc
                 profile_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
                 for r in profile_rows:
@@ -289,6 +296,11 @@ def list_profiles_by_role(role: str) -> List[Dict]:
 
     # SQLite mode ONLY (when DATA_BACKEND=sqlite)
     rows = get_local_db().list_profiles_by_role(role)
+    rows = [
+        r for r in rows
+        if str(r.get("account_status") or "ACTIVE").upper() == "ACTIVE"
+        and r.get("is_active", 1) in (1, True)
+    ]
     for r in rows:
         r["completion_pct"] = calculate_completion(r)
         if r.get("id"):

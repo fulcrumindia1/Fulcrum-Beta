@@ -244,6 +244,16 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
             if email != "fulcrumindia1@gmail.com" and str(local_profile.get("role") or "").strip().lower() in ("admin", "district_admin", "operational_admin"):
                 local_profile["role"] = "aspirant"
                 local_db.upsert_profile(local_profile)
+
+            # Check Account Lifecycle Gate
+            from services.account_lifecycle import get_account_status
+            acc_st = get_account_status(local_profile["id"])
+            st_val = acc_st.get("account_status", "ACTIVE")
+            if st_val in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
+                st_label = "temporarily suspended" if st_val == "TEMPORARILY_SUSPENDED" else "archived"
+                reason_txt = acc_st.get("lifecycle_reason") or "Administrative compliance review"
+                return None, f"Account access restricted: Account is {st_label} ({reason_txt}). Please contact fulcrumindia1@gmail.com."
+
             st.session_state.user = local_profile
             st.session_state.user_id = local_profile["id"]
             st.session_state.role = local_profile.get("role", "aspirant")
@@ -354,6 +364,19 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
         if meta_phone and not profile.get("phone"):
             profile["phone"] = meta_phone
             sync_user_phone_if_missing(user_id, meta_phone, user_meta.get("district"))
+
+    # Account Lifecycle Gate: Enforce active status before granting session state
+    from services.account_lifecycle import get_account_status
+    acc_st = get_account_status(profile["id"])
+    st_val = acc_st.get("account_status", "ACTIVE")
+    if st_val in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
+        st_label = "temporarily suspended" if st_val == "TEMPORARILY_SUSPENDED" else "archived"
+        reason_txt = acc_st.get("lifecycle_reason") or "Administrative compliance review"
+        try:
+            client.auth.sign_out()
+        except Exception:
+            pass
+        return None, f"Account access restricted: Account is {st_label} ({reason_txt}). Please contact fulcrumindia1@gmail.com."
 
     # Save authenticated session state
     st.session_state.user = profile

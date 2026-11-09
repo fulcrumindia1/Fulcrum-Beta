@@ -51,11 +51,11 @@ def force_sqlite_backend(monkeypatch):
 def setup_e2e_profiles():
     db = get_local_db()
 
-    # Generate 3 unique valid UUIDs for PostgreSQL schema compatibility
+    # Generate unique valid UUIDs for PostgreSQL schema compatibility
     p_alpha_id = str(uuid.uuid4())
     p_hybrid_id = str(uuid.uuid4())
     p_beta_id = str(uuid.uuid4())
-    admin_id = str(uuid.uuid4())
+    admin_id = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
 
     # Profile 1: Aspirant Alpha (Organic Food Processing)
     prof_alpha = {
@@ -138,11 +138,11 @@ def setup_e2e_profiles():
         "is_active": True
     }
 
-    # Admin Profile
+    # Admin Profile (Strict Single Platform Admin)
     prof_admin = {
         "id": admin_id,
-        "email": f"admin_{uuid.uuid4().hex[:8]}@test.local",
-        "full_name": "Program Governance Admin",
+        "email": "fulcrumindia1@gmail.com",
+        "full_name": "Fulcrum Administrator",
         "role": "admin",
         "district": "Chennai",
         "state": "Tamil Nadu",

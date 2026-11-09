@@ -345,6 +345,55 @@ class LocalDatabase:
             except Exception: pass
         conn.commit()
 
+        # Dynamic schema migration: ensure Account Lifecycle columns exist in profiles
+        cur.execute("PRAGMA table_info(profiles)")
+        prof_cols = [r[1] for r in cur.fetchall()]
+        if "account_status" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN account_status TEXT DEFAULT 'ACTIVE'")
+            except Exception: pass
+        if "legal_hold" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN legal_hold INTEGER DEFAULT 0")
+            except Exception: pass
+        if "lifecycle_reason" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN lifecycle_reason TEXT")
+            except Exception: pass
+        if "status_updated_at" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN status_updated_at TEXT")
+            except Exception: pass
+        if "status_updated_by" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN status_updated_by TEXT")
+            except Exception: pass
+        if "deletion_requested_at" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN deletion_requested_at TEXT")
+            except Exception: pass
+        if "deletion_requested_by" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN deletion_requested_by TEXT")
+            except Exception: pass
+        if "deletion_scheduled_for" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN deletion_scheduled_for TEXT")
+            except Exception: pass
+        if "retention_notes" not in prof_cols:
+            try: cur.execute("ALTER TABLE profiles ADD COLUMN retention_notes TEXT")
+            except Exception: pass
+
+        # Create account_lifecycle_log table in SQLite
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS account_lifecycle_log (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            previous_status TEXT,
+            new_status TEXT,
+            reason TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}',
+            created_at TEXT
+        );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_acc_log_user ON account_lifecycle_log(user_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_acc_log_created ON account_lifecycle_log(created_at);")
+        conn.commit()
+
         # Seed default super admin (fulcrumindia1@gmail.com) if missing
         cur.execute("SELECT id FROM profiles WHERE email = 'fulcrumindia1@gmail.com' LIMIT 1")
         if not cur.fetchone():
@@ -2676,6 +2725,98 @@ class LocalDatabase:
         conn.commit()
         conn.close()
         return True
+
+    def update_account_status(
+        self,
+        user_id: str,
+        status: str,
+        is_active: int,
+        reason: str,
+        actor_id: str,
+        updated_at: str,
+        clear_deletion: bool = False,
+        deletion_requested_at: Optional[str] = None,
+        deletion_requested_by: Optional[str] = None,
+        deletion_scheduled_for: Optional[str] = None
+    ) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        if clear_deletion:
+            cur.execute("""
+            UPDATE profiles
+            SET account_status = ?, is_active = ?, lifecycle_reason = ?,
+                status_updated_at = ?, status_updated_by = ?,
+                deletion_requested_at = NULL, deletion_requested_by = NULL, deletion_scheduled_for = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """, (status, is_active, reason, updated_at, actor_id, updated_at, user_id))
+        elif deletion_requested_at:
+            cur.execute("""
+            UPDATE profiles
+            SET account_status = ?, is_active = ?, lifecycle_reason = ?,
+                status_updated_at = ?, status_updated_by = ?,
+                deletion_requested_at = ?, deletion_requested_by = ?, deletion_scheduled_for = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (status, is_active, reason, updated_at, actor_id, deletion_requested_at, deletion_requested_by, deletion_scheduled_for, updated_at, user_id))
+        else:
+            cur.execute("""
+            UPDATE profiles
+            SET account_status = ?, is_active = ?, lifecycle_reason = ?,
+                status_updated_at = ?, status_updated_by = ?,
+                updated_at = ?
+            WHERE id = ?
+            """, (status, is_active, reason, updated_at, actor_id, updated_at, user_id))
+        conn.commit()
+        conn.close()
+        return True
+
+    def update_legal_hold(self, user_id: str, enabled: bool, reason: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cur.execute("""
+        UPDATE profiles
+        SET legal_hold = ?, retention_notes = ?, updated_at = ?
+        WHERE id = ?
+        """, (1 if enabled else 0, f"Legal hold: {reason}", now_iso, user_id))
+        conn.commit()
+        conn.close()
+        return True
+
+    def log_account_lifecycle(self, entry: Dict) -> bool:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        import uuid
+        cur.execute("""
+        INSERT INTO account_lifecycle_log (
+            id, user_id, actor_id, action, previous_status, new_status, reason, metadata, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            entry.get("id") or str(uuid.uuid4()),
+            entry["user_id"],
+            entry["actor_id"],
+            entry["action"],
+            entry.get("previous_status"),
+            entry.get("new_status"),
+            entry["reason"],
+            entry.get("metadata", "{}"),
+            entry.get("created_at") or datetime.now(timezone.utc).isoformat()
+        ))
+        conn.commit()
+        conn.close()
+        return True
+
+    def list_account_lifecycle_logs(self, user_id: Optional[str] = None, limit: int = 150) -> List[Dict]:
+        conn = self._get_conn()
+        cur = conn.cursor()
+        if user_id:
+            cur.execute("SELECT * FROM account_lifecycle_log WHERE user_id = ? ORDER BY created_at DESC LIMIT ?", (user_id, limit))
+        else:
+            cur.execute("SELECT * FROM account_lifecycle_log ORDER BY created_at DESC LIMIT ?", (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+        conn.close()
+        return rows
 
 # Singleton accessor
 _LOCAL_DB_INSTANCE = None
