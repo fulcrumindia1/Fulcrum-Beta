@@ -331,88 +331,48 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
             color: #cbd5e1;
         }
 
-        /* Workspace Selector & Sidebar Selectbox — Pink Theme Alignment */
+        /* Workspace Selector & Sidebar Selectbox — High-Contrast Rose/Pink Styling */
         [data-testid="stSidebar"] div[data-testid="stSelectbox"],
         [data-testid="stSidebar"] .stSelectbox,
         section[data-testid="stSidebar"] div.st-key-sb_current_workspace {
             margin-bottom: 0.6rem !important;
         }
 
-        section[data-testid="stSidebar"] [data-baseweb="select"],
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
-        section[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
-        section[data-testid="stSidebar"] [data-baseweb="select"] div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div,
-        div.st-key-sb_current_workspace [data-baseweb="select"],
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child,
-        div.st-key-sb_current_workspace [data-baseweb="select"] [role="combobox"],
-        div.st-key-sb_current_workspace [data-baseweb="select"] div {
-            background-color: #241424 !important;
-            background: #241424 !important;
-            border-color: #EC4899 !important;
-            color: #FFFFFF !important;
-        }
-
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div {
-            border: 1.5px solid #EC4899 !important;
-            border-radius: 10px !important;
+        /* Outer selectbox container */
+        div.st-key-sb_current_workspace div[data-baseweb="select"],
+        div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child {
+            background-color: #1e1528 !important;
+            border: 1.5px solid #F43F5E !important;
+            border-radius: 8px !important;
             min-height: 42px !important;
-            box-shadow: 0 0 10px rgba(236, 72, 153, 0.25) !important;
-            transition: all 0.2s ease-in-out !important;
+            box-shadow: 0 0 10px rgba(244, 63, 94, 0.2) !important;
         }
 
-        section[data-testid="stSidebar"] [data-baseweb="select"] > div:hover,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div:hover,
-        div.st-key-sb_current_workspace [data-baseweb="select"] > div:hover {
-            background-color: #381232 !important;
-            border-color: #F472B6 !important;
-            box-shadow: 0 0 14px rgba(236, 72, 153, 0.45) !important;
+        /* Prevent inner divs from creating weird colored square blocks */
+        div.st-key-sb_current_workspace div[data-baseweb="select"] div {
+            background-color: transparent !important;
         }
 
-        section[data-testid="stSidebar"] [data-baseweb="select"]:focus-within > div,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]:focus-within > div,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"]:focus-within > div,
-        div.st-key-sb_current_workspace [data-baseweb="select"]:focus-within > div {
-            border-color: #F472B6 !important;
-            box-shadow: 0 0 0 2px rgba(236, 72, 153, 0.5) !important;
+        div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover {
+            border-color: #FB7185 !important;
+            box-shadow: 0 0 14px rgba(244, 63, 94, 0.4) !important;
         }
 
-        /* High-contrast crisp typography for sidebar selectbox text and chevron */
-        section[data-testid="stSidebar"] [data-baseweb="select"] *,
-        section[data-testid="stSidebar"] [data-baseweb="select"] div,
-        section[data-testid="stSidebar"] [data-baseweb="select"] span,
-        section[data-testid="stSidebar"] [data-baseweb="select"] p,
-        section[data-testid="stSidebar"] [data-baseweb="select"] input,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] *,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] *,
-        div.st-key-sb_current_workspace [data-baseweb="select"] *,
-        div.st-key-sb_current_workspace [data-baseweb="select"] span,
-        div.st-key-sb_current_workspace [data-baseweb="select"] div,
-        div.st-key-sb_current_workspace [data-baseweb="select"] p,
-        div.st-key-sb_current_workspace [data-baseweb="select"] input {
-            color: #FFFFFF !important;
+        /* Visible, crisp Rose-Pink text */
+        div.st-key-sb_current_workspace div[data-baseweb="select"] span,
+        div.st-key-sb_current_workspace div[data-baseweb="select"] p,
+        div.st-key-sb_current_workspace div[data-baseweb="select"] div[data-testid="stMarkdownContainer"] *,
+        div.st-key-sb_current_workspace div[data-baseweb="select"] input {
+            color: #FDA4AF !important;
             font-weight: 700 !important;
-            font-size: 0.92rem !important;
+            font-size: 0.95rem !important;
         }
 
-        section[data-testid="stSidebar"] [data-baseweb="select"] svg,
-        section[data-testid="stSidebar"] [data-baseweb="select"] svg path,
-        section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] svg,
-        section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] svg,
-        div.st-key-sb_current_workspace [data-baseweb="select"] svg,
-        div.st-key-sb_current_workspace [data-baseweb="select"] svg path {
-            fill: #F472B6 !important;
-            color: #F472B6 !important;
+        /* Dropdown Chevron */
+        div.st-key-sb_current_workspace div[data-baseweb="select"] svg {
+            fill: #FB7185 !important;
+            color: #FB7185 !important;
+            background: transparent !important;
         }
 
         /* BaseWeb Dropdown Popover Listbox */
@@ -943,71 +903,47 @@ def main():
             if not is_single_admin and len(ws_options) > 1:
                 st.markdown("""
                 <style>
-                /* Direct In-Sidebar Scoped Current Workspace Dropdown Styles — Pink Theme */
-                section[data-testid="stSidebar"] [data-baseweb="select"],
-                section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child,
-                section[data-testid="stSidebar"] [data-baseweb="select"] [role="combobox"],
-                section[data-testid="stSidebar"] [data-baseweb="select"] div,
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"],
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] div,
-                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"],
-                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] div,
-                div.st-key-sb_current_workspace [data-baseweb="select"],
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div:first-child,
-                div.st-key-sb_current_workspace [data-baseweb="select"] [role="combobox"],
-                div.st-key-sb_current_workspace [data-baseweb="select"] div {
-                    background-color: #241424 !important;
-                    background: #241424 !important;
-                    border-color: #EC4899 !important;
-                    color: #FFFFFF !important;
-                }
-
-                section[data-testid="stSidebar"] [data-baseweb="select"] > div,
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div {
-                    border: 1.5px solid #EC4899 !important;
-                    border-radius: 10px !important;
+                /* Scoped Workspace Dropdown — Elegant High-Contrast Dark Card & Rose Text */
+                div.st-key-sb_current_workspace div[data-baseweb="select"],
+                div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child {
+                    background-color: #1a1625 !important;
+                    background: #1a1625 !important;
+                    border: 1.5px solid #F43F5E !important;
+                    border-radius: 8px !important;
                     min-height: 42px !important;
-                    box-shadow: 0 0 10px rgba(236, 72, 153, 0.25) !important;
+                    box-shadow: 0 0 10px rgba(244, 63, 94, 0.25) !important;
                 }
 
-                section[data-testid="stSidebar"] [data-baseweb="select"] > div:hover,
-                section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"] > div:hover,
-                div.st-key-sb_current_workspace [data-baseweb="select"] > div:hover {
-                    background-color: #381232 !important;
-                    border-color: #F472B6 !important;
-                    box-shadow: 0 0 14px rgba(236, 72, 153, 0.45) !important;
+                div.st-key-sb_current_workspace div[data-baseweb="select"] div {
+                    background-color: transparent !important;
+                    background: transparent !important;
                 }
 
-                section[data-testid="stSidebar"] [data-baseweb="select"] *,
-                section[data-testid="stSidebar"] [data-baseweb="select"] div,
-                section[data-testid="stSidebar"] [data-baseweb="select"] span,
-                section[data-testid="stSidebar"] [data-baseweb="select"] p,
-                section[data-testid="stSidebar"] [data-baseweb="select"] input,
-                div.st-key-sb_current_workspace *,
-                div.st-key-sb_current_workspace span,
-                div.st-key-sb_current_workspace div,
-                div.st-key-sb_current_workspace p,
-                div.st-key-sb_current_workspace input {
-                    color: #FFFFFF !important;
+                div.st-key-sb_current_workspace div[data-baseweb="select"] > div:first-child:hover {
+                    border-color: #FB7185 !important;
+                    background-color: #261933 !important;
+                    box-shadow: 0 0 14px rgba(244, 63, 94, 0.45) !important;
+                }
+
+                /* Crisp, highly visible Rose-Pink typography */
+                div.st-key-sb_current_workspace div[data-baseweb="select"] span,
+                div.st-key-sb_current_workspace div[data-baseweb="select"] p,
+                div.st-key-sb_current_workspace div[data-baseweb="select"] div[data-testid="stMarkdownContainer"] *,
+                div.st-key-sb_current_workspace div[data-baseweb="select"] input {
+                    color: #FDA4AF !important;
                     font-weight: 700 !important;
-                    font-size: 0.92rem !important;
+                    font-size: 0.95rem !important;
                 }
 
-                section[data-testid="stSidebar"] [data-baseweb="select"] svg,
-                section[data-testid="stSidebar"] [data-baseweb="select"] svg path,
-                div.st-key-sb_current_workspace svg,
-                div.st-key-sb_current_workspace svg path {
-                    fill: #F472B6 !important;
-                    color: #F472B6 !important;
+                /* Chevron icon */
+                div.st-key-sb_current_workspace div[data-baseweb="select"] svg {
+                    fill: #FB7185 !important;
+                    color: #FB7185 !important;
+                    background: transparent !important;
                 }
                 </style>
                 """, unsafe_allow_html=True)
-                st.markdown("<div style='font-size: 0.68rem; font-weight: 700; color: #f472b6; text-transform: uppercase; letter-spacing: 0.5px; margin-top:0.6rem; margin-bottom:0.2rem;'>Current Workspace</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size: 0.70rem; font-weight: 800; color: #FB7185; text-transform: uppercase; letter-spacing: 0.8px; margin-top:0.6rem; margin-bottom:0.3rem;'>Current Workspace</div>", unsafe_allow_html=True)
                 sel_idx = ws_keys.index(curr_ws)
                 selected_ws = st.selectbox(
                     "Current Workspace",
