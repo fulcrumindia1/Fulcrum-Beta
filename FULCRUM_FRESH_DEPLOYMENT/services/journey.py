@@ -181,7 +181,7 @@ def get_journey_timeline(aspirant_id: str) -> List[Dict]:
                     .order("event_date", desc=True)\
                     .order("created_at", desc=True)\
                     .execute()
-                if res.data:
+                if res.data is not None:
                     timeline = []
                     for e in res.data:
                         actor_name = e.get("profiles", {}).get("full_name") if e.get("profiles") else "Contributor"

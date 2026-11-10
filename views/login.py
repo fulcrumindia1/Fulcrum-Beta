@@ -12,17 +12,28 @@ Design Guidelines:
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 from services.auth import (
     login_user,
     signup_aspirant,
     send_password_reset,
     complete_password_reset,
-    get_data_backend
+    verify_recovery_session_tokens,
+    verify_recovery_token_hash,
+    _classify_recovery_error,
+    get_data_backend,
 )
+from services.auth_callback_component import read_auth_callback
 from services.constants import MASTER_DISTRICTS_TN
+from services.perf import get_active_tracker
 
 def render_login_page():
+    tracker = get_active_tracker("login_page")
+    with tracker.stage("login_render_ms"):
+        _render_login_page_impl()
+    tracker.persist_to_session()
+
+
+def _render_login_page_impl():
     # Inject Institutional Light Theme CSS specifically for the login surface
     st.markdown("""
     <style>
@@ -230,143 +241,145 @@ def render_login_page():
     </style>
     """, unsafe_allow_html=True)
 
-    # Bridge URL hash fragment (#access_token=... / #error=...) to query params for Streamlit
-    components.html(r"""
-    <script>
-    (function() {
-        try {
-            var targetWin = window.parent || window;
-            var hash = targetWin.location.hash || window.location.hash;
-            if (hash && (hash.indexOf('access_token=') !== -1 || hash.indexOf('error=') !== -1)) {
-                var cleanHash = hash.replace(/^[#\/]+/, '');
-                var hashParams = new URLSearchParams(cleanHash);
-                var searchParams = new URLSearchParams(targetWin.location.search || window.location.search);
-                var changed = false;
-                ['access_token', 'refresh_token', 'type', 'error', 'error_description', 'error_code'].forEach(function(k) {
-                    var v = hashParams.get(k);
-                    if (v && !searchParams.has(k)) {
-                        searchParams.set(k, v);
-                        changed = true;
-                    }
-                });
-                if (changed) {
-                    if (searchParams.has('access_token') && !searchParams.has('type')) {
-                        searchParams.set('type', 'recovery');
-                    }
-                    var cleanUrl = (targetWin.location.pathname || window.location.pathname) + '?' + searchParams.toString();
-                    targetWin.location.replace(cleanUrl);
-                }
-            }
-        } catch(e) {
-            console.error('Hash bridge error:', e);
-        }
-    })();
-    </script>
-    """, height=0, width=0)
-
     # Check query parameters for email confirmation or password recovery
     query_params = st.query_params
-    auth_type = query_params.get("type", "")
-    token_hash = query_params.get("token_hash") or query_params.get("token") or ""
-    acc_token = query_params.get("access_token", "")
-    ref_token = query_params.get("refresh_token", "")
-    auth_code = query_params.get("code", "")
-    error_desc = query_params.get("error_description") or query_params.get("error") or ""
+    auth_type = str(query_params.get("type", "") or "").strip().lower()
+    token_hash = str(query_params.get("token_hash") or query_params.get("token") or "").strip()
+    acc_token_qp = str(query_params.get("access_token", "") or "").strip()
+    ref_token_qp = str(query_params.get("refresh_token", "") or "").strip()
+    auth_code = str(query_params.get("code", "") or "").strip()
+    error_desc = str(query_params.get("error_description") or query_params.get("error_code") or query_params.get("error") or "").strip()
     backend = get_data_backend()
 
-    # Step A: Catch provider-level callback errors immediately
-    if error_desc:
+    # Security guardrail: reject & purge session tokens passed via browser query parameters
+    if acc_token_qp or ref_token_qp:
         st.session_state.recovery_verified = False
-        st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+        st.session_state.recovery_error = "Invalid callback format: session tokens cannot be passed in URL query parameters. Please open the link directly from your email."
         st.query_params.clear()
         st.rerun()
 
-    # Step B: Supabase mode cryptographic verification of incoming recovery parameters
+    # Step A: Catch provider-level callback errors immediately with distinct diagnostics
+    if error_desc:
+        st.session_state.recovery_verified = False
+        _, clean_msg = _classify_recovery_error(Exception(error_desc))
+        st.session_state.recovery_error = clean_msg
+        st.query_params.clear()
+        st.rerun()
+
+    # Step B: Mount WebSocket-only Components v2 hash bridge (reads #access_token/#error without query params)
+    waiting_for_hash_bridge = bool(
+        backend == "supabase"
+        and auth_type == "recovery"
+        and not token_hash
+        and not auth_code
+        and not st.session_state.get("recovery_verified")
+        and not st.session_state.get("recovery_error")
+        and not st.session_state.get("_pending_recovery_token_hash")
+    )
+    cb_payload = None
     if backend == "supabase" and not st.session_state.get("recovery_verified"):
-        from services.auth import get_supabase_client
-        client = get_supabase_client()
+        cb_payload = read_auth_callback(expect_hash=waiting_for_hash_bridge)
 
-        # Mode 1: token_hash OTP verification (Recommended Supabase recovery link format)
-        if token_hash and (auth_type == "recovery" or not auth_type):
-            try:
-                if client:
-                    res = client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
-                    if res and getattr(res, "session", None) and getattr(res, "user", None):
-                        st.session_state.recovery_verified = True
-                        st.session_state.recovery_verified_email = res.user.email
-                        st.session_state.sb_access_token = res.session.access_token
-                        st.session_state.sb_refresh_token = res.session.refresh_token
-                        st.session_state.recovery_error = None
-                        st.query_params.clear()
-                        st.rerun()
-                    else:
-                        st.session_state.recovery_verified = False
-                        st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
-                        st.query_params.clear()
-                        st.rerun()
-            except Exception:
-                st.session_state.recovery_verified = False
-                st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
-                st.query_params.clear()
-                st.rerun()
+    # Step C: Handle incoming WebSocket hash-fragment payload (default Supabase implicit confirmation/recovery)
+    if backend == "supabase" and isinstance(cb_payload, dict):
+        cb_status = cb_payload.get("status")
+        cb_type = str(cb_payload.get("type") or auth_type or "").strip().lower()
 
-        # Mode 2: access_token verification (from Hash bridge or direct link)
-        elif acc_token and auth_type == "recovery":
-            try:
-                if client:
-                    user_res = client.auth.get_user(acc_token)
-                    if user_res and getattr(user_res, "user", None):
-                        st.session_state.recovery_verified = True
-                        st.session_state.recovery_verified_email = user_res.user.email
-                        st.session_state.sb_access_token = acc_token
-                        st.session_state.sb_refresh_token = ref_token or acc_token
-                        st.session_state.recovery_error = None
-                        st.query_params.clear()
-                        st.rerun()
-                    else:
-                        st.session_state.recovery_verified = False
-                        st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
-                        st.query_params.clear()
-                        st.rerun()
-            except Exception:
-                st.session_state.recovery_verified = False
-                st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
-                st.query_params.clear()
-                st.rerun()
-
-        # Mode 3: PKCE authorization code exchange (if code is provided)
-        elif auth_code and (auth_type == "recovery" or not auth_type):
-            code_verifier = st.session_state.get("pkce_verifier")
-            exchanged = False
-            if client:
-                try:
-                    params = {"auth_code": auth_code}
-                    if code_verifier:
-                        params["code_verifier"] = code_verifier
-                    res = client.auth.exchange_code_for_session(params)
-                    if res and getattr(res, "session", None) and getattr(res, "user", None):
-                        st.session_state.recovery_verified = True
-                        st.session_state.recovery_verified_email = res.user.email
-                        st.session_state.sb_access_token = res.session.access_token
-                        st.session_state.sb_refresh_token = res.session.refresh_token
-                        st.session_state.recovery_error = None
-                        st.query_params.clear()
-                        st.rerun()
-                        exchanged = True
-                except Exception:
-                    pass
-            if not exchanged:
-                st.session_state.recovery_verified = False
-                st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
-                st.query_params.clear()
-                st.rerun()
-
-        # Mode 4: Naked ?type=recovery without tokens
-        elif auth_type == "recovery" and not (token_hash or acc_token or auth_code):
+        if cb_status == "error":
+            raw_err = " ".join([
+                str(cb_payload.get("error_code") or ""),
+                str(cb_payload.get("error_description") or ""),
+                str(cb_payload.get("error") or ""),
+            ]).strip()
+            _, clean_msg = _classify_recovery_error(Exception(raw_err or "invalid"))
             st.session_state.recovery_verified = False
-            st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+            st.session_state.recovery_error = clean_msg
             st.query_params.clear()
             st.rerun()
+
+        elif cb_status == "empty":
+            st.session_state.recovery_verified = False
+            st.session_state.recovery_error = "Missing recovery verification proof in the callback URL. Please open the password reset link directly from your email."
+            st.query_params.clear()
+            st.rerun()
+
+        elif cb_status == "found":
+            if cb_type in ("signup", "email", "email_change", "email_verification"):
+                st.session_state.email_confirmed_notice = True
+                st.query_params.clear()
+                st.rerun()
+            else:
+                ok, verified_email, _, err_msg = verify_recovery_session_tokens(
+                    cb_payload.get("access_token", ""),
+                    cb_payload.get("refresh_token", ""),
+                )
+                if ok and verified_email:
+                    st.session_state.recovery_verified = True
+                    st.session_state.recovery_verified_email = verified_email
+                    st.session_state._recovery_access_token = cb_payload.get("access_token", "")
+                    st.session_state._recovery_refresh_token = cb_payload.get("refresh_token", "")
+                    st.session_state.recovery_error = None
+                    st.query_params.clear()
+                    st.rerun()
+                else:
+                    st.session_state.recovery_verified = False
+                    st.session_state.recovery_error = err_msg or "Recovery verification failed. Please request a new link."
+                    st.query_params.clear()
+                    st.rerun()
+
+    # Step D: Handle query-param token_hash or PKCE code (if provided)
+    if backend == "supabase" and not st.session_state.get("recovery_verified"):
+        if token_hash and (auth_type == "recovery" or not auth_type):
+            # Hold token_hash for deliberate user click so email scanners/prefetchers cannot burn single-use OTPs
+            st.session_state._pending_recovery_token_hash = token_hash
+            st.session_state.recovery_error = None
+            st.query_params.clear()
+            st.rerun()
+
+        elif auth_code and (auth_type == "recovery" or not auth_type):
+            # Strict PKCE check: NEVER exchange an authorization code without its matching verifier
+            code_verifier = st.session_state.get("pkce_verifier")
+            if not code_verifier:
+                st.session_state.recovery_verified = False
+                st.session_state.recovery_error = (
+                    "This link uses a session-bound verification code whose browser verifier is missing "
+                    "(this occurs when opening a PKCE link in a new tab, different browser, or mobile app). "
+                    "Please request a new password reset link."
+                )
+                st.query_params.clear()
+                st.rerun()
+            else:
+                from services.auth import _create_ephemeral_supabase_client
+                rec_cli = _create_ephemeral_supabase_client()
+                exchanged = False
+                if rec_cli:
+                    try:
+                        res = rec_cli.auth.exchange_code_for_session({
+                            "auth_code": auth_code,
+                            "code_verifier": code_verifier,
+                        })
+                        sess = getattr(res, "session", None)
+                        user_obj = getattr(res, "user", None)
+                        if sess and user_obj and getattr(sess, "access_token", None) and getattr(sess, "refresh_token", None):
+                            st.session_state.recovery_verified = True
+                            st.session_state.recovery_verified_email = user_obj.email
+                            st.session_state._recovery_access_token = sess.access_token
+                            st.session_state._recovery_refresh_token = sess.refresh_token
+                            st.session_state.recovery_error = None
+                            st.query_params.clear()
+                            exchanged = True
+                            st.rerun()
+                    except Exception as ex:
+                        _, clean_msg = _classify_recovery_error(ex)
+                        st.session_state.recovery_verified = False
+                        st.session_state.recovery_error = clean_msg
+                        st.query_params.clear()
+                        st.rerun()
+                if not exchanged:
+                    st.session_state.recovery_verified = False
+                    st.session_state.recovery_error = "Failed to verify authorization code. Please request a new reset link."
+                    st.query_params.clear()
+                    st.rerun()
 
     # Centered Container Layout
     col_l, col_center, col_r = st.columns([1, 1.4, 1])
@@ -379,8 +392,36 @@ def render_login_page():
         </div>
         """, unsafe_allow_html=True)
 
-        if auth_type in ["signup", "email_verification"]:
+        if waiting_for_hash_bridge and not cb_payload:
+            st.info("🔐 Verifying your password recovery link securely...")
+            return
+
+        if st.session_state.get("_pending_recovery_token_hash"):
+            st.info("🔐 Confirm below to verify your one-time recovery link and proceed to password reset.")
+            col_th1, col_th2 = st.columns(2)
+            with col_th1:
+                if st.button("Verify & Continue", key="btn_verify_token_hash", use_container_width=True):
+                    pending_th = st.session_state.pop("_pending_recovery_token_hash", "")
+                    ok, v_email, acc_t, ref_t, _, err_msg = verify_recovery_token_hash(pending_th)
+                    if ok and v_email:
+                        st.session_state.recovery_verified = True
+                        st.session_state.recovery_verified_email = v_email
+                        st.session_state._recovery_access_token = acc_t
+                        st.session_state._recovery_refresh_token = ref_t
+                        st.session_state.recovery_error = None
+                    else:
+                        st.session_state.recovery_verified = False
+                        st.session_state.recovery_error = err_msg or "Recovery token verification failed."
+                    st.rerun()
+            with col_th2:
+                if st.button("← Cancel", key="btn_cancel_token_hash", use_container_width=True):
+                    st.session_state.pop("_pending_recovery_token_hash", None)
+                    st.rerun()
+            return
+
+        if auth_type in ["signup", "email_verification"] or st.session_state.get("email_confirmed_notice"):
             st.success("✅ Email confirmed successfully. Please sign in with your email and password.")
+            st.session_state.email_confirmed_notice = False
 
         if st.session_state.get("password_reset_success"):
             st.success("🎉 Password updated successfully! Please sign in with your new password.")
@@ -452,8 +493,8 @@ def render_login_page():
                     else:
                         ok, err = complete_password_reset(
                             new_p1,
-                            access_token=st.session_state.get("sb_access_token"),
-                            refresh_token=st.session_state.get("sb_refresh_token"),
+                            access_token=st.session_state.get("_recovery_access_token"),
+                            refresh_token=st.session_state.get("_recovery_refresh_token"),
                             email=verified_email
                         )
                         if ok:
@@ -466,8 +507,11 @@ def render_login_page():
                                 pass
                             st.session_state.recovery_verified = False
                             st.session_state.recovery_verified_email = None
+                            st.session_state._recovery_access_token = None
+                            st.session_state._recovery_refresh_token = None
                             st.session_state.sb_access_token = None
                             st.session_state.sb_refresh_token = None
+                            st.session_state.supabase_client = None
                             st.session_state.show_recovery_form = False
                             st.session_state.password_reset_success = True
                             st.session_state.input_login_email = verified_email
@@ -476,9 +520,13 @@ def render_login_page():
                         else:
                             if err and "different" in err.lower():
                                 st.error("New password must be different from your current password.")
-                            elif err and ("expired" in err.lower() or "invalid" in err.lower()):
+                            elif err and "network timeout" in err.lower():
+                                st.error(err)
+                            elif err and ("expired" in err.lower() or "invalid" in err.lower() or "already been used" in err.lower()):
                                 st.session_state.recovery_verified = False
-                                st.session_state.recovery_error = "The recovery link has expired or has already been used. Please request a new link."
+                                st.session_state._recovery_access_token = None
+                                st.session_state._recovery_refresh_token = None
+                                st.session_state.recovery_error = err
                                 st.rerun()
                             else:
                                 st.error(err or "Failed to update password.")
@@ -493,8 +541,11 @@ def render_login_page():
                     pass
                 st.session_state.recovery_verified = False
                 st.session_state.recovery_verified_email = None
+                st.session_state._recovery_access_token = None
+                st.session_state._recovery_refresh_token = None
                 st.session_state.sb_access_token = None
                 st.session_state.sb_refresh_token = None
+                st.session_state.supabase_client = None
                 st.session_state.show_recovery_form = False
                 st.query_params.clear()
                 st.rerun()
@@ -542,19 +593,22 @@ def render_login_page():
                     else:
                         st.warning("Please enter your email and password.")
 
-            # Password Reset Expander
+            # Password Reset Expander (wrapped in st.form to prevent unnecessary reruns)
             backend = get_data_backend()
             is_fp_open = bool(st.session_state.get("open_forgot_password", False))
             with st.expander("🔑 Forgot Password?", expanded=is_fp_open):
                 if backend == "supabase":
                     st.markdown("<p style='font-size:0.8rem; color:#64748B;'>Enter your registered email address to receive a secure password recovery link.</p>", unsafe_allow_html=True)
-                    col_fp1, col_fp2 = st.columns([2, 1])
-                    with col_fp1:
-                        fp_email = st.text_input("Registered Email", placeholder="name@domain.in", key="input_fp_email")
-                    with col_fp2:
-                        st.write("")
-                        st.write("")
-                        if st.button("Send Reset Link", key="btn_send_fp"):
+                    with st.form("forgot_pwd_form", clear_on_submit=False):
+                        col_fp1, col_fp2 = st.columns([2, 1])
+                        with col_fp1:
+                            fp_email = st.text_input("Registered Email", placeholder="name@domain.in", key="input_fp_email")
+                        with col_fp2:
+                            st.write("")
+                            st.write("")
+                            submit_fp = st.form_submit_button("Send Reset Link", use_container_width=True)
+
+                        if submit_fp:
                             if fp_email:
                                 ok, err = send_password_reset(fp_email)
                                 if ok:
@@ -583,59 +637,65 @@ def render_login_page():
             """, unsafe_allow_html=True)
 
         # ─────────────────────────────────────────────────────────────
-        # TAB 2: PUBLIC ASPIRANT SIGNUP SURFACE (Aspirants Only)
+        # TAB 2: PUBLIC ASPIRANT SIGNUP SURFACE (Aspirants Only — inside st.form)
         # ─────────────────────────────────────────────────────────────
         with tab_signup:
             st.markdown("<p style='font-size: 0.84rem; color: #64748B; margin-bottom: 1.25rem;'>Register as an entrepreneur to access mentorship and scheme intelligence.</p>", unsafe_allow_html=True)
 
-            s_name = st.text_input("Full Name", placeholder="Ravi Kumar", key="signup_name")
-            s_email = st.text_input("Work / Personal Email", placeholder="ravi.kumar@milletfoods.in", key="signup_email")
-            
-            c_ph, c_dist = st.columns(2)
-            with c_ph:
-                s_phone = st.text_input("Mobile Number", placeholder="9876543210", key="signup_phone")
-            with c_dist:
-                s_dist = st.selectbox("District (Tamil Nadu)", MASTER_DISTRICTS_TN, index=13, key="signup_district")
+            with st.form("signup_form", clear_on_submit=False):
+                s_name = st.text_input("Full Name", placeholder="Ravi Kumar", key="signup_name")
+                s_email = st.text_input("Work / Personal Email", placeholder="ravi.kumar@milletfoods.in", key="signup_email")
+                
+                c_ph, c_dist = st.columns(2)
+                with c_ph:
+                    s_phone = st.text_input("Mobile Number", placeholder="9876543210", key="signup_phone")
+                with c_dist:
+                    s_dist = st.selectbox("District (Tamil Nadu)", MASTER_DISTRICTS_TN, index=13, key="signup_district")
 
-            # If "Other" is selected, show a text input to specify the actual district/city/state
-            s_final_district = s_dist
-            if s_dist == "Other District / Non-TN (Specify)":
-                s_other_dist = st.text_input("Specify District / City / State *", placeholder="e.g. Bengaluru (Karnataka), Mumbai (Maharashtra)", key="signup_other_district")
-                if s_other_dist and s_other_dist.strip():
-                    s_final_district = s_other_dist.strip()
+                s_other_dist = st.text_input(
+                    "If 'Other District / Non-TN', specify District / City / State",
+                    placeholder="e.g. Bengaluru (Karnataka), Mumbai (Maharashtra)",
+                    key="signup_other_district"
+                )
 
-            c_p1, c_p2 = st.columns(2)
-            with c_p1:
-                s_pwd = st.text_input("Create Password", type="password", placeholder="••••••••", key="signup_pwd")
-            with c_p2:
-                s_pwd_confirm = st.text_input("Confirm Password", type="password", placeholder="••••••••", key="signup_pwd2")
+                c_p1, c_p2 = st.columns(2)
+                with c_p1:
+                    s_pwd = st.text_input("Create Password", type="password", placeholder="••••••••", key="signup_pwd")
+                with c_p2:
+                    s_pwd_confirm = st.text_input("Confirm Password", type="password", placeholder="••••••••", key="signup_pwd2")
 
-            st.write("")
-            if st.button("CREATE ASPIRANT ACCOUNT", use_container_width=True, key="btn_do_signup"):
-                if not s_name or not s_email or not s_pwd:
-                    st.error("Please fill in all mandatory fields.")
-                elif s_pwd != s_pwd_confirm:
-                    st.error("Passwords do not match.")
-                elif len(s_pwd) < 6:
-                    st.error("Password must be at least 6 characters long.")
-                elif s_dist == "Other District / Non-TN (Specify)" and not s_other_dist.strip():
-                    st.error("Please specify your district / city / state.")
-                else:
-                    profile, err = signup_aspirant(
-                        email=s_email,
-                        password=s_pwd,
-                        full_name=s_name,
-                        phone=s_phone,
-                        district=s_final_district
-                    )
-                    if profile:
-                        if profile.get("pending_confirmation"):
-                            st.success(f"🎉 Account created successfully for **{s_email}**! A confirmation link has been sent to your email. Please check your inbox and verify your email before signing in.")
-                        else:
-                            st.success("🎉 Account created successfully! Logging in...")
-                            st.rerun()
+                st.write("")
+                submit_signup = st.form_submit_button("CREATE ASPIRANT ACCOUNT", use_container_width=True)
+
+                if submit_signup:
+                    s_final_district = s_dist
+                    if s_dist == "Other District / Non-TN (Specify)":
+                        s_final_district = (s_other_dist or "").strip()
+
+                    if not s_name or not s_email or not s_pwd:
+                        st.error("Please fill in all mandatory fields.")
+                    elif s_pwd != s_pwd_confirm:
+                        st.error("Passwords do not match.")
+                    elif len(s_pwd) < 6:
+                        st.error("Password must be at least 6 characters long.")
+                    elif s_dist == "Other District / Non-TN (Specify)" and not s_final_district:
+                        st.error("Please specify your district / city / state.")
                     else:
-                        st.error(err or "Failed to create account. Email may already be in use.")
+                        profile, err = signup_aspirant(
+                            email=s_email,
+                            password=s_pwd,
+                            full_name=s_name,
+                            phone=s_phone,
+                            district=s_final_district
+                        )
+                        if profile:
+                            if profile.get("pending_confirmation"):
+                                st.success(f"🎉 Account created successfully for **{s_email}**! A confirmation link has been sent to your email. Please check your inbox and verify your email before signing in.")
+                            else:
+                                st.success("🎉 Account created successfully! Logging in...")
+                                st.rerun()
+                        else:
+                            st.error(err or "Failed to create account. Email may already be in use.")
 
             st.markdown("""
             <div style="text-align: center; margin-top: 1.25rem; font-size: 0.78rem; color: #94A3B8;">

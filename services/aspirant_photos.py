@@ -268,6 +268,11 @@ def get_aspirant_photo(
     if not authorized:
         return None
 
+    cache_key = f"aspirant_photo:{user_id}:{viewer_id}"
+    cached = get_memo(cache_key)
+    if cached is not None:
+        return None if cached == "__NONE__" else cached
+
     # 1. Supabase Mode (Fail closed: never silently fall back to local SQLite in production)
     if backend == "supabase":
         client = get_supabase_admin_client() or get_supabase_client()
@@ -279,7 +284,7 @@ def get_aspirant_photo(
                     path = record.get("storage_path")
                     bucket = record.get("storage_bucket") or STORAGE_BUCKET
                     if path:
-                        # Generate fresh signed URL (300 seconds short-lived)
+                        # Generate fresh signed URL (300s expiry; memoized for 120s)
                         signed_res = client.storage.from_(bucket).create_signed_url(path, SIGNED_URL_EXPIRY_SECONDS)
                         signed_url = (
                             signed_res.get("signedURL")
@@ -287,9 +292,11 @@ def get_aspirant_photo(
                             or (signed_res.get("data", {}).get("signedUrl") if isinstance(signed_res, dict) else None)
                         )
                         record["url"] = signed_url
+                        set_memo(cache_key, record, ttl_seconds=120)
                         return record
             except Exception as e:
                 print(f"[AspirantPhotos] Supabase fetch error: {e}")
+        set_memo(cache_key, "__NONE__", ttl_seconds=120)
         return None
 
     # 2. Local Database Mode (Active only when DATA_BACKEND=sqlite)
@@ -299,8 +306,10 @@ def get_aspirant_photo(
         if data_blob:
             b64_data = base64.b64encode(data_blob).decode("ascii")
             local_record["url"] = f"data:{local_record.get('content_type', 'image/webp')};base64,{b64_data}"
+            set_memo(cache_key, local_record, ttl_seconds=120)
             return local_record
 
+    set_memo(cache_key, "__NONE__", ttl_seconds=120)
     return None
 
 
@@ -510,6 +519,7 @@ def upload_aspirant_photo(
             except Exception:
                 pass
 
+            invalidate_memo(f"aspirant_photo:{user_id}:")
             return True, None
         except Exception as e:
             return False, f"Failed to persist profile photo to cloud storage: {e}"
@@ -528,6 +538,7 @@ def upload_aspirant_photo(
         "data_blob": processed_bytes,
         "created_at": now_iso
     })
+    invalidate_memo(f"aspirant_photo:{user_id}:")
     return True, None
 
 
@@ -580,6 +591,7 @@ def delete_aspirant_photo(
     else:
         # Local DB cleanup
         get_local_db().delete_aspirant_photo(user_id)
+    invalidate_memo(f"aspirant_photo:{user_id}:")
     return True, None
 
 

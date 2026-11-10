@@ -53,11 +53,7 @@ st.set_page_config(
 )
 
 from services.auth import logout_user, get_supabase_client
-from views.login import render_login_page
-from views.aspirant import render_aspirant_portal
-from views.guide import render_guide_portal
-from views.sme import render_sme_portal
-from views.admin import render_admin_portal
+from services.perf import reset_tracker
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBAL CSS INJECTION & TYPOGRAPHY
@@ -66,8 +62,6 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
     # Hide Streamlit technical multipage navigation always
     st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
-
     /* Strictly suppress Streamlit internal multipage nav and file names */
     [data-testid="stSidebarNav"] {
         display: none !important;
@@ -792,6 +786,8 @@ def inject_global_styles(is_logged_in: bool, role: str = None):
 # MAIN ROUTER
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
+    tracker = reset_tracker("app_main")
+
     # Initialize session state keys
     if "user" not in st.session_state:
         st.session_state.user = None
@@ -802,11 +798,23 @@ def main():
     if "nav_section" not in st.session_state:
         st.session_state.nav_section = "Dashboard"
 
+    # Detect incoming recovery callback even if a prior session exists in the browser
+    qp_type = str(st.query_params.get("type", "") or "").strip().lower()
+    in_recovery_flow = bool(
+        qp_type == "recovery"
+        or st.query_params.get("token_hash")
+        or st.query_params.get("code")
+        or st.session_state.get("recovery_verified")
+        or st.session_state.get("recovery_error")
+        or st.session_state.get("_pending_recovery_token_hash")
+    )
+
     user = st.session_state.user
     role = st.session_state.role
-    is_logged_in = bool(user and role)
+    is_logged_in = bool(user and role and not in_recovery_flow)
 
     inject_global_styles(is_logged_in, role)
+    acc_lifecycle = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # AUTHENTICATED SIDEBAR NAVIGATION (Our Own Role-Specific Navigation)
@@ -857,17 +865,17 @@ def main():
             """, unsafe_allow_html=True)
 
             # ─────────────────────────────────────────────────────────────────
-            # MULTI-ROLE: CURRENT WORKSPACE SELECTOR
+            # MULTI-ROLE: CURRENT WORKSPACE SELECTOR (Single Role Query)
             # ─────────────────────────────────────────────────────────────────
-            from services.roles import get_active_roles, get_pending_nda_roles, get_user_roles, is_strict_admin
+            from services.roles import get_user_roles, is_strict_admin
             from services.account_lifecycle import get_account_status
             user_id = user.get("id")
-            user_email = str(user.get("email", "")).strip().lower()
             base_p_role = str(user.get("role", "aspirant")).strip().lower()
 
-            acc_lifecycle_sb = get_account_status(user_id)
-            acc_status_sb = str(acc_lifecycle_sb.get("account_status") or "DENIED").strip().upper()
-            is_blocked_sb = (acc_status_sb in ("TEMPORARILY_SUSPENDED", "ARCHIVED", "DENIED")) or (not acc_lifecycle_sb.get("is_active", True) and acc_status_sb != "PENDING_DELETION")
+            with tracker.stage("account_lifecycle_ms"):
+                acc_lifecycle = get_account_status(user_id)
+            acc_status_sb = str(acc_lifecycle.get("account_status") or "DENIED").strip().upper()
+            is_blocked_sb = (acc_status_sb in ("TEMPORARILY_SUSPENDED", "ARCHIVED", "DENIED")) or (not acc_lifecycle.get("is_active", True) and acc_status_sb != "PENDING_DELETION")
 
             if is_blocked_sb:
                 st.write("")
@@ -876,39 +884,32 @@ def main():
                     st.rerun()
                 return
 
-            is_single_admin = is_strict_admin(user_dict=user)
+            with tracker.stage("roles_nda_ms"):
+                is_single_admin = is_strict_admin(user_dict=user)
 
-            if is_single_admin:
-                # Single Platform Admin is strictly an Admin, never an Aspirant or Mentor
-                active_r = ["admin"]
-                pending_r = []
-                ws_options = [("admin", "🏛️ Admin Dashboard")]
-                st.session_state["active_workspace"] = "admin"
-            else:
-                if base_p_role in ("admin", "district_admin", "operational_admin"):
-                    base_p_role = "aspirant"
-                    user["role"] = "aspirant"
-                    st.session_state["role"] = "aspirant"
+                if is_single_admin:
+                    # Single Platform Admin is strictly an Admin, never an Aspirant or Mentor
+                    active_r = ["admin"]
+                    pending_r = []
+                    ws_options = [("admin", "🏛️ Admin Dashboard")]
+                    st.session_state["active_workspace"] = "admin"
+                else:
+                    if base_p_role in ("admin", "district_admin", "operational_admin"):
+                        base_p_role = "aspirant"
+                        user["role"] = "aspirant"
+                        st.session_state["role"] = "aspirant"
 
-                active_r = [
-                    r for r in (get_active_roles(user_id) if user_id else [])
-                    if r not in ("admin", "district_admin", "operational_admin")
-                ]
-                pending_r = [
-                    r for r in (get_pending_nda_roles(user_id) if user_id else [])
-                    if r not in ("admin", "district_admin", "operational_admin")
-                ]
+                    all_grants = get_user_roles(user_id, prefetched_profile=user) if user_id else []
+                    active_r = [
+                        g["role"] for g in all_grants
+                        if g.get("status") == "active" and g.get("role") not in ("admin", "district_admin", "operational_admin")
+                    ]
+                    pending_r = [
+                        g["role"] for g in all_grants
+                        if g.get("status") == "pending_nda" and g.get("role") not in ("admin", "district_admin", "operational_admin")
+                    ]
 
-                # If user has no explicit multi-role grants in user_roles, use base profile role
-                # BUT never synthesize professional privileges (guide/sme) without an active grant
-                if not active_r and not pending_r:
-                    all_grants = get_user_roles(user_id) if user_id else []
-                    has_revoked_or_suspended = any(
-                        g.get("status") in ("revoked", "suspended") for g in all_grants
-                    )
-                    if not has_revoked_or_suspended and base_p_role == "aspirant":
-                        active_r = ["aspirant"]
-                    else:
+                    if not active_r and not pending_r:
                         active_r = ["aspirant"]
 
                 ws_options = []
@@ -1009,7 +1010,8 @@ def main():
             # IN-APP NOTIFICATION CENTER (Universal & Mobile-Friendly)
             # ─────────────────────────────────────────────────────────────────
             from services.notifications import list_notifications, mark_as_read, mark_all_as_read
-            user_notifs = list_notifications(user_id) if user_id else []
+            with tracker.stage("notifications_ms"):
+                user_notifs = list_notifications(user_id) if user_id else []
             unread_count = sum(1 for n in user_notifs if not n.get("is_read"))
             st.session_state["_current_unread_count"] = unread_count
 
@@ -1046,14 +1048,17 @@ def main():
                 st.rerun()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # ROUTING LOGIC (Role Portals) — direct render, no st.empty() wrapper
+    # ROUTING LOGIC (Role Portals) — Lazy view imports, no st.empty() wrapper
     # ─────────────────────────────────────────────────────────────────────────
     if not is_logged_in:
+        from views.login import render_login_page
         render_login_page()
     else:
-        # 0. Account Lifecycle Status Gate (Enforced across all active browser sessions)
+        # 0. Account Lifecycle Status Gate (Reuses sidebar evaluation to eliminate duplicate DB call)
         from services.account_lifecycle import get_account_status, cancel_account_deletion
-        acc_lifecycle = get_account_status(user["id"])
+        if acc_lifecycle is None:
+            with tracker.stage("account_lifecycle_ms"):
+                acc_lifecycle = get_account_status(user["id"])
         acc_status = str(acc_lifecycle.get("account_status") or "DENIED").strip().upper()
 
         if acc_status == "DENIED" or (not acc_lifecycle.get("is_active", True) and acc_status != "PENDING_DELETION"):
@@ -1212,24 +1217,32 @@ def main():
         if u_cnt > 0:
             st.info(f"🔔 You have **{u_cnt}** new notification{'s' if u_cnt > 1 else ''}! Review them in the sidebar notification center.")
 
-        if active_role == "aspirant":
-            render_aspirant_portal(user)
-        elif active_role == "guide":
-            render_guide_portal(user)
-        elif active_role == "sme":
-            render_sme_portal(user)
-        elif active_role in ("admin", "district_admin", "operational_admin"):
-            from services.roles import is_strict_admin
-            if not is_strict_admin(user_dict=user):
-                st.session_state["active_workspace"] = "aspirant"
+        with tracker.stage("portal_render_ms"):
+            if active_role == "aspirant":
+                from views.aspirant import render_aspirant_portal
                 render_aspirant_portal(user)
+            elif active_role == "guide":
+                from views.guide import render_guide_portal
+                render_guide_portal(user)
+            elif active_role == "sme":
+                from views.sme import render_sme_portal
+                render_sme_portal(user)
+            elif active_role in ("admin", "district_admin", "operational_admin"):
+                from services.roles import is_strict_admin
+                if not is_strict_admin(user_dict=user):
+                    st.session_state["active_workspace"] = "aspirant"
+                    from views.aspirant import render_aspirant_portal
+                    render_aspirant_portal(user)
+                else:
+                    from views.admin import render_admin_portal
+                    render_admin_portal(user)
             else:
-                render_admin_portal(user)
-        else:
-            st.error(f"Unrecognized workspace: '{active_role}'. Please contact support.")
-            if st.button("Reset Session"):
-                logout_user()
-                st.rerun()
+                st.error(f"Unrecognized workspace: '{active_role}'. Please contact support.")
+                if st.button("Reset Session"):
+                    logout_user()
+                    st.rerun()
+
+        tracker.persist_to_session()
 
 if __name__ == "__main__":
     main()

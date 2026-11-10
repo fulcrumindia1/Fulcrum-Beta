@@ -26,45 +26,57 @@ from services.local_db import get_local_db
 def _get_secrets() -> Tuple[str, str, str]:
     """
     Retrieves Supabase URL, Publishable/Anon Key, and Secret/Service-Role Key.
-    Checks st.secrets first, then os.environ.
-    Supports both modern Supabase names:
-      - SUPABASE_PUBLISHABLE_KEY
-      - SUPABASE_SECRET_KEY
-    and standard names:
-      - SUPABASE_ANON_KEY
-      - SUPABASE_SERVICE_ROLE_KEY
-    Never contains hardcoded credentials.
+    Resolution priority:
+      1. FULCRUM_SUPABASE_* overrides (immune to Streamlit's secrets.toml os.environ clobbering)
+      2. Process environment variables (SUPABASE_*)
+      3. st.secrets fallback
+    If FULCRUM_FORBID_PRODUCTION=1 is set (isolated staging/local tests), refuses
+    to return the known production Supabase URL.
     """
-    url = ""
-    pub_key = ""
-    sec_key = ""
+    isolated = bool(os.environ.get("FULCRUM_SUPABASE_URL", "").strip())
 
-    # 1. Streamlit secrets
-    try:
-        if hasattr(st, "secrets"):
-            url = st.secrets.get("SUPABASE_URL", "")
-            pub_key = st.secrets.get("SUPABASE_PUBLISHABLE_KEY", "") or st.secrets.get("SUPABASE_ANON_KEY", "")
-            sec_key = st.secrets.get("SUPABASE_SECRET_KEY", "") or st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
-    except Exception:
-        pass
+    # 1. Explicit isolated/staging prefix overrides (Streamlit cannot overwrite these)
+    url = os.environ.get("FULCRUM_SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
+    pub_key = (
+        os.environ.get("FULCRUM_SUPABASE_PUBLISHABLE_KEY", "")
+        or os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
+        or os.environ.get("SUPABASE_ANON_KEY", "")
+    )
+    sec_key = (
+        os.environ.get("FULCRUM_SUPABASE_SECRET_KEY", "")
+        or os.environ.get("SUPABASE_SECRET_KEY", "")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    )
 
-    # 2. Environment variables fallback
-    if not url:
-        url = os.environ.get("SUPABASE_URL", "")
-    if not pub_key:
-        pub_key = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "") or os.environ.get("SUPABASE_ANON_KEY", "")
-    if not sec_key:
-        sec_key = os.environ.get("SUPABASE_SECRET_KEY", "") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+    # 2. Streamlit secrets fallback (skipped if FULCRUM_SUPABASE_URL was explicitly injected)
+    if not isolated:
+        try:
+            if hasattr(st, "secrets"):
+                if not url:
+                    url = st.secrets.get("SUPABASE_URL", "")
+                if not pub_key:
+                    pub_key = st.secrets.get("SUPABASE_PUBLISHABLE_KEY", "") or st.secrets.get("SUPABASE_ANON_KEY", "")
+                if not sec_key:
+                    sec_key = st.secrets.get("SUPABASE_SECRET_KEY", "") or st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "")
+        except Exception:
+            pass
 
-    return url.strip(), pub_key.strip(), sec_key.strip()
+    url_clean = url.strip()
+    if os.environ.get("FULCRUM_FORBID_PRODUCTION", "").strip() == "1":
+        if "bhaqaawsufwtjeqfifbv" in url_clean.lower():
+            raise RuntimeError(
+                "ISOLATION GUARD TRIGGERED: Production Supabase project blocked while FULCRUM_FORBID_PRODUCTION=1."
+            )
+
+    return url_clean, pub_key.strip(), sec_key.strip()
 
 def get_data_backend() -> str:
     """
     Determines the active backend: 'supabase' or 'sqlite'.
-    Explicitly reads DATA_BACKEND from Streamlit secrets or environment variables.
-    Defaults to 'supabase' if Supabase credentials are configured, else 'sqlite'.
+    Checks FULCRUM_DATA_BACKEND first (immune to Streamlit's startup secrets.toml
+    injection into os.environ), then DATA_BACKEND, then st.secrets.
     """
-    backend = os.environ.get("DATA_BACKEND", "")
+    backend = os.environ.get("FULCRUM_DATA_BACKEND", "") or os.environ.get("DATA_BACKEND", "")
     if not backend:
         try:
             if hasattr(st, "secrets"):
@@ -83,18 +95,17 @@ def get_data_backend() -> str:
 
 def get_app_base_url() -> str:
     """
-    Returns the production application base URL for auth redirects.
-    Checks st.secrets or os.environ['APP_URL'] first (e.g. for custom staging / local dev),
-    defaulting strictly to the production domain: https://app.fulcrumindia.online
+    Returns the application base URL for auth redirects.
+    Checks FULCRUM_APP_URL first (immune to secrets.toml), then os.environ['APP_URL'],
+    then st.secrets['APP_URL'], defaulting to https://app.fulcrumindia.online.
     """
-    url = ""
-    try:
-        if hasattr(st, "secrets"):
-            url = st.secrets.get("APP_URL", "")
-    except Exception:
-        pass
+    url = os.environ.get("FULCRUM_APP_URL", "") or os.environ.get("APP_URL", "")
     if not url:
-        url = os.environ.get("APP_URL", "")
+        try:
+            if hasattr(st, "secrets"):
+                url = st.secrets.get("APP_URL", "")
+        except Exception:
+            pass
     if not url:
         url = "https://app.fulcrumindia.online"
     return url.strip().rstrip("/")
@@ -181,6 +192,73 @@ def get_supabase_admin_client() -> Optional[Client]:
         return create_client(url, sec_key)
     except Exception:
         return None
+
+
+def _create_ephemeral_supabase_client() -> Optional[Client]:
+    """Creates an isolated transient Supabase client with implicit flow for recovery verification
+    so temporary recovery auth operations never mutate the app's session client."""
+    url, pub_key, _ = _get_secrets()
+    if not url or not pub_key or not create_client:
+        return None
+    try:
+        client_opts = ClientOptions(flow_type="implicit") if ClientOptions else None
+        if client_opts:
+            return create_client(url, pub_key, options=client_opts)
+        return create_client(url, pub_key)
+    except Exception:
+        return None
+
+
+def _classify_recovery_error(err: Exception) -> Tuple[str, str]:
+    """
+    Maps raw Supabase Auth / network exceptions into distinct, sanitized diagnostics.
+    Never exposes access tokens, refresh tokens, passwords, or raw stack traces.
+    """
+    msg = str(err or "").lower()
+    if any(k in msg for k in ("timed out", "timeout", "connecterror", "readerror", "connection", "unreachable", "handshake")):
+        return (
+            "timeout",
+            "Network timeout while verifying your recovery link with the authentication service. Please try again in a moment."
+        )
+    if "verifier" in msg:
+        return (
+            "missing_verifier",
+            "This link requires the original browser session where the reset was requested (missing PKCE verifier). Please request a new reset link."
+        )
+    if any(k in msg for k in ("otp_expired", "expired")):
+        return (
+            "expired",
+            "This password recovery link has expired. Reset links are single-use and time-limited. Please request a new link."
+        )
+    if any(k in msg for k in ("session_not_found", "already", "used", "invalid claim", "invalid grant", "invalid_grant")):
+        return (
+            "used_or_invalid",
+            "This password recovery link has already been used or is invalid. Please request a new reset link."
+        )
+    if "different" in msg:
+        return (
+            "same_password",
+            "New password must be different from your current password."
+        )
+    if any(k in msg for k in ("rate limit", "over_email_send_rate_limit", "429", "only request this after")):
+        return (
+            "rate_limit",
+            "Too many password reset requests in a short period. Please wait a minute before trying again."
+        )
+    if any(k in msg for k in ("weak", "at least")):
+        return (
+            "weak_password",
+            "Password must be at least 8 characters long and meet strength requirements."
+        )
+    if "invalid" in msg or "jwt" in msg:
+        return (
+            "used_or_invalid",
+            "This password recovery link is invalid or has already been used. Please request a new link."
+        )
+    return (
+        "supabase_error",
+        "Unable to verify recovery session with the authentication provider. Please request a new reset link."
+    )
 
 def sync_user_phone_if_missing(user_id: str, phone: str, district: Optional[str] = None) -> bool:
     """Self-healing utility: updates missing phone/district in profiles table and profile_data."""
@@ -277,6 +355,9 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
         return None, "Invalid email or password (Local SQLite Mode)."
 
     # ── SUPABASE PRIMARY MODE ──
+    from services.perf import get_active_tracker
+    tracker = get_active_tracker("login")
+
     client = get_supabase_client()
     if not client:
         return None, "Supabase connection is not configured. Please check SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY."
@@ -286,7 +367,8 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
     refresh_token = None
 
     try:
-        res = client.auth.sign_in_with_password({"email": email, "password": password})
+        with tracker.stage("auth_signin_ms"):
+            res = client.auth.sign_in_with_password({"email": email, "password": password})
         if res.user:
             user_id = res.user.id
             if res.session:
@@ -306,7 +388,8 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
     # Retrieve profile from Supabase Database
     profile = None
     try:
-        res_p = client.table("profiles").select("*").eq("id", user_id).execute()
+        with tracker.stage("profile_fetch_ms"):
+            res_p = client.table("profiles").select("*").eq("id", user_id).execute()
         if res_p.data and len(res_p.data) > 0:
             profile = res_p.data[0]
     except Exception as e:
@@ -316,46 +399,47 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
     if not profile and user_id:
         admin_client = get_supabase_admin_client() or client
         try:
-            # Look up metadata from Auth user
-            user_meta = {}
-            if res.user and hasattr(res.user, "user_metadata"):
-                user_meta = res.user.user_metadata or {}
+            with tracker.stage("profile_init_ms"):
+                # Look up metadata from Auth user
+                user_meta = {}
+                if res.user and hasattr(res.user, "user_metadata"):
+                    user_meta = res.user.user_metadata or {}
 
-            full_name = user_meta.get("full_name") or email.split("@")[0].capitalize()
-            role = str(user_meta.get("role", "aspirant")).strip().lower()
-            if email.strip().lower() != "fulcrumindia1@gmail.com" and role in ("admin", "district_admin", "operational_admin"):
-                role = "aspirant"
-            district = user_meta.get("district", "Tamil Nadu")
+                full_name = user_meta.get("full_name") or email.split("@")[0].capitalize()
+                role = str(user_meta.get("role", "aspirant")).strip().lower()
+                if email.strip().lower() != "fulcrumindia1@gmail.com" and role in ("admin", "district_admin", "operational_admin"):
+                    role = "aspirant"
+                district = user_meta.get("district", "Tamil Nadu")
 
-            new_profile = {
-                "id": user_id,
-                "email": email,
-                "full_name": full_name,
-                "phone": user_meta.get("phone", ""),
-                "role": role,
-                "district": district,
-                "state": "Tamil Nadu",
-                "profile_data": {
-                    "personal": {"full_name": full_name, "email": email, "phone": user_meta.get("phone", ""), "district": district}
-                },
-                "is_active": True
-            }
-            admin_client.table("profiles").upsert(new_profile, on_conflict="id").execute()
-            profile = new_profile
+                new_profile = {
+                    "id": user_id,
+                    "email": email,
+                    "full_name": full_name,
+                    "phone": user_meta.get("phone", ""),
+                    "role": role,
+                    "district": district,
+                    "state": "Tamil Nadu",
+                    "profile_data": {
+                        "personal": {"full_name": full_name, "email": email, "phone": user_meta.get("phone", ""), "district": district}
+                    },
+                    "is_active": True
+                }
+                admin_client.table("profiles").upsert(new_profile, on_conflict="id").execute()
+                profile = new_profile
 
-            if role == "aspirant":
-                admin_client.table("journeys").upsert({
-                    "aspirant_id": user_id,
-                    "title": f"{full_name}'s Enterprise Journey",
-                    "business_type": "Entrepreneurship",
-                    "stage": "idea",
-                    "status": "active"
-                }, on_conflict="aspirant_id").execute()
+                if role == "aspirant":
+                    admin_client.table("journeys").upsert({
+                        "aspirant_id": user_id,
+                        "title": f"{full_name}'s Enterprise Journey",
+                        "business_type": "Entrepreneurship",
+                        "stage": "idea",
+                        "status": "active"
+                    }, on_conflict="aspirant_id").execute()
 
-                admin_client.table("relationships").upsert({
-                    "aspirant_id": user_id,
-                    "status": "active"
-                }, on_conflict="aspirant_id").execute()
+                    admin_client.table("relationships").upsert({
+                        "aspirant_id": user_id,
+                        "status": "active"
+                    }, on_conflict="aspirant_id").execute()
         except Exception as e:
             return None, f"Failed to initialize user profile: {e}"
 
@@ -382,7 +466,8 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
             sync_user_phone_if_missing(user_id, meta_phone, user_meta.get("district"))
 
     # Account Lifecycle Gate: Enforce active status before granting session state
-    acc_st = get_account_status(profile["id"])
+    with tracker.stage("account_lifecycle_ms"):
+        acc_st = get_account_status(profile["id"], prefetched_profile=profile)
     st_val = str(acc_st.get("account_status") or "DENIED").strip().upper()
     if st_val == "DENIED" or not acc_st.get("exists", True) or acc_st.get("error"):
         try:
@@ -412,6 +497,18 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
         return None, "Account access restricted: Account is marked inactive by administration."
 
     # Save authenticated session state
+    st.session_state.user = profile
+    # Save authenticated session state and pre-warm actor-scoped profile memo
+    try:
+        from services.profiles import calculate_completion
+        from services.cache import set_memo
+        p_copy = dict(profile)
+        p_copy["completion_pct"] = calculate_completion(p_copy)
+        set_memo(f"profile:{profile['id']}:{profile['id']}", p_copy, ttl_seconds=60)
+        profile = p_copy
+    except Exception:
+        pass
+
     st.session_state.user = profile
     st.session_state.user_id = profile["id"]
     st.session_state.role = profile.get("role", "aspirant")
@@ -576,11 +673,10 @@ def signup_aspirant(email: str, password: str, full_name: str, phone: str = "", 
 
 def send_password_reset(email: str) -> Tuple[bool, Optional[str]]:
     """
-    Triggers a password recovery email via Supabase Auth.
-    Directs the user back to the application URL: https://app.fulcrumindia.online
+    Triggers a password recovery email via Supabase Auth using implicit flow
+    so default {{ .ConfirmationURL }} links work reliably across browser tabs,
+    fresh sessions, and devices without needing a local PKCE verifier.
     """
-    from services.account_lifecycle import get_account_status
-
     email = email.strip().lower()
     if not email:
         return False, "Please enter your registered email address."
@@ -592,7 +688,7 @@ def send_password_reset(email: str) -> Tuple[bool, Optional[str]]:
     if get_data_backend() == "sqlite":
         return False, "Password reset via email is only supported in Supabase mode."
 
-    client = get_supabase_client()
+    client = _create_ephemeral_supabase_client() or get_supabase_client()
     if not client:
         return False, "Supabase connection unavailable."
 
@@ -604,7 +700,90 @@ def send_password_reset(email: str) -> Tuple[bool, Optional[str]]:
         )
         return True, None
     except Exception as e:
+        err_code, clean_msg = _classify_recovery_error(e)
+        if err_code == "rate_limit":
+            return False, clean_msg
+        if err_code == "timeout":
+            return False, "Network timeout while requesting password reset email. Please try again."
         return False, f"Password reset request failed: {e}"
+
+
+def verify_recovery_session_tokens(
+    access_token: str,
+    refresh_token: str
+) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
+    """
+    Cryptographically validates an implicit recovery callback's access_token + refresh_token
+    against Supabase Auth using an isolated transient client.
+    Never substitutes access_token for refresh_token.
+    Returns (ok, verified_email, error_code, sanitized_error_message).
+    """
+    if not access_token or not str(access_token).strip():
+        return False, None, "missing_tokens", "Invalid or missing recovery access token. Please request a new reset link."
+    if not refresh_token or not str(refresh_token).strip():
+        return False, None, "missing_refresh_token", "Incomplete recovery callback (missing refresh token). Please open the reset link directly from your email."
+
+    rec_client = _create_ephemeral_supabase_client()
+    if not rec_client:
+        return False, None, "config_error", "Authentication service unavailable. Please try again later."
+
+    try:
+        user_res = rec_client.auth.get_user(access_token)
+        user_obj = getattr(user_res, "user", None)
+        verified_email = (getattr(user_obj, "email", "") or "").strip().lower() if user_obj else ""
+        if not user_obj or not verified_email:
+            return False, None, "used_or_invalid", "This password recovery link is invalid or has already been used. Please request a new link."
+
+        if verified_email == "fulcrumindia1@gmail.com":
+            try:
+                rec_client.auth.sign_out()
+            except Exception:
+                pass
+            return False, None, "admin_blocked", "Security Notice: Platform Administrator credentials cannot be reset through self-service recovery."
+
+        return True, verified_email, None, None
+    except Exception as e:
+        err_code, clean_msg = _classify_recovery_error(e)
+        return False, None, err_code, clean_msg
+
+
+def verify_recovery_token_hash(
+    token_hash: str
+) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """
+    Statelessly verifies a Supabase recovery token_hash via verify_otp in an isolated client.
+    Returns (ok, verified_email, access_token, refresh_token, error_code, sanitized_error_message).
+    """
+    if not token_hash or not str(token_hash).strip():
+        return False, None, None, None, "missing_tokens", "Missing recovery verification token. Please request a new reset link."
+
+    rec_client = _create_ephemeral_supabase_client()
+    if not rec_client:
+        return False, None, None, None, "config_error", "Authentication service unavailable. Please try again later."
+
+    try:
+        res = rec_client.auth.verify_otp({"token_hash": token_hash.strip(), "type": "recovery"})
+        sess = getattr(res, "session", None)
+        user_obj = getattr(res, "user", None)
+        verified_email = (getattr(user_obj, "email", "") or "").strip().lower() if user_obj else ""
+        acc_tok = getattr(sess, "access_token", None) if sess else None
+        ref_tok = getattr(sess, "refresh_token", None) if sess else None
+
+        if not sess or not acc_tok or not ref_tok or not verified_email:
+            return False, None, None, None, "used_or_invalid", "This password recovery link is invalid or has already been used. Please request a new link."
+
+        if verified_email == "fulcrumindia1@gmail.com":
+            try:
+                rec_client.auth.sign_out()
+            except Exception:
+                pass
+            return False, None, None, None, "admin_blocked", "Security Notice: Platform Administrator credentials cannot be reset through self-service recovery."
+
+        return True, verified_email, acc_tok, ref_tok, None, None
+    except Exception as e:
+        err_code, clean_msg = _classify_recovery_error(e)
+        return False, None, None, None, err_code, clean_msg
+
 
 def complete_password_reset(
     new_password: str,
@@ -614,8 +793,9 @@ def complete_password_reset(
 ) -> Tuple[bool, Optional[str]]:
     """
     Updates user password following a verified Supabase Auth recovery link.
-    Strictly requires a cryptographic recovery token or active recovery session.
-    Arbitrary email password overrides via Admin API are completely removed (CWE-640).
+    Strictly requires genuine access_token + refresh_token proof and executes
+    update_user inside an isolated ephemeral client, terminating the recovery
+    session immediately upon success. Never uses Admin API overrides (CWE-640).
     """
     if not new_password or len(new_password) < 8:
         return False, "Password must be at least 8 characters long."
@@ -650,55 +830,51 @@ def complete_password_reset(
         except Exception as e:
             return False, f"Failed to update local password: {e}"
 
-    # Supabase Mode: STRICTLY REQUIRE VERIFIED RECOVERY SESSION
-    client = get_supabase_client()
-    token = access_token or st.session_state.get("sb_access_token")
-    ref_token = refresh_token or st.session_state.get("sb_refresh_token") or token
+    # Supabase Mode: STRICTLY REQUIRE GENUINE ACCESS + REFRESH RECOVERY CREDENTIALS
+    token = access_token or st.session_state.get("_recovery_access_token")
+    ref_token = refresh_token or st.session_state.get("_recovery_refresh_token")
 
-    if not token or not client:
+    if not token or not ref_token:
         return False, "Invalid or missing recovery credentials. Please use the secure reset link sent to your registered email."
 
+    rec_client = _create_ephemeral_supabase_client()
+    if not rec_client:
+        return False, "Authentication service unavailable. Please try again later."
+
     try:
-        # Establish session with the recovery token
-        sess = client.auth.set_session(token, ref_token or token)
+        # Establish isolated recovery session with genuine access + refresh tokens
+        sess = rec_client.auth.set_session(token, ref_token)
         if not sess or not getattr(sess, "user", None):
             return False, "Recovery session has expired or is invalid. Please request a new password reset link."
 
         # Verify target user matches recovery session if email was provided
         sess_email = getattr(sess.user, "email", "") or ""
         if clean_email and sess_email.lower() != clean_email:
-            return False, "Security violation: Recovery token does not match the provided email address."
+            return False, "Security violation: Recovery token does not match the verified email address."
 
         # Double check: Admin account protection
         if sess_email.lower() == "fulcrumindia1@gmail.com":
             return False, "Security Notice: Platform Administrator credentials cannot be reset through self-service recovery."
 
-        # Perform password update within the verified session context
-        res = client.auth.update_user({"password": new_password})
+        # Perform password update within the verified recovery session context
+        res = rec_client.auth.update_user({"password": new_password})
         if not res or not getattr(res, "user", None):
             return False, "Password update failed. Please request a new recovery link."
 
-        # Sync local SQLite mirror if present
+        # Immediately terminate the temporary recovery session
         try:
-            from services.local_db import get_local_db_conn
-            import hashlib
-            pwd_hash = hashlib.sha256(new_password.encode("utf-8")).hexdigest()
-            conn = get_local_db_conn()
-            cur = conn.cursor()
-            cur.execute("UPDATE profiles SET password_hash = ? WHERE LOWER(email) = ?", (pwd_hash, sess_email.lower()))
-            conn.commit()
-            conn.close()
+            rec_client.auth.sign_out()
         except Exception:
             pass
 
         return True, None
     except Exception as e:
-        err_msg = str(e)
-        if "different" in err_msg.lower():
-            return False, "New password must be different from current password."
-        if "expired" in err_msg.lower() or "invalid" in err_msg.lower():
+        err_code, clean_msg = _classify_recovery_error(e)
+        if err_code in ("same_password", "weak_password", "timeout"):
+            return False, clean_msg
+        if err_code in ("expired", "used_or_invalid"):
             return False, "The recovery link has expired or has already been used. Please request a new reset link."
-        return False, f"Password reset verification failed: {err_msg}"
+        return False, clean_msg
 
 
 def complete_first_login_password_change(

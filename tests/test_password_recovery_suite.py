@@ -1,345 +1,277 @@
 """
 tests/test_password_recovery_suite.py
 ======================================
-Comprehensive End-to-End Test Suite for FULCRUM-BETA Password Recovery.
-Verifies all 20 security, session, UI, and protocol requirements:
+Hardened Security, Unit & Isolated-Staging Suite for FULCRUM-BETA Password Recovery.
 
- 1. Valid token_hash OTP verification creates an authenticated session.
- 2. Expired token_hash returns a clean error and does NOT display the password form.
- 3. Already-used token_hash is rejected on second attempt.
- 4. Form only renders when session state confirms active recovery session.
- 5. Password update succeeds with new password.
- 6. User can immediately log in with the new password.
- 7. User CANNOT log in with the old password.
- 8. Single Admin account (fulcrumindia1@gmail.com) self-service reset strictly blocked.
- 9. URL query parameters and tokens are stripped upon session establishment.
-10. Page refresh after successful password update shows normal sign-in, not recovery form.
-11. Passwords shorter than 8 characters are rejected client-side and server-side.
-12. Password mismatch is rejected before calling the backend.
-13. Form does not allow editing the target email.
-14. Session tokens are never exposed in log output or error messages.
-15. Recovery session cannot be used to escalate privileges or modify other users.
-16. Code verifier mismatch (PKCE) fails gracefully without uncaught exceptions.
-17. Multiple rapid reset requests invalidate prior tokens, keeping newest active.
-18. Concurrent recovery attempts in separate browser contexts do not corrupt session state.
-19. Streamlit rerun simulation does not lose verified recovery state.
-20. Network failure during password update shows actionable error message, not stack trace.
+SAFETY INVARIANTS:
+1. ZERO hardcoded user passwords or real user emails.
+2. Explicit staging project guard: fails immediately if target project matches production.
+3. Never uses Admin API to modify or reset an existing real user's password.
+4. Live integration tests run ONLY against an isolated staging Supabase project
+   with a fresh, disposable synthetic test account created for the run.
 """
 
 import os
-import sys
-import time
+import re
+import uuid
+import secrets
 import unittest
 from unittest.mock import MagicMock, patch
 
-import dotenv
-dotenv.load_dotenv()
-
 from services.auth import (
-    get_supabase_admin_client,
-    get_supabase_client,
     send_password_reset,
-    complete_password_reset
+    complete_password_reset,
+    verify_recovery_session_tokens,
+    _classify_recovery_error,
 )
 
-TEST_USER_EMAIL = "pravindev666@gmail.com"
-BASELINE_PASSWORD = "Manick@265070"
-TEMP_PASSWORD_1 = "RecoveryPass789!@"
-TEMP_PASSWORD_2 = "RecoveryPassAlt321!#"
+PRODUCTION_PROJECT_IDS = {"bhaqaawsufwtjeqfifbv"}
+PRODUCTION_DOMAINS = {"app.fulcrumindia.online"}
 ADMIN_EMAIL = "fulcrumindia1@gmail.com"
 
 
-class TestPasswordRecoverySuite(unittest.TestCase):
+def assert_isolated_staging_target() -> tuple[str, str, str, str]:
+    """
+    Requires explicit staging environment variables and fails immediately if any
+    configured URL or project identifier matches production.
+    """
+    staging_id = os.environ.get("STAGING_PROJECT_ID", "").strip()
+    staging_url = os.environ.get("STAGING_SUPABASE_URL", "").strip()
+    staging_pub = os.environ.get("STAGING_SUPABASE_PUBLISHABLE_KEY", "").strip() or os.environ.get("STAGING_SUPABASE_ANON_KEY", "").strip()
+    staging_sec = os.environ.get("STAGING_SUPABASE_SECRET_KEY", "").strip() or os.environ.get("STAGING_SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    app_url = os.environ.get("APP_URL", "").strip()
 
-    @classmethod
-    def setUpClass(cls):
-        cls.admin = get_supabase_admin_client()
-        cls.client = get_supabase_client()
-        assert cls.admin is not None, "Supabase Admin client required for integration tests"
-        assert cls.client is not None, "Supabase public client required for integration tests"
-        # Find test user ID
-        users = cls.admin.auth.admin.list_users()
-        cls.test_user_id = next(u.id for u in users if u.email.lower() == TEST_USER_EMAIL.lower())
+    if not staging_id or not staging_url:
+        raise RuntimeError("Missing STAGING_PROJECT_ID or STAGING_SUPABASE_URL.")
 
-    @classmethod
-    def tearDownClass(cls):
-        # Guarantee baseline password is always restored using Admin API
-        try:
-            cls.admin.auth.admin.update_user_by_id(cls.test_user_id, {'password': BASELINE_PASSWORD})
-        except Exception as e:
-            print(f"[!] Warning during tearDownClass: {e}")
+    for prod_id in PRODUCTION_PROJECT_IDS:
+        if prod_id in staging_id or prod_id in staging_url:
+            raise AssertionError(f"SAFETY ABORT: Target matches production project '{prod_id}'!")
+    for prod_dom in PRODUCTION_DOMAINS:
+        if prod_dom in app_url:
+            raise AssertionError(f"SAFETY ABORT: APP_URL points to production domain '{prod_dom}'!")
 
-    def setUp(self):
-        # Polite spacing to respect Supabase Auth endpoint rate limits
-        time.sleep(1.2)
+    m = re.match(r"^https://([a-z0-9-]+)\.supabase\.co$", staging_url)
+    if not m or m.group(1) != staging_id:
+        raise AssertionError("STAGING_PROJECT_ID does not match hostname in STAGING_SUPABASE_URL.")
 
-    # --------------------------------------------------------------------------
-    # Test 1: Valid token_hash OTP verification creates an authenticated session
-    # --------------------------------------------------------------------------
-    def test_01_valid_token_hash_creates_session(self):
-        link = self.admin.auth.admin.generate_link({
-            'type': 'recovery',
-            'email': TEST_USER_EMAIL
-        })
-        hashed_token = link.properties.hashed_token
-        res = self.client.auth.verify_otp({
-            'token_hash': hashed_token,
-            'type': 'recovery'
-        })
-        self.assertIsNotNone(res.session)
-        self.assertIsNotNone(res.session.access_token)
-        self.assertEqual(res.user.email.lower(), TEST_USER_EMAIL.lower())
+    if not staging_pub or not staging_sec:
+        raise RuntimeError("Missing STAGING_SUPABASE_PUBLISHABLE_KEY or STAGING_SUPABASE_SECRET_KEY.")
 
-    # --------------------------------------------------------------------------
-    # Test 2: Expired token_hash returns a clean error and does NOT display form
-    # --------------------------------------------------------------------------
-    def test_02_expired_or_invalid_token_rejected(self):
-        with self.assertRaises(Exception):
-            self.client.auth.verify_otp({
-                'token_hash': '0000000000000000000000000000000000000000000000000000000000000000',
-                'type': 'recovery'
-            })
+    return staging_id, staging_url, staging_pub, staging_sec
 
-    # --------------------------------------------------------------------------
-    # Test 3: Already-used token_hash is rejected on second attempt
-    # --------------------------------------------------------------------------
-    def test_03_token_hash_single_use_enforcement(self):
-        link = self.admin.auth.admin.generate_link({
-            'type': 'recovery',
-            'email': TEST_USER_EMAIL
-        })
-        hashed_token = link.properties.hashed_token
 
-        # First use must succeed
-        res1 = self.client.auth.verify_otp({
-            'token_hash': hashed_token,
-            'type': 'recovery'
-        })
-        self.assertIsNotNone(res1.session)
+class TestPasswordRecoverySecurityAndUnit(unittest.TestCase):
+    """Offline negative security tests and recovery verification checks (no production contact)."""
 
-        # Second use must fail immediately
-        with self.assertRaises(Exception):
-            self.client.auth.verify_otp({
-                'token_hash': hashed_token,
-                'type': 'recovery'
-            })
+    def test_01_production_guard_blocks_production_project(self):
+        with patch.dict(
+            os.environ,
+            {
+                "STAGING_PROJECT_ID": "bhaqaawsufwtjeqfifbv",
+                "STAGING_SUPABASE_URL": "https://bhaqaawsufwtjeqfifbv.supabase.co",
+                "STAGING_SUPABASE_PUBLISHABLE_KEY": "dummy",
+                "STAGING_SUPABASE_SECRET_KEY": "dummy",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(AssertionError) as ctx:
+                assert_isolated_staging_target()
+            self.assertIn("SAFETY ABORT", str(ctx.exception))
 
-    # --------------------------------------------------------------------------
-    # Test 4: Form only renders when session state confirms active recovery session
-    # --------------------------------------------------------------------------
-    def test_04_form_guardrail_requires_verified_state(self):
-        mock_session = {"recovery_verified": False, "recovery_error": "Link expired"}
-        is_recovery_active = bool(mock_session.get("recovery_verified"))
-        self.assertFalse(is_recovery_active, "Form must not render when recovery_verified is False")
-
-        mock_session["recovery_verified"] = True
-        mock_session["recovery_verified_email"] = TEST_USER_EMAIL
-        is_recovery_active = bool(mock_session.get("recovery_verified"))
-        self.assertTrue(is_recovery_active, "Form should render only when recovery_verified is True")
-
-    # --------------------------------------------------------------------------
-    # Test 5: Password update succeeds with new password
-    # --------------------------------------------------------------------------
-    def test_05_password_update_succeeds(self):
-        link = self.admin.auth.admin.generate_link({
-            'type': 'recovery',
-            'email': TEST_USER_EMAIL
-        })
-        res = self.client.auth.verify_otp({
-            'token_hash': link.properties.hashed_token,
-            'type': 'recovery'
-        })
-        ok, err = complete_password_reset(
-            TEMP_PASSWORD_1,
-            access_token=res.session.access_token,
-            refresh_token=res.session.refresh_token,
-            email=TEST_USER_EMAIL
-        )
-        self.assertTrue(ok, f"Password reset failed: {err}")
-
-    # --------------------------------------------------------------------------
-    # Test 6: User can immediately log in with the new password
-    # --------------------------------------------------------------------------
-    def test_06_login_with_new_password_succeeds(self):
-        login_res = self.client.auth.sign_in_with_password({
-            'email': TEST_USER_EMAIL,
-            'password': TEMP_PASSWORD_1
-        })
-        self.assertIsNotNone(login_res.user)
-        self.assertEqual(login_res.user.email.lower(), TEST_USER_EMAIL.lower())
-
-    # --------------------------------------------------------------------------
-    # Test 7: User CANNOT log in with the old password
-    # --------------------------------------------------------------------------
-    def test_07_old_password_rejected(self):
-        with self.assertRaises(Exception):
-            self.client.auth.sign_in_with_password({
-                'email': TEST_USER_EMAIL,
-                'password': BASELINE_PASSWORD
-            })
-
-    # --------------------------------------------------------------------------
-    # Test 8: Sole Admin account (fulcrumindia1@gmail.com) strictly blocked
-    # --------------------------------------------------------------------------
-    def test_08_sole_admin_self_service_strictly_blocked(self):
-        # Layer 1: send_password_reset
+    def test_02_sole_admin_self_service_strictly_blocked(self):
         ok1, err1 = send_password_reset(ADMIN_EMAIL)
         self.assertFalse(ok1)
         self.assertIn("Platform Administrator", err1 or "")
 
-        # Layer 2: complete_password_reset email parameter
-        ok2, err2 = complete_password_reset("NewAdminPass123!@", access_token="mock_token", email=ADMIN_EMAIL)
+        ok2, err2 = complete_password_reset(
+            "ValidTempPass987!#",
+            access_token="dummy_acc",
+            refresh_token="dummy_ref",
+            email=ADMIN_EMAIL,
+        )
         self.assertFalse(ok2)
         self.assertIn("Platform Administrator", err2 or "")
 
-        # Layer 3: Case-insensitive check
-        ok3, err3 = send_password_reset(ADMIN_EMAIL.upper())
+        ok3, _ = send_password_reset(ADMIN_EMAIL.upper())
         self.assertFalse(ok3)
 
-    # --------------------------------------------------------------------------
-    # Test 9: URL query parameters stripped upon session establishment
-    # --------------------------------------------------------------------------
-    def test_09_query_parameters_stripped_on_verification(self):
-        mock_params = {"token_hash": "secret_hash", "type": "recovery"}
-        self.assertIn("token_hash", mock_params)
-        # In views/login.py, st.query_params.clear() is called immediately
-        mock_params.clear()
-        self.assertEqual(len(mock_params), 0, "All query parameters must be purged")
+    def test_03_missing_refresh_token_rejected_no_substitution(self):
+        # Never substitute access_token for refresh_token
+        ok, _, code, err = verify_recovery_session_tokens("dummy_access_jwt", "")
+        self.assertFalse(ok)
+        self.assertEqual(code, "missing_refresh_token")
+        self.assertIn("refresh token", (err or "").lower())
 
-    # --------------------------------------------------------------------------
-    # Test 10: Page refresh after successful update shows sign-in, not recovery
-    # --------------------------------------------------------------------------
-    def test_10_post_success_state_clears_recovery(self):
-        mock_state = {
-            "recovery_verified": True,
-            "recovery_verified_email": TEST_USER_EMAIL,
-            "sb_access_token": "token_123"
-        }
-        # Simulate successful complete_password_reset cleanup
-        mock_state["recovery_verified"] = False
-        mock_state["recovery_verified_email"] = None
-        mock_state["sb_access_token"] = None
-        mock_state["password_reset_success"] = True
+        with patch("services.auth.get_data_backend", return_value="supabase"):
+            ok_rst, err_rst = complete_password_reset(
+                "ValidTempPass987!#",
+                access_token="dummy_access_jwt",
+                refresh_token="",
+                email="disposable@example.invalid",
+            )
+            self.assertFalse(ok_rst)
+            self.assertIn("missing recovery credentials", (err_rst or "").lower())
 
-        # On next render/refresh:
-        is_recovery_active = bool(mock_state.get("recovery_verified"))
-        self.assertFalse(is_recovery_active)
-        self.assertTrue(mock_state.get("password_reset_success"))
-
-    # --------------------------------------------------------------------------
-    # Test 11: Passwords shorter than 8 characters rejected
-    # --------------------------------------------------------------------------
-    def test_11_password_length_validation(self):
-        ok, err = complete_password_reset("short", access_token="token", email=TEST_USER_EMAIL)
+    def test_04_short_password_rejected_before_backend(self):
+        ok, err = complete_password_reset(
+            "short",
+            access_token="dummy_acc",
+            refresh_token="dummy_ref",
+            email="disposable@example.invalid",
+        )
         self.assertFalse(ok)
         self.assertIn("8 characters", err or "")
 
-    # --------------------------------------------------------------------------
-    # Test 12: Password mismatch rejected before calling backend
-    # --------------------------------------------------------------------------
-    def test_12_password_mismatch_validation(self):
-        pwd1 = "ValidPassword123!"
-        pwd2 = "DifferentPassword456@"
-        self.assertNotEqual(pwd1, pwd2)
+    def test_05_distinct_error_classification_and_zero_token_leakage(self):
+        raw_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret_payload.sig"
 
-    # --------------------------------------------------------------------------
-    # Test 13: Form does not allow editing target email (read-only verification)
-    # --------------------------------------------------------------------------
-    def test_13_target_email_locked_to_session_identity(self):
+        c_exp, m_exp = _classify_recovery_error(Exception(f"otp_expired for {raw_jwt}"))
+        self.assertEqual(c_exp, "expired")
+        self.assertNotIn(raw_jwt, m_exp)
+
+        c_used, m_used = _classify_recovery_error(Exception("session_not_found: token already used"))
+        self.assertEqual(c_used, "used_or_invalid")
+        self.assertIn("already been used", m_used)
+
+        c_ver, m_ver = _classify_recovery_error(Exception("both auth code and code verifier should be non-empty"))
+        self.assertEqual(c_ver, "missing_verifier")
+        self.assertIn("verifier", m_ver.lower())
+
+        c_net, m_net = _classify_recovery_error(TimeoutError("Read timed out"))
+        self.assertEqual(c_net, "timeout")
+        self.assertIn("timeout", m_net.lower())
+
+    def test_06_ephemeral_client_rejects_mismatched_email_and_signs_out(self):
+        mock_client = MagicMock()
+        mock_user = MagicMock()
+        mock_user.email = "verified.disposable@example.invalid"
+        mock_sess = MagicMock()
+        mock_sess.user = mock_user
+        mock_client.auth.set_session.return_value = mock_sess
+
+        with patch("services.auth.get_data_backend", return_value="supabase"), \
+             patch("services.auth._create_ephemeral_supabase_client", return_value=mock_client):
+            ok, err = complete_password_reset(
+                "ValidTempPass987!#",
+                access_token="acc_tok_123",
+                refresh_token="ref_tok_123",
+                email="attacker@example.invalid",
+            )
+            self.assertFalse(ok)
+            self.assertIn("Security violation", err or "")
+            mock_client.auth.update_user.assert_not_called()
+
+    def test_07_network_timeout_returns_sanitized_retry_message(self):
+        mock_client = MagicMock()
+        mock_client.auth.set_session.side_effect = TimeoutError("HTTPSConnectionPool read timed out")
+
+        with patch("services.auth.get_data_backend", return_value="supabase"), \
+             patch("services.auth._create_ephemeral_supabase_client", return_value=mock_client):
+            ok, err = complete_password_reset(
+                "ValidTempPass987!#",
+                access_token="acc_tok_123",
+                refresh_token="ref_tok_123",
+                email="disposable@example.invalid",
+            )
+            self.assertFalse(ok)
+            self.assertIn("Network timeout", err or "")
+
+
+class TestPasswordRecoveryStagingIntegration(unittest.TestCase):
+    """
+    Isolated staging integration suite.
+    Requires explicit STAGING_PROJECT_ID + STAGING_SUPABASE_URL + staging keys.
+    Uses disposable synthetic identities only; fails immediately on production targets.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.environ.get("STAGING_PROJECT_ID") and not os.environ.get("STAGING_SUPABASE_URL"):
+            raise unittest.SkipTest(
+                "Isolated staging env vars (STAGING_PROJECT_ID, STAGING_SUPABASE_URL) not configured."
+            )
+        cls.staging_id, cls.staging_url, cls.staging_pub, cls.staging_sec = assert_isolated_staging_target()
+
+        from supabase import create_client, ClientOptions
+        cls.admin = create_client(cls.staging_url, cls.staging_sec)
+        cls.client = create_client(cls.staging_url, cls.staging_pub, options=ClientOptions(flow_type="implicit"))
+
+        # Create a disposable synthetic staging user (never touch real accounts)
+        domain = os.environ.get("STAGING_TEST_EMAIL_DOMAIN", "example.com")
+        cls.disposable_email = f"fulcrum.staging.{uuid.uuid4().hex[:10]}@{domain}"
+        cls.initial_password = f"Init-{secrets.token_urlsafe(12)}!1"
+        cls.updated_password = f"Next-{secrets.token_urlsafe(12)}!2"
+        created = cls.admin.auth.admin.create_user({
+            "email": cls.disposable_email,
+            "password": cls.initial_password,
+            "email_confirm": True,
+            "user_metadata": {"full_name": "Staging Synthetic User", "role": "aspirant"},
+        })
+        cls.disposable_user_id = created.user.id
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls, "admin", None) and getattr(cls, "disposable_user_id", None):
+            try:
+                cls.admin.auth.admin.delete_user(cls.disposable_user_id)
+            except Exception:
+                pass
+
+    def test_01_disposable_staging_token_verification_and_password_update(self):
+        # Note: Real email-click browser flow is tested via tests/e2e_staging_recovery.py;
+        # here we verify staging token_hash single-use and non-Admin password update via user session.
         link = self.admin.auth.admin.generate_link({
-            'type': 'recovery',
-            'email': TEST_USER_EMAIL
+            "type": "recovery",
+            "email": self.disposable_email,
         })
-        res = self.client.auth.verify_otp({
-            'token_hash': link.properties.hashed_token,
-            'type': 'recovery'
-        })
-        # Attempt to pass mismatched email to complete_password_reset
-        ok, err = complete_password_reset(
-            TEMP_PASSWORD_2,
-            access_token=res.session.access_token,
-            email="attacker@domain.com"
-        )
-        self.assertFalse(ok)
-        self.assertIn("Security violation", err or "")
+        hashed_token = link.properties.hashed_token
 
-    # --------------------------------------------------------------------------
-    # Test 14: Session tokens never exposed in error messages
-    # --------------------------------------------------------------------------
-    def test_14_no_token_leakage_in_errors(self):
-        raw_secret_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_secret_jwt"
-        ok, err = complete_password_reset("short", access_token=raw_secret_token, email=TEST_USER_EMAIL)
-        self.assertNotIn(raw_secret_token, str(err))
+        with patch.dict(
+            os.environ,
+            {
+                "FULCRUM_DATA_BACKEND": "supabase",
+                "FULCRUM_FORBID_PRODUCTION": "1",
+                "FULCRUM_SUPABASE_URL": self.staging_url,
+                "FULCRUM_SUPABASE_PUBLISHABLE_KEY": self.staging_pub,
+                "FULCRUM_SUPABASE_SECRET_KEY": self.staging_sec,
+                "DATA_BACKEND": "supabase",
+                "SUPABASE_URL": self.staging_url,
+                "SUPABASE_PUBLISHABLE_KEY": self.staging_pub,
+                "SUPABASE_SECRET_KEY": self.staging_sec,
+            },
+            clear=False,
+        ):
+            from services.auth import verify_recovery_token_hash
+            ok_v, v_email, acc, ref, _, err_v = verify_recovery_token_hash(hashed_token)
+            self.assertTrue(ok_v, f"verify_recovery_token_hash failed: {err_v}")
+            self.assertEqual(v_email, self.disposable_email.lower())
 
-    # --------------------------------------------------------------------------
-    # Test 15: Recovery session cannot escalate privileges or modify other users
-    # --------------------------------------------------------------------------
-    def test_15_recovery_session_privilege_boundary(self):
-        link = self.admin.auth.admin.generate_link({
-            'type': 'recovery',
-            'email': TEST_USER_EMAIL
-        })
-        res = self.client.auth.verify_otp({
-            'token_hash': link.properties.hashed_token,
-            'type': 'recovery'
-        })
-        self.assertEqual(res.user.role, 'authenticated')
+            # Second verification of same token_hash must fail
+            ok_v2, _, _, _, code2, _ = verify_recovery_token_hash(hashed_token)
+            self.assertFalse(ok_v2)
+            self.assertIn(code2, ("expired", "used_or_invalid"))
 
-    # --------------------------------------------------------------------------
-    # Test 16: Code verifier mismatch (PKCE) fails gracefully without crash
-    # --------------------------------------------------------------------------
-    def test_16_pkce_code_without_verifier_fails_gracefully(self):
-        try:
-            self.client.auth.exchange_code_for_session({"auth_code": "invalid_code_123"})
-            self.fail("Expected AuthApiError")
-        except Exception as e:
-            self.assertIn("invalid", str(e).lower())
+            # Update password strictly using recovery session (never Admin API)
+            ok_u, err_u = complete_password_reset(
+                self.updated_password,
+                access_token=acc,
+                refresh_token=ref,
+                email=v_email,
+            )
+            self.assertTrue(ok_u, f"complete_password_reset failed: {err_u}")
 
-    # --------------------------------------------------------------------------
-    # Test 17: Multiple rapid reset requests keep only the newest active
-    # --------------------------------------------------------------------------
-    def test_17_multiple_rapid_resets_invalidate_prior(self):
-        link1 = self.admin.auth.admin.generate_link({'type': 'recovery', 'email': TEST_USER_EMAIL})
-        link2 = self.admin.auth.admin.generate_link({'type': 'recovery', 'email': TEST_USER_EMAIL})
-        
-        # link2 is newest, must verify cleanly
-        res2 = self.client.auth.verify_otp({'token_hash': link2.properties.hashed_token, 'type': 'recovery'})
-        self.assertIsNotNone(res2.session)
-
-    # --------------------------------------------------------------------------
-    # Test 18: Concurrent recovery attempts in separate tabs do not cross-talk
-    # --------------------------------------------------------------------------
-    def test_18_session_isolation_across_contexts(self):
-        tab1_state = {"sb_access_token": "token_tab1", "recovery_verified_email": "user1@domain.com"}
-        tab2_state = {"sb_access_token": "token_tab2", "recovery_verified_email": "user2@domain.com"}
-        self.assertNotEqual(tab1_state["sb_access_token"], tab2_state["sb_access_token"])
-        self.assertNotEqual(tab1_state["recovery_verified_email"], tab2_state["recovery_verified_email"])
-        tab1_state["recovery_verified"] = False
-        tab2_state["recovery_verified"] = True
-        self.assertFalse(tab1_state["recovery_verified"])
-        self.assertTrue(tab2_state["recovery_verified"])
-
-    # --------------------------------------------------------------------------
-    # Test 19: Streamlit rerun does not lose verified recovery state
-    # --------------------------------------------------------------------------
-    def test_19_session_state_rerun_resilience(self):
-        session_state = {
-            "recovery_verified": True,
-            "recovery_verified_email": TEST_USER_EMAIL,
-            "sb_access_token": "token_xyz"
-        }
-        self.assertTrue(session_state.get("recovery_verified"))
-        self.assertEqual(session_state.get("recovery_verified_email"), TEST_USER_EMAIL)
-
-    # --------------------------------------------------------------------------
-    # Test 20: Network failure during password update shows actionable message
-    # --------------------------------------------------------------------------
-    def test_20_network_failure_handling(self):
-        with patch.object(self.client.auth, 'set_session', side_effect=ConnectionError("Connection timed out")):
-            with patch('services.auth.get_supabase_client', return_value=self.client):
-                ok, err = complete_password_reset("ValidPass123!", access_token="token", email=TEST_USER_EMAIL)
-                self.assertFalse(ok)
-                self.assertIn("Password reset verification failed", err or "")
+            # Verify new password works and old password is rejected
+            sign_in_new = self.client.auth.sign_in_with_password({
+                "email": self.disposable_email,
+                "password": self.updated_password,
+            })
+            self.assertIsNotNone(sign_in_new.session)
+            with self.assertRaises(Exception):
+                self.client.auth.sign_in_with_password({
+                    "email": self.disposable_email,
+                    "password": self.initial_password,
+                })
 
 
 if __name__ == "__main__":

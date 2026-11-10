@@ -47,16 +47,20 @@ from services.scheme_rules import (
 )
 
 def render_aspirant_portal(user_profile: dict):
+    from services.perf import get_active_tracker
+    tracker = get_active_tracker("aspirant_portal")
+
     user_id = user_profile["id"]
-    profile = get_profile(user_id) or user_profile
+    if "completion_pct" in user_profile and isinstance(user_profile.get("profile_data"), dict):
+        profile = user_profile
+    else:
+        with tracker.stage("profile_fetch_ms"):
+            profile = get_profile(user_id) or user_profile
 
     full_name = profile.get("full_name", "Entrepreneur")
     completion_pct = profile.get("completion_pct", 50)
-    mentors = get_aspirant_mentors(user_id)
-    guide = mentors.get("guide")
-    sme = mentors.get("sme")
 
-    # Top Header
+    # Top Header (renders immediately before fetching tab-specific relationships/schemes/journeys)
     st.markdown(f"""
     <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #E2E8F0;">
         <div>
@@ -85,11 +89,20 @@ def render_aspirant_portal(user_profile: dict):
         "🤝 Consult a Guide or SME"
     ], on_change="rerun", key="aspirant_nav_tabs")
 
+    # Fetch mentors lazily only for tabs that display mentor details
+    mentors = None
+    if is_tab_active(tabs[0]) or is_tab_active(tabs[3]) or is_tab_active(tabs[5]):
+        with tracker.stage("mentor_lookup_ms"):
+            mentors = get_aspirant_mentors(user_id)
+    guide = (mentors or {}).get("guide")
+    sme = (mentors or {}).get("sme")
+
     # ─────────────────────────────────────────────────────────────
     # TAB 1: OVERVIEW
     # ─────────────────────────────────────────────────────────────
     with tabs[0]:
       if is_tab_active(tabs[0]):
+       with tracker.stage("overview_render_ms"):
         c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(f"""
@@ -100,7 +113,7 @@ def render_aspirant_portal(user_profile: dict):
             </div>
             """, unsafe_allow_html=True)
         with c2:
-            all_guides_ov = mentors.get("guides") or ([guide] if guide else [])
+            all_guides_ov = (mentors or {}).get("guides") or ([guide] if guide else [])
             g_text = ", ".join([g.get("full_name", "Guide") for g in all_guides_ov if g]) if all_guides_ov else "Pending Admin Assignment"
             st.markdown(f"""
             <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #10b981; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
@@ -119,7 +132,8 @@ def render_aspirant_portal(user_profile: dict):
             </div>
             """, unsafe_allow_html=True)
         with c4:
-            released_schemes = get_released_schemes_for_aspirant(user_id)
+            with tracker.stage("scheme_release_ms"):
+                released_schemes = get_released_schemes_for_aspirant(user_id)
             st.markdown(f"""
             <div class="metric-card" style="background: #FFFFFF; border: 1px solid #E2E8F0; border-bottom: 3px solid #ec4899; border-radius: 14px; padding: 1.2rem; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.04);">
                 <div style="font-size: 0.72rem; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.5px;">Released Schemes</div>
@@ -132,7 +146,8 @@ def render_aspirant_portal(user_profile: dict):
 
         # Recent Journey Activity Preview
         st.subheader("🎬 Journey Highlights")
-        timeline = get_journey_timeline(user_id)
+        with tracker.stage("journey_fetch_ms"):
+            timeline = get_journey_timeline(user_id)
         # Suppress internal system automation and unreleased scheme matches from founder highlights
         active_events = [
             e for e in (timeline or [])

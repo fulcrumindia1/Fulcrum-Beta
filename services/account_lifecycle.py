@@ -64,7 +64,7 @@ def _invalidate_account_caches(user_id: str) -> None:
     invalidate_memo("multi_role_users")
 
 
-def get_account_status(user_id: str) -> Dict:
+def get_account_status(user_id: str, prefetched_profile: Optional[Dict] = None) -> Dict:
     """
     Retrieves full account lifecycle status details for a user.
     STRICT FAIL-CLOSED POLICY (P0):
@@ -101,7 +101,13 @@ def get_account_status(user_id: str) -> Dict:
     backend = get_data_backend()
     status_dict = {}
 
-    if backend == "supabase":
+    if (
+        isinstance(prefetched_profile, dict)
+        and str(prefetched_profile.get("id") or "") == clean_uid
+        and ("is_active" in prefetched_profile or "account_status" in prefetched_profile)
+    ):
+        status_dict = prefetched_profile
+    elif backend == "supabase":
         admin = get_supabase_admin_client() or get_supabase_client()
         if not admin:
             res_err = {

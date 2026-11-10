@@ -176,7 +176,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                 if unread_only:
                     q = q.eq("is_read", False)
                 res = q.order("created_at", desc=True).limit(50).execute()
-                if res.data is not None and len(res.data) > 0:
+                if res.data is not None:
                     set_memo(cache_key, res.data, ttl_seconds=30)
                     return res.data
                 if admin and admin != reader:
@@ -187,7 +187,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                     if res2.data is not None:
                         set_memo(cache_key, res2.data, ttl_seconds=30)
                         return res2.data
-                out = res.data if res.data is not None else []
+                out = []
                 set_memo(cache_key, out, ttl_seconds=30)
                 return out
             except Exception as e:

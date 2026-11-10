@@ -10,6 +10,12 @@ Welcome to the **Fulcrum-India** engineering, architecture, operations, and gove
   Step-by-step instructions on updating the VPS with WinSCP, running Docker commands, viewing logs, and editing `.env`.
 * **[Password Recovery & Email Rate Limits Guide (ELI5)](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/PASSWORD_RECOVERY_AND_EMAIL_RATE_LIMITS_ELI5.md)**  
   Explains Supabase free email rate limits, why they occur, how to bypass during testing, and how to connect custom SMTP.
+* **[Resend SMTP + Hostinger DNS + Forgot Password Integration Guide (ELI5)](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/02_DEPLOYMENT_AND_OPERATIONS/RESEND_SMTP_AND_FORGOT_PASSWORD_ELI5_GUIDE.md)**  
+  Step-by-step walkthrough of how `notify.fulcrumindia.online`, Resend SMTP, Supabase Auth, and Fulcrum's WebSocket recovery bridge work together.
+* **[Server Recreation, Fresh Supabase & Backup Playbook (ELI5)](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/02_DEPLOYMENT_AND_OPERATIONS/SERVER_RECREATION_AND_BACKUP_ELI5_PLAYBOOK.md)**  
+  Exact copy-paste cheat sheet: which folder goes to `/opt/fulcrum/`, `.sh` commands, fresh Supabase SQL migrations, Resend/Hostinger DNS, Docker disk cleanup, and backup `.py` commands.
+* **[Daily Maintenance & Disk Cleanup Guide (ELI5)](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/02_DEPLOYMENT_AND_OPERATIONS/DAILY_MAINTENANCE_AND_DISK_CLEANUP_ELI5.md)**  
+  Simple daily/weekly/monthly owner checklist, safe `docker image prune -f` / `docker builder prune -f` disk cleanup, and emergency rescue commands.
 
 ---
 
@@ -32,6 +38,9 @@ Contains official independent forensic audits, release gates, attestations, and 
 Operational runbooks, resource allocation, and VPS guides:
 * **`OPERATIONAL_RUNBOOK_WINSCP_COMMANDS_AND_ENV_GUIDE.md`** — Core deployment cheat sheet.
 * **`PASSWORD_RECOVERY_AND_EMAIL_RATE_LIMITS_ELI5.md`** — Email and password reset operations.
+* **`RESEND_SMTP_AND_FORGOT_PASSWORD_ELI5_GUIDE.md`** — Resend + Hostinger DNS + Supabase SMTP + WebSocket recovery walkthrough (ELI5).
+* **`SERVER_RECREATION_AND_BACKUP_ELI5_PLAYBOOK.md`** — Full server recreation from scratch, `/opt/fulcrum/` setup, `.sh` scripts, fresh Supabase SQL, Resend DNS, disk cleanup & backup `.py` commands (ELI5).
+* **`DAILY_MAINTENANCE_AND_DISK_CLEANUP_ELI5.md`** — Daily/weekly/monthly owner maintenance checklist, dead-image disk cleanup commands, and rescue cheat sheet (ELI5).
 * **`DEPLOYMENT_RUNBOOK_KVM2.md`** — Hostinger KVM 2 Ubuntu 24.04 server configuration.
 * **`WINSCP_FRESH_DEPLOYMENT_GUIDE.md`** — Detailed visual WinSCP deployment walkthrough.
 * **`ROLLBACK_CONTINGENCY_PLAN.md`** — 45-second zero-downtime rollback runbook.

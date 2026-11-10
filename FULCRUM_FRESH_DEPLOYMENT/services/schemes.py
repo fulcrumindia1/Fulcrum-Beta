@@ -653,7 +653,7 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
                         .execute()
                 except Exception:
                     pass
-                if (not res or not res.data) and admin and admin != reader:
+                if res is None and admin and admin != reader:
                     try:
                         res = admin.table("scheme_releases")\
                             .select("*")\
@@ -663,11 +663,13 @@ def get_released_schemes_for_aspirant(aspirant_id: str) -> List[Dict]:
                     except Exception:
                         pass
                 if not res or not res.data:
+                    set_memo(cache_key, [], ttl_seconds=60)
                     return []
 
                 # 2. Extract scheme IDs and fetch scheme catalogue records (admin client bypasses guide-only RLS on schemes)
                 scheme_ids = [r["scheme_id"] for r in res.data if r.get("scheme_id")]
                 if not scheme_ids:
+                    set_memo(cache_key, [], ttl_seconds=60)
                     return []
 
                 s_res = None

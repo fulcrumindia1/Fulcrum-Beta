@@ -328,7 +328,7 @@ def _invalidate_role_caches(user_id: str) -> None:
     invalidate_memo("mentors:")
 
 
-def get_user_roles(user_id: str) -> List[Dict]:
+def get_user_roles(user_id: str, prefetched_profile: Optional[Dict] = None) -> List[Dict]:
     """Retrieves all role grant records for a user."""
     if not user_id:
         return []
@@ -356,8 +356,11 @@ def get_user_roles(user_id: str) -> List[Dict]:
         roles = db.get_user_roles(user_id) if hasattr(db, "get_user_roles") else []
 
     # Ensure the user's primary/registered role is included if no explicit multi-role grants exist
-    from services.profiles import get_profile
-    p = get_profile(user_id)
+    if isinstance(prefetched_profile, dict) and str(prefetched_profile.get("id") or "") == str(user_id):
+        p = prefetched_profile
+    else:
+        from services.profiles import get_profile
+        p = get_profile(user_id)
     user_email = str(p.get("email", "")).strip().lower() if p else ""
     is_platform_admin = is_strict_admin(user_id=user_id, email=user_email)
 
@@ -401,7 +404,7 @@ def get_user_roles(user_id: str) -> List[Dict]:
                     "activated_at": p.get("created_at")
                 })
 
-    set_memo(cache_key, roles, ttl_seconds=5)
+    set_memo(cache_key, roles, ttl_seconds=20)
     return roles
 
 
