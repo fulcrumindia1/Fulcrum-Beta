@@ -15,9 +15,10 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple, Dict, Any, List
 
 try:
-    from supabase import create_client, Client
+    from supabase import create_client, Client, ClientOptions
 except ImportError:
     create_client = None
+    ClientOptions = None
 
 # Local fallback SQLite store for explicit offline development
 from services.local_db import get_local_db
@@ -139,8 +140,12 @@ def get_supabase_client() -> Optional[Client]:
         return None
 
     try:
+        client_opts = ClientOptions(flow_type="implicit") if ClientOptions else None
         if "supabase_client" not in st.session_state or st.session_state.supabase_client is None:
-            st.session_state.supabase_client = create_client(url, pub_key)
+            if client_opts:
+                st.session_state.supabase_client = create_client(url, pub_key, options=client_opts)
+            else:
+                st.session_state.supabase_client = create_client(url, pub_key)
 
         client = st.session_state.supabase_client
 
@@ -158,6 +163,9 @@ def get_supabase_client() -> Optional[Client]:
         return client
     except Exception:
         try:
+            client_opts = ClientOptions(flow_type="implicit") if ClientOptions else None
+            if client_opts:
+                return create_client(url, pub_key, options=client_opts)
             return create_client(url, pub_key)
         except Exception:
             return None
@@ -173,9 +181,6 @@ def get_supabase_admin_client() -> Optional[Client]:
         return create_client(url, sec_key)
     except Exception:
         return None
-
-# Import account lifecycle gate after core client getters are established
-from services.account_lifecycle import get_account_status
 
 def sync_user_phone_if_missing(user_id: str, phone: str, district: Optional[str] = None) -> bool:
     """Self-healing utility: updates missing phone/district in profiles table and profile_data."""
@@ -233,6 +238,8 @@ def login_user(email: str, password: str) -> Tuple[Optional[Dict], Optional[str]
     When DATA_BACKEND=sqlite: authenticates against local SQLite.
     Returns (user_profile_dict, error_message).
     """
+    from services.account_lifecycle import get_account_status
+
     email = email.strip().lower()
     password = password.strip()
     if not email or not password:
@@ -420,6 +427,8 @@ def signup_aspirant(email: str, password: str, full_name: str, phone: str = "", 
     When DATA_BACKEND=supabase: uses Supabase Auth with email confirmation redirect.
     When DATA_BACKEND=sqlite: creates local SQLite account.
     """
+    from services.account_lifecycle import get_account_status
+
     email = email.strip().lower()
     full_name = full_name.strip()
     if not email or not password or not full_name:
@@ -570,9 +579,15 @@ def send_password_reset(email: str) -> Tuple[bool, Optional[str]]:
     Triggers a password recovery email via Supabase Auth.
     Directs the user back to the application URL: https://app.fulcrumindia.online
     """
+    from services.account_lifecycle import get_account_status
+
     email = email.strip().lower()
     if not email:
         return False, "Please enter your registered email address."
+
+    # Sole platform administrator credentials cannot be reset through self-service recovery
+    if email == "fulcrumindia1@gmail.com":
+        return False, "Security Notice: Platform Administrator credentials cannot be reset through self-service recovery. Contact system maintenance."
 
     if get_data_backend() == "sqlite":
         return False, "Password reset via email is only supported in Supabase mode."
@@ -679,8 +694,10 @@ def complete_password_reset(
         return True, None
     except Exception as e:
         err_msg = str(e)
-        if "expired" in err_msg.lower():
-            return False, "The recovery link has expired. Please request a new reset link."
+        if "different" in err_msg.lower():
+            return False, "New password must be different from current password."
+        if "expired" in err_msg.lower() or "invalid" in err_msg.lower():
+            return False, "The recovery link has expired or has already been used. Please request a new reset link."
         return False, f"Password reset verification failed: {err_msg}"
 
 

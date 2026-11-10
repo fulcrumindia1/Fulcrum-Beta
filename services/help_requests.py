@@ -16,7 +16,7 @@ from services.auth import get_supabase_client, get_supabase_admin_client, get_da
 from services.local_db import get_local_db
 from services.cache import get_memo, set_memo, invalidate_memo
 from services.relationships import get_aspirant_mentors
-from services.governance import check_sme_has_conflict
+import services.governance as gov
 
 def _invalidate_help_requests_cache() -> None:
     invalidate_memo("help_requests:")
@@ -677,7 +677,7 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
                 return False, "Help request not found."
             req = t_res.data[0]
             aspirant_id = req["aspirant_id"]
-            if check_sme_has_conflict(sme_id, aspirant_id):
+            if gov.check_sme_has_conflict(sme_id, aspirant_id):
                 return False, "Conflict of Interest Recusal Active: You have declared a conflict of interest on this case and cannot submit advisory responses pending Admin reassignment."
             if req.get("assigned_sme_id") and str(req.get("assigned_sme_id")) != str(sme_id):
                 m_info = get_aspirant_mentors(aspirant_id) or {}
@@ -728,7 +728,7 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
 
         req = dict(row)
         aspirant_id = req["aspirant_id"]
-        if check_sme_has_conflict(sme_id, aspirant_id):
+        if gov.check_sme_has_conflict(sme_id, aspirant_id):
             return False, "Conflict of Interest Recusal Active: You have declared a conflict of interest on this case and cannot submit advisory responses pending Admin reassignment."
         if req.get("assigned_sme_id") and req.get("assigned_sme_id") != sme_id:
             m_info = get_aspirant_mentors(aspirant_id) or {}

@@ -21,11 +21,37 @@ VALID_STATUSES = ("active", "pending_nda", "suspended", "revoked")
 SOLE_ADMIN_EMAIL = "fulcrumindia1@gmail.com"
 SOLE_ADMIN_DEFAULT_UUID = "616304b5-aef5-4cd0-88be-2fda7ddf7f88"
 
+_RESOLVED_ADMIN_UUID: Optional[str] = None
+
+def set_resolved_admin_uuid(uid: str) -> None:
+    """Dynamically caches the Sole Admin UUID discovered from auth or session."""
+    global _RESOLVED_ADMIN_UUID
+    if uid and str(uid).strip():
+        _RESOLVED_ADMIN_UUID = str(uid).strip().lower()
+
 def get_configured_admin_uuid() -> str:
-    """Returns the active Sole Admin UUID from environment or default."""
-    return str(os.environ.get("SOLE_ADMIN_UUID") or SOLE_ADMIN_DEFAULT_UUID).strip().lower()
+    """Returns the active Sole Admin UUID from environment, dynamic cache, or default."""
+    global _RESOLVED_ADMIN_UUID
+    env_uuid = os.environ.get("SOLE_ADMIN_UUID")
+    if env_uuid and env_uuid.strip():
+        return env_uuid.strip().lower()
+    if _RESOLVED_ADMIN_UUID:
+        return _RESOLVED_ADMIN_UUID
+
+    # Attempt dynamic lookup from database for fulcrumindia1@gmail.com
+    try:
+        from services.profiles import get_profile_by_email
+        p = get_profile_by_email(SOLE_ADMIN_EMAIL)
+        if p and p.get("id"):
+            _RESOLVED_ADMIN_UUID = str(p["id"]).strip().lower()
+            return _RESOLVED_ADMIN_UUID
+    except Exception:
+        pass
+
+    return SOLE_ADMIN_DEFAULT_UUID
 
 SOLE_ADMIN_UUID = get_configured_admin_uuid()
+
 
 
 def is_strict_admin(
@@ -84,7 +110,10 @@ def is_strict_admin(
         if sess_u is not None and isinstance(sess_u, dict):
             sess_uid = str(sess_u.get("id") or "").strip().lower()
             sess_email = str(sess_u.get("email") or "").strip().lower()
-            if sess_uid != SOLE_ADMIN_UUID or sess_email != SOLE_ADMIN_EMAIL:
+            if sess_email == SOLE_ADMIN_EMAIL:
+                set_resolved_admin_uuid(sess_uid)
+            expected_admin_uid = get_configured_admin_uuid()
+            if sess_email != SOLE_ADMIN_EMAIL or (sess_uid != expected_admin_uid and sess_u.get("role") != "admin"):
                 # Active session is an Aspirant, Guide, SME, or unauthorized account!
                 # Reject immediately even if caller passed admin UUID in arguments.
                 return False
@@ -101,7 +130,10 @@ def is_strict_admin(
                     return False
                 t_uid = str(u_res.user.id).strip().lower()
                 t_email = str(u_res.user.email).strip().lower()
-                if t_uid != SOLE_ADMIN_UUID or t_email != SOLE_ADMIN_EMAIL:
+                if t_email == SOLE_ADMIN_EMAIL:
+                    set_resolved_admin_uuid(t_uid)
+                expected_admin_uid = get_configured_admin_uuid()
+                if t_uid != expected_admin_uid or t_email != SOLE_ADMIN_EMAIL:
                     return False
             except Exception:
                 # Expired or forged token -> reject
@@ -114,40 +146,62 @@ def is_strict_admin(
             sess_u = st.session_state.get("user") or {}
             clean_uid = str(sess_u.get("id") or "").strip().lower()
             clean_email = str(sess_u.get("email") or "").strip().lower()
+            if clean_email == SOLE_ADMIN_EMAIL and clean_uid:
+                set_resolved_admin_uuid(clean_uid)
         except Exception:
             pass
+
+    expected_admin_uid = get_configured_admin_uuid()
 
     # ── 3. IDENTITY REJECTION CHECKS ──
     # If email is explicitly provided and is NOT fulcrumindia1@gmail.com, deny immediately
     if clean_email and clean_email != SOLE_ADMIN_EMAIL:
         return False
 
-    # If UUID is explicitly provided and is NOT SOLE_ADMIN_UUID, deny immediately
-    if clean_uid and clean_uid != SOLE_ADMIN_UUID:
+    # If both clean_uid and clean_email are provided:
+    if clean_email == SOLE_ADMIN_EMAIL and clean_uid:
+        if clean_uid == expected_admin_uid:
+            return True
+        try:
+            from services.profiles import get_profile
+            p = get_profile(clean_uid, is_system=True)
+            if p and str(p.get("email") or "").strip().lower() == SOLE_ADMIN_EMAIL and str(p.get("role") or "").strip().lower() == "admin":
+                set_resolved_admin_uuid(clean_uid)
+                return True
+        except Exception:
+            pass
         return False
 
-    # ── 4. POSITIVE VERIFICATION ──
-    # If both clean_uid and clean_email are provided and match Sole Admin
-    if clean_uid == SOLE_ADMIN_UUID and clean_email == SOLE_ADMIN_EMAIL:
-        return True
-
-    # If only clean_uid was supplied (e.g. backend / CLI call), verify against persistent profile
-    if clean_uid == SOLE_ADMIN_UUID and not clean_email:
+    # If UUID is explicitly provided without email:
+    if clean_uid and not clean_email:
+        if clean_uid == expected_admin_uid:
+            try:
+                from services.profiles import get_profile
+                p = get_profile(clean_uid, is_system=True)
+                if p:
+                    p_email = str(p.get("email") or "").strip().lower()
+                    p_role = str(p.get("role") or "").strip().lower()
+                    if p_email == SOLE_ADMIN_EMAIL and p_role == "admin":
+                        return True
+                    return False
+            except Exception:
+                pass
+            return False
+        # If UID doesn't match current cached UID, verify profile
         try:
             from services.profiles import get_profile
             p = get_profile(clean_uid, is_system=True)
             if p:
                 p_email = str(p.get("email") or "").strip().lower()
-                p_id = str(p.get("id") or "").strip().lower()
                 p_role = str(p.get("role") or "").strip().lower()
-                if p_email == SOLE_ADMIN_EMAIL and p_id == SOLE_ADMIN_UUID and p_role == "admin":
+                if p_email == SOLE_ADMIN_EMAIL and p_role == "admin":
+                    set_resolved_admin_uuid(clean_uid)
                     return True
-                return False
         except Exception:
             pass
         return False
 
-    # If only email was passed without UUID, verify persistent profile actually bears SOLE_ADMIN_UUID
+    # If only email was passed without UUID, verify persistent profile
     if clean_email == SOLE_ADMIN_EMAIL and not clean_uid:
         try:
             from services.profiles import get_profile_by_email
@@ -155,11 +209,13 @@ def is_strict_admin(
             if p:
                 p_id = str(p.get("id") or "").strip().lower()
                 p_role = str(p.get("role") or "").strip().lower()
-                if p_id == SOLE_ADMIN_UUID and p_role == "admin":
+                if p_role == "admin":
+                    set_resolved_admin_uuid(p_id)
                     return True
         except Exception:
             pass
         return False
+
 
     return False
 

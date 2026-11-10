@@ -12,6 +12,7 @@ Design Guidelines:
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 from services.auth import (
     login_user,
     signup_aspirant,
@@ -229,42 +230,143 @@ def render_login_page():
     </style>
     """, unsafe_allow_html=True)
 
+    # Bridge URL hash fragment (#access_token=... / #error=...) to query params for Streamlit
+    components.html(r"""
+    <script>
+    (function() {
+        try {
+            var targetWin = window.parent || window;
+            var hash = targetWin.location.hash || window.location.hash;
+            if (hash && (hash.indexOf('access_token=') !== -1 || hash.indexOf('error=') !== -1)) {
+                var cleanHash = hash.replace(/^[#\/]+/, '');
+                var hashParams = new URLSearchParams(cleanHash);
+                var searchParams = new URLSearchParams(targetWin.location.search || window.location.search);
+                var changed = false;
+                ['access_token', 'refresh_token', 'type', 'error', 'error_description', 'error_code'].forEach(function(k) {
+                    var v = hashParams.get(k);
+                    if (v && !searchParams.has(k)) {
+                        searchParams.set(k, v);
+                        changed = true;
+                    }
+                });
+                if (changed) {
+                    if (searchParams.has('access_token') && !searchParams.has('type')) {
+                        searchParams.set('type', 'recovery');
+                    }
+                    var cleanUrl = (targetWin.location.pathname || window.location.pathname) + '?' + searchParams.toString();
+                    targetWin.location.replace(cleanUrl);
+                }
+            }
+        } catch(e) {
+            console.error('Hash bridge error:', e);
+        }
+    })();
+    </script>
+    """, height=0, width=0)
+
     # Check query parameters for email confirmation or password recovery
     query_params = st.query_params
     auth_type = query_params.get("type", "")
+    token_hash = query_params.get("token_hash") or query_params.get("token") or ""
     acc_token = query_params.get("access_token", "")
     ref_token = query_params.get("refresh_token", "")
     auth_code = query_params.get("code", "")
     error_desc = query_params.get("error_description") or query_params.get("error") or ""
     backend = get_data_backend()
 
-    # Handle modern Supabase PKCE code exchange if redirected from reset email
-    if auth_code and backend == "supabase" and not acc_token and not st.session_state.get("sb_access_token"):
-        try:
-            from services.auth import get_supabase_client
-            client = get_supabase_client()
-            if client:
-                res = client.auth.exchange_code_for_session({"auth_code": auth_code})
-                if res and getattr(res, "session", None):
-                    st.session_state.sb_access_token = res.session.access_token
-                    st.session_state.sb_refresh_token = res.session.refresh_token
-                    acc_token = res.session.access_token
-                    ref_token = res.session.refresh_token
-                    if getattr(res, "user", None) and getattr(res.user, "email", None):
-                        st.session_state.input_fp_email = res.user.email
-                        st.session_state.input_login_email = res.user.email
-                    auth_type = "recovery"
-        except Exception as e:
-            err_text = str(e)
-            if "expired" in err_text.lower() or "invalid" in err_text.lower():
-                error_desc = "The password recovery link has expired or has already been used. Please request a new link."
-            else:
-                error_desc = f"Authentication notice: {err_text}"
+    # Step A: Catch provider-level callback errors immediately
+    if error_desc:
+        st.session_state.recovery_verified = False
+        st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+        st.query_params.clear()
+        st.rerun()
 
-    if acc_token:
-        st.session_state.sb_access_token = acc_token
-    if ref_token:
-        st.session_state.sb_refresh_token = ref_token
+    # Step B: Supabase mode cryptographic verification of incoming recovery parameters
+    if backend == "supabase" and not st.session_state.get("recovery_verified"):
+        from services.auth import get_supabase_client
+        client = get_supabase_client()
+
+        # Mode 1: token_hash OTP verification (Recommended Supabase recovery link format)
+        if token_hash and (auth_type == "recovery" or not auth_type):
+            try:
+                if client:
+                    res = client.auth.verify_otp({"token_hash": token_hash, "type": "recovery"})
+                    if res and getattr(res, "session", None) and getattr(res, "user", None):
+                        st.session_state.recovery_verified = True
+                        st.session_state.recovery_verified_email = res.user.email
+                        st.session_state.sb_access_token = res.session.access_token
+                        st.session_state.sb_refresh_token = res.session.refresh_token
+                        st.session_state.recovery_error = None
+                        st.query_params.clear()
+                        st.rerun()
+                    else:
+                        st.session_state.recovery_verified = False
+                        st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+                        st.query_params.clear()
+                        st.rerun()
+            except Exception:
+                st.session_state.recovery_verified = False
+                st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+                st.query_params.clear()
+                st.rerun()
+
+        # Mode 2: access_token verification (from Hash bridge or direct link)
+        elif acc_token and auth_type == "recovery":
+            try:
+                if client:
+                    user_res = client.auth.get_user(acc_token)
+                    if user_res and getattr(user_res, "user", None):
+                        st.session_state.recovery_verified = True
+                        st.session_state.recovery_verified_email = user_res.user.email
+                        st.session_state.sb_access_token = acc_token
+                        st.session_state.sb_refresh_token = ref_token or acc_token
+                        st.session_state.recovery_error = None
+                        st.query_params.clear()
+                        st.rerun()
+                    else:
+                        st.session_state.recovery_verified = False
+                        st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+                        st.query_params.clear()
+                        st.rerun()
+            except Exception:
+                st.session_state.recovery_verified = False
+                st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+                st.query_params.clear()
+                st.rerun()
+
+        # Mode 3: PKCE authorization code exchange (if code is provided)
+        elif auth_code and (auth_type == "recovery" or not auth_type):
+            code_verifier = st.session_state.get("pkce_verifier")
+            exchanged = False
+            if client:
+                try:
+                    params = {"auth_code": auth_code}
+                    if code_verifier:
+                        params["code_verifier"] = code_verifier
+                    res = client.auth.exchange_code_for_session(params)
+                    if res and getattr(res, "session", None) and getattr(res, "user", None):
+                        st.session_state.recovery_verified = True
+                        st.session_state.recovery_verified_email = res.user.email
+                        st.session_state.sb_access_token = res.session.access_token
+                        st.session_state.sb_refresh_token = res.session.refresh_token
+                        st.session_state.recovery_error = None
+                        st.query_params.clear()
+                        st.rerun()
+                        exchanged = True
+                except Exception:
+                    pass
+            if not exchanged:
+                st.session_state.recovery_verified = False
+                st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+                st.query_params.clear()
+                st.rerun()
+
+        # Mode 4: Naked ?type=recovery without tokens
+        elif auth_type == "recovery" and not (token_hash or acc_token or auth_code):
+            st.session_state.recovery_verified = False
+            st.session_state.recovery_error = "This password recovery link is invalid or has expired. Please request a new link."
+            st.query_params.clear()
+            st.rerun()
 
     # Centered Container Layout
     col_l, col_center, col_r = st.columns([1, 1.4, 1])
@@ -277,70 +379,136 @@ def render_login_page():
         </div>
         """, unsafe_allow_html=True)
 
-        if error_desc:
-            st.error(f"Authentication notice: {error_desc}")
-
         if auth_type in ["signup", "email_verification"]:
             st.success("✅ Email confirmed successfully. Please sign in with your email and password.")
 
-        # PASSWORD RECOVERY FLOW
-        # In Supabase mode, strictly require cryptographic recovery token from the email link
-        backend = get_data_backend()
-        has_token = bool(acc_token) or bool(st.session_state.get("sb_access_token"))
-        is_recovery = (auth_type == "recovery") or (has_token and auth_type != "signup")
-        if backend == "sqlite" and st.session_state.get("show_recovery_form", False):
-            is_recovery = True
+        if st.session_state.get("password_reset_success"):
+            st.success("🎉 Password updated successfully! Please sign in with your new password.")
+            st.session_state.password_reset_success = False
 
-        if is_recovery:
+        # ─────────────────────────────────────────────────────────────
+        # RECOVERY STATE 1: RECOVERY LINK FAILED / EXPIRED / INVALID
+        # ─────────────────────────────────────────────────────────────
+        if st.session_state.get("recovery_error"):
+            st.error(f"⚠️ {st.session_state.recovery_error}")
+            st.info("Password reset links are single-use and expire quickly for your account's security.")
+            col_err1, col_err2 = st.columns(2)
+            with col_err1:
+                if st.button("Request New Reset Link", key="btn_req_new_link", use_container_width=True):
+                    st.session_state.recovery_error = None
+                    st.session_state.open_forgot_password = True
+                    st.rerun()
+            with col_err2:
+                if st.button("← Back to Sign In", key="btn_err_back_signin", use_container_width=True):
+                    st.session_state.recovery_error = None
+                    st.rerun()
+
             st.markdown("""
+            <div style="text-align: center; margin-top: 1.25rem; font-size: 0.82rem; color: #475569;">
+                Contact System Maintenance at <a href="mailto:fulcrumindia1@gmail.com" style="color: #2563EB; font-weight: 600; text-decoration: none;">fulcrumindia1@gmail.com</a> for login issues
+            </div>
+            """, unsafe_allow_html=True)
+            return
+
+        # ─────────────────────────────────────────────────────────────
+        # RECOVERY STATE 2: RECOVERY SESSION CRYPTOGRAPHICALLY VERIFIED
+        # ─────────────────────────────────────────────────────────────
+        is_recovery_active = bool(st.session_state.get("recovery_verified"))
+        if backend == "sqlite" and st.session_state.get("show_recovery_form", False):
+            is_recovery_active = True
+            if not st.session_state.get("recovery_verified_email"):
+                st.session_state.recovery_verified_email = st.session_state.get("input_fp_email") or "demo@fulcrumindia.online"
+
+        if is_recovery_active:
+            verified_email = st.session_state.get("recovery_verified_email") or ""
+            st.markdown(f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px; padding:1.5rem; margin-bottom:1.25rem; box-shadow:0 2px 4px rgba(0,0,0,0.04);">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:0.4rem;">
                     <span style="font-size:1.4rem;">🔑</span>
                     <h3 style="margin:0; color:#0F172A; font-size:1.25rem; font-weight:700;">Set New Password</h3>
                 </div>
-                <p style="font-size:0.84rem; color:#64748B; margin:0;">Enter your registered email address and choose a secure new password for your account.</p>
+                <p style="font-size:0.84rem; color:#64748B; margin:0 0 1rem 0;">Choose a secure new password for your verified account.</p>
+                <div style="background:#F1F5F9; border-left:4px solid #2563EB; padding:0.6rem 0.9rem; border-radius:4px; font-size:0.88rem; color:#1E293B;">
+                    <span style="color:#64748B; font-weight:600;">Verified Account:</span> <strong>{verified_email}</strong>
+                    <span style="background:#DCFCE7; color:#166534; font-size:0.75rem; font-weight:600; padding:2px 8px; border-radius:999px; margin-left:8px;">✓ Cryptographically Verified</span>
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
             with st.form("form_set_new_password"):
-                prefill_email = st.session_state.get("input_fp_email") or st.session_state.get("input_login_email") or ""
-                rec_email = st.text_input("Registered Email Address", value=prefill_email, placeholder="name@domain.in", key="rec_email")
-                new_p1 = st.text_input("New Password", type="password", placeholder="••••••••", key="rec_pwd1")
+                new_p1 = st.text_input("New Password", type="password", placeholder="••••••••", key="rec_pwd1", help="Must be at least 8 characters long")
                 new_p2 = st.text_input("Confirm New Password", type="password", placeholder="••••••••", key="rec_pwd2")
                 submit_recovery = st.form_submit_button("UPDATE PASSWORD", use_container_width=True)
 
                 if submit_recovery:
-                    if not rec_email or not rec_email.strip():
-                        st.error("Please enter your registered email address.")
-                    elif not new_p1 or not new_p2:
+                    if not new_p1 or not new_p2:
                         st.error("Please enter and confirm your new password.")
                     elif new_p1 != new_p2:
                         st.error("Passwords do not match.")
                     elif len(new_p1) < 8:
                         st.error("Password must be at least 8 characters long.")
+                    elif verified_email.strip().lower() == "fulcrumindia1@gmail.com":
+                        st.error("Security Notice: Platform Administrator credentials cannot be reset through self-service recovery. Contact system maintenance.")
                     else:
-                        ok, err = complete_password_reset(new_p1, access_token=acc_token, refresh_token=ref_token, email=rec_email.strip())
+                        ok, err = complete_password_reset(
+                            new_p1,
+                            access_token=st.session_state.get("sb_access_token"),
+                            refresh_token=st.session_state.get("sb_refresh_token"),
+                            email=verified_email
+                        )
                         if ok:
-                            st.success("🎉 Password updated successfully! Please sign in with your new password.")
+                            try:
+                                from services.auth import get_supabase_client
+                                c = get_supabase_client()
+                                if c:
+                                    c.auth.sign_out()
+                            except Exception:
+                                pass
+                            st.session_state.recovery_verified = False
+                            st.session_state.recovery_verified_email = None
+                            st.session_state.sb_access_token = None
+                            st.session_state.sb_refresh_token = None
                             st.session_state.show_recovery_form = False
-                            st.session_state.input_login_email = rec_email.strip()
+                            st.session_state.password_reset_success = True
+                            st.session_state.input_login_email = verified_email
                             st.query_params.clear()
+                            st.rerun()
                         else:
-                            st.error(err or "Failed to update password.")
+                            if err and "different" in err.lower():
+                                st.error("New password must be different from your current password.")
+                            elif err and ("expired" in err.lower() or "invalid" in err.lower()):
+                                st.session_state.recovery_verified = False
+                                st.session_state.recovery_error = "The recovery link has expired or has already been used. Please request a new link."
+                                st.rerun()
+                            else:
+                                st.error(err or "Failed to update password.")
 
-            if st.button("← Back to Sign In", key="btn_cancel_recovery", use_container_width=True):
+            if st.button("← Cancel & Back to Sign In", key="btn_cancel_recovery", use_container_width=True):
+                try:
+                    from services.auth import get_supabase_client
+                    c = get_supabase_client()
+                    if c:
+                        c.auth.sign_out()
+                except Exception:
+                    pass
+                st.session_state.recovery_verified = False
+                st.session_state.recovery_verified_email = None
+                st.session_state.sb_access_token = None
+                st.session_state.sb_refresh_token = None
                 st.session_state.show_recovery_form = False
                 st.query_params.clear()
                 st.rerun()
 
             st.markdown("""
             <div style="text-align: center; margin-top: 1.25rem; font-size: 0.82rem; color: #475569;">
-                Contact System Maintainence in <a href="mailto:fulcrumindia1@gmail.com" style="color: #2563EB; font-weight: 600; text-decoration: none;">fulcrumindia1@gmail.com</a> for login issues
+                Contact System Maintenance at <a href="mailto:fulcrumindia1@gmail.com" style="color: #2563EB; font-weight: 600; text-decoration: none;">fulcrumindia1@gmail.com</a> for login issues
             </div>
             """, unsafe_allow_html=True)
-
             return
 
+        # ─────────────────────────────────────────────────────────────
+        # RECOVERY STATE 3: STANDARD LOGIN & SIGNUP TABS
+        # ─────────────────────────────────────────────────────────────
         tab_login, tab_signup = st.tabs(["Sign In", "Create Aspirant Account"])
 
         # ─────────────────────────────────────────────────────────────
@@ -376,7 +544,8 @@ def render_login_page():
 
             # Password Reset Expander
             backend = get_data_backend()
-            with st.expander("🔑 Forgot Password?", expanded=False):
+            is_fp_open = bool(st.session_state.get("open_forgot_password", False))
+            with st.expander("🔑 Forgot Password?", expanded=is_fp_open):
                 if backend == "supabase":
                     st.markdown("<p style='font-size:0.8rem; color:#64748B;'>Enter your registered email address to receive a secure password recovery link.</p>", unsafe_allow_html=True)
                     col_fp1, col_fp2 = st.columns([2, 1])

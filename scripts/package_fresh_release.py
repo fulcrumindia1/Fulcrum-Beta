@@ -47,6 +47,7 @@ def package():
         ".dockerignore",
         "docker-compose.yml",
         "requirements.txt",
+        "packages.txt",
         "Caddyfile",
     ]
 

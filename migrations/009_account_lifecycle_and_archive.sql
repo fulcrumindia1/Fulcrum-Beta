@@ -224,7 +224,7 @@ CREATE POLICY "Sole Admin select account_lifecycle_log"
     TO authenticated
     USING (
         auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com'
-        AND auth.uid() = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid
+        OR public.is_admin()
     );
 
 -- User SELECT Policy (View own audit trail)
@@ -243,7 +243,7 @@ CREATE POLICY "Authenticated insert account_lifecycle_log"
     FOR INSERT
     TO authenticated
     WITH CHECK (
-        (auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com' AND auth.uid() = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid)
+        (auth.jwt() ->> 'email' = 'fulcrumindia1@gmail.com' OR public.is_admin())
         OR (
             auth.uid() = actor_id
             AND auth.uid() = user_id

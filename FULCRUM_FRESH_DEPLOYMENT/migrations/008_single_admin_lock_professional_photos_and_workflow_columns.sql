@@ -20,12 +20,11 @@ WHERE lower(email) <> 'fulcrumindia1@gmail.com'
 UPDATE public.profiles
 SET role = 'admin',
     updated_at = NOW()
-WHERE id = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid
-  AND lower(email) = 'fulcrumindia1@gmail.com';
+WHERE lower(email) = 'fulcrumindia1@gmail.com';
 
 DELETE FROM public.user_roles
 WHERE lower(role) IN ('admin', 'district_admin', 'operational_admin')
-  AND user_id <> '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid;
+  AND user_id NOT IN (SELECT id FROM public.profiles WHERE lower(email) = 'fulcrumindia1@gmail.com');
 
 INSERT INTO public.user_roles (user_id, role, status)
 SELECT id, 'aspirant', 'active'
@@ -38,7 +37,6 @@ RETURNS BOOLEAN AS $$
     SELECT EXISTS (
         SELECT 1 FROM public.profiles
         WHERE id = auth.uid()
-          AND id = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid
           AND lower(email) = 'fulcrumindia1@gmail.com'
           AND role = 'admin'
     );
@@ -51,8 +49,7 @@ DECLARE
     v_safe_role TEXT;
 BEGIN
     v_req_role := lower(COALESCE(NEW.raw_user_meta_data->>'role', 'aspirant'));
-    IF lower(NEW.email) = 'fulcrumindia1@gmail.com'
-       AND NEW.id = '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid THEN
+    IF lower(NEW.email) = 'fulcrumindia1@gmail.com' THEN
         v_safe_role := 'admin';
     ELSIF v_req_role IN ('guide', 'sme', 'aspirant') THEN
         v_safe_role := v_req_role;
@@ -76,8 +73,7 @@ CREATE OR REPLACE FUNCTION public.enforce_single_admin_profile_guard()
 RETURNS TRIGGER AS $$
 BEGIN
     IF lower(COALESCE(NEW.role, '')) IN ('admin', 'district_admin', 'operational_admin') THEN
-        IF lower(COALESCE(NEW.email, '')) <> 'fulcrumindia1@gmail.com'
-           OR NEW.id <> '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid THEN
+        IF lower(COALESCE(NEW.email, '')) <> 'fulcrumindia1@gmail.com' THEN
             NEW.role := 'aspirant';
         ELSE
             NEW.role := 'admin';
@@ -103,7 +99,10 @@ CREATE OR REPLACE FUNCTION public.enforce_single_admin_user_roles_guard()
 RETURNS TRIGGER AS $$
 BEGIN
     IF lower(COALESCE(NEW.role, '')) IN ('admin', 'district_admin', 'operational_admin') THEN
-        IF NEW.user_id <> '616304b5-aef5-4cd0-88be-2fda7ddf7f88'::uuid THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM public.profiles
+            WHERE id = NEW.user_id AND lower(email) = 'fulcrumindia1@gmail.com'
+        ) THEN
             RAISE EXCEPTION 'Security Violation: Only fulcrumindia1@gmail.com may hold the admin role.';
         END IF;
         NEW.role := 'admin';

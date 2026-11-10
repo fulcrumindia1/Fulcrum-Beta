@@ -12,6 +12,7 @@ Automation:
 - Records a meaningful Journey event
 """
 
+import json
 from datetime import datetime, timezone
 from typing import Optional, Dict, List, Tuple
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
@@ -31,7 +32,6 @@ def calculate_completion(p: Dict) -> int:
     data = p.get("profile_data", {})
     if isinstance(data, str):
         try:
-            import json
             data = json.loads(data)
         except Exception:
             data = {}
@@ -193,6 +193,59 @@ def get_profile(
         set_memo(cache_key, p_clean, ttl_seconds=60)
         return p_clean
     return None
+
+def get_profile_by_email(
+    email: str,
+    requesting_actor_id: Optional[str] = None,
+    is_system: bool = False
+) -> Optional[Dict]:
+    """
+    Fetches user profile by email using active backend.
+    """
+    if not email or not str(email).strip():
+        return None
+    clean_email = str(email).strip().lower()
+
+    backend = get_data_backend()
+    if backend == "supabase":
+        admin = _get_admin_client()
+        if admin:
+            try:
+                res = admin.table("profiles").select("*").ilike("email", clean_email).limit(1).execute()
+                if res.data and len(res.data) > 0:
+                    p = dict(res.data[0])
+                    if isinstance(p.get("profile_data"), str):
+                        try:
+                            p["profile_data"] = json.loads(p["profile_data"])
+                        except Exception:
+                            p["profile_data"] = {}
+                    p["completion_pct"] = calculate_completion(p)
+                    return p
+            except Exception as e:
+                print(f"[Profiles] get_profile_by_email cloud error: {e}")
+        return None
+
+    # SQLite mode ONLY
+    try:
+        ldb = get_local_db()
+        conn = ldb._get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM profiles WHERE LOWER(email) = ?", (clean_email,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            p = dict(row)
+            if isinstance(p.get("profile_data"), str):
+                try:
+                    p["profile_data"] = json.loads(p["profile_data"])
+                except Exception:
+                    p["profile_data"] = {}
+            p["completion_pct"] = calculate_completion(p)
+            return p
+    except Exception as e:
+        print(f"[Profiles] get_profile_by_email local error: {e}")
+    return None
+
 
 def get_profiles_batch(
     user_ids: List[str],
@@ -631,7 +684,6 @@ def update_mentor_profile(
 
     cur_data = current.get("profile_data", {})
     if isinstance(cur_data, str):
-        import json
         try:
             cur_data = json.loads(cur_data)
         except Exception:

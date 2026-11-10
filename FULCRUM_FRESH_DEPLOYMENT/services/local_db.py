@@ -2825,3 +2825,8 @@ def get_local_db() -> LocalDatabase:
     if _LOCAL_DB_INSTANCE is None:
         _LOCAL_DB_INSTANCE = LocalDatabase()
     return _LOCAL_DB_INSTANCE
+
+def get_local_db_conn():
+    """Returns an active SQLite connection from the local database engine."""
+    return get_local_db()._get_conn()
+
