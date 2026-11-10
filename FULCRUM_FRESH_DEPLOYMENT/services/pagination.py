@@ -94,12 +94,110 @@ def paginate_profiles(
         rows = [dict(zip(col_names, row)) for row in cur.fetchall()]
         conn.close()
 
+        import json
         for r in rows:
+            pd = r.get("profile_data")
+            if isinstance(pd, str):
+                try:
+                    r["profile_data"] = json.loads(pd) if pd.strip() else {}
+                except Exception:
+                    r["profile_data"] = {}
+            elif pd is None:
+                r["profile_data"] = {}
             r["completion_pct"] = calculate_completion(r)
         return rows, total
     except Exception as ex_sql:
         print(f"[Pagination] SQLite profiles query error: {ex_sql}")
         return [], 0
+
+
+def _paginate_role_holders(
+    target_role: str,
+    page: int = 1,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    search: str = "",
+    district: str = "ALL",
+) -> Tuple[List[Dict], int]:
+    """
+    Server-side paginated retrieval of active AND pending-NDA mentors holding
+    verified user_roles grants (with `role_grant_status` attached).
+    """
+    page = max(1, page)
+    offset = (page - 1) * page_size
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        client = get_supabase_admin_client() or get_supabase_client()
+        if client:
+            try:
+                ur_res = (
+                    client.table("user_roles")
+                    .select("user_id, status", count="exact")
+                    .eq("role", target_role)
+                    .in_("status", ["active", "pending_nda"])
+                    .order("created_at", desc=True)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                total = ur_res.count or 0
+                status_by_uid = {
+                    r["user_id"]: r.get("status", "active")
+                    for r in (ur_res.data or [])
+                    if r.get("user_id")
+                }
+                uids = list(status_by_uid.keys())
+                if not uids:
+                    return [], total
+
+                profiles_map = get_profiles_batch(uids, is_system=True)
+                rows = []
+                for uid in uids:
+                    prof = profiles_map.get(uid)
+                    if not prof:
+                        continue
+                    prof_copy = dict(prof)
+                    prof_copy["role_grant_status"] = status_by_uid[uid]
+                    rows.append(prof_copy)
+                if search and search.strip():
+                    s = search.strip().lower()
+                    rows = [r for r in rows if s in r.get("full_name", "").lower() or s in r.get("email", "").lower()]
+                if district and district != "ALL":
+                    rows = [r for r in rows if r.get("district") == district]
+                return rows, total
+            except Exception as e:
+                print(f"[Pagination] Supabase {target_role}s query error: {e}")
+                return [], 0
+
+    # SQLite: include active AND pending_nda mentor grants cleanly
+    from services.roles import list_users_with_multi_roles
+    from services.profiles import get_profile
+    rows_by_id: Dict[str, Dict] = {}
+    for u in list_users_with_multi_roles():
+        uid = str(u.get("id") or "")
+        if not uid:
+            continue
+        status = None
+        if target_role in u.get("active_roles", []):
+            status = "active"
+        elif target_role in u.get("pending_nda_roles", []):
+            status = "pending_nda"
+        if not status:
+            continue
+        prof = get_profile(uid)
+        if prof:
+            prof_copy = dict(prof)
+            prof_copy["role_grant_status"] = status
+            rows_by_id[uid] = prof_copy
+
+    all_rows = list(rows_by_id.values())
+    all_rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    if search and search.strip():
+        s = search.strip().lower()
+        all_rows = [r for r in all_rows if s in r.get("full_name", "").lower() or s in r.get("email", "").lower()]
+    if district and district != "ALL":
+        all_rows = [r for r in all_rows if r.get("district") == district]
+    total = len(all_rows)
+    return all_rows[offset:offset + page_size], total
 
 
 def paginate_guides(
@@ -108,46 +206,8 @@ def paginate_guides(
     search: str = "",
     district: str = "ALL"
 ) -> Tuple[List[Dict], int]:
-    """
-    Server-side paginated retrieval of active Guides holding verified user_roles grants.
-    """
-    page = max(1, page)
-    offset = (page - 1) * page_size
-    backend = get_data_backend()
-
-    if backend == "supabase":
-        client = get_supabase_admin_client() or get_supabase_client()
-        if client:
-            try:
-                # 1. Fetch user_ids holding active guide grants in user_roles
-                ur_res = client.table("user_roles").select("user_id", count="exact").eq("role", "guide").eq("status", "active").range(offset, offset + page_size - 1).execute()
-                total = ur_res.count or 0
-                uids = [r["user_id"] for r in (ur_res.data or []) if r.get("user_id")]
-                if not uids:
-                    return [], total
-
-                profiles_map = get_profiles_batch(uids, is_system=True)
-                rows = [profiles_map[uid] for uid in uids if uid in profiles_map]
-                if search and search.strip():
-                    s = search.strip().lower()
-                    rows = [r for r in rows if s in r.get("full_name", "").lower() or s in r.get("email", "").lower()]
-                if district and district != "ALL":
-                    rows = [r for r in rows if r.get("district") == district]
-                return rows, total
-            except Exception as e:
-                print(f"[Pagination] Supabase guides query error: {e}")
-                return [], 0
-
-    # SQLite
-    from services.roles import list_active_profiles_for_role
-    all_g = list_active_profiles_for_role("guide")
-    if search and search.strip():
-        s = search.strip().lower()
-        all_g = [g for g in all_g if s in g.get("full_name", "").lower() or s in g.get("email", "").lower()]
-    if district and district != "ALL":
-        all_g = [g for g in all_g if g.get("district") == district]
-    total = len(all_g)
-    return all_g[offset:offset + page_size], total
+    """Server-side paginated retrieval of active and pending-NDA Guides."""
+    return _paginate_role_holders("guide", page=page, page_size=page_size, search=search, district=district)
 
 
 def paginate_smes(
@@ -156,45 +216,8 @@ def paginate_smes(
     search: str = "",
     district: str = "ALL"
 ) -> Tuple[List[Dict], int]:
-    """
-    Server-side paginated retrieval of active Domain SMEs holding verified user_roles grants.
-    """
-    page = max(1, page)
-    offset = (page - 1) * page_size
-    backend = get_data_backend()
-
-    if backend == "supabase":
-        client = get_supabase_admin_client() or get_supabase_client()
-        if client:
-            try:
-                ur_res = client.table("user_roles").select("user_id", count="exact").eq("role", "sme").eq("status", "active").range(offset, offset + page_size - 1).execute()
-                total = ur_res.count or 0
-                uids = [r["user_id"] for r in (ur_res.data or []) if r.get("user_id")]
-                if not uids:
-                    return [], total
-
-                profiles_map = get_profiles_batch(uids, is_system=True)
-                rows = [profiles_map[uid] for uid in uids if uid in profiles_map]
-                if search and search.strip():
-                    s = search.strip().lower()
-                    rows = [r for r in rows if s in r.get("full_name", "").lower() or s in r.get("email", "").lower()]
-                if district and district != "ALL":
-                    rows = [r for r in rows if r.get("district") == district]
-                return rows, total
-            except Exception as e:
-                print(f"[Pagination] Supabase SMEs query error: {e}")
-                return [], 0
-
-    # SQLite
-    from services.roles import list_active_profiles_for_role
-    all_s = list_active_profiles_for_role("sme")
-    if search and search.strip():
-        s = search.strip().lower()
-        all_s = [sme for sme in all_s if s in sme.get("full_name", "").lower() or s in sme.get("email", "").lower()]
-    if district and district != "ALL":
-        all_s = [sme for sme in all_s if sme.get("district") == district]
-    total = len(all_s)
-    return all_s[offset:offset + page_size], total
+    """Server-side paginated retrieval of active and pending-NDA Domain SMEs."""
+    return _paginate_role_holders("sme", page=page, page_size=page_size, search=search, district=district)
 
 
 def paginate_accounts(

@@ -177,6 +177,42 @@ class TestPasswordRecoverySecurityAndUnit(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("Network timeout", err or "")
 
+    def test_08_sole_admin_workspace_not_overwritten_by_aspirant(self):
+        from services.roles import SOLE_ADMIN_UUID, SOLE_ADMIN_EMAIL
+        from streamlit.testing.v1 import AppTest
+
+        with patch.dict(
+            os.environ,
+            {
+                "FULCRUM_DATA_BACKEND": "sqlite",
+                "DATA_BACKEND": "sqlite",
+                "FULCRUM_FORBID_PRODUCTION": "1",
+            },
+            clear=False,
+        ), patch("services.legal.check_user_terms_accepted", return_value=True):
+            app_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "app.py"))
+            at = AppTest.from_file(app_path, default_timeout=20)
+            at.session_state["user"] = {
+                "id": SOLE_ADMIN_UUID,
+                "email": SOLE_ADMIN_EMAIL,
+                "full_name": "Fulcrum Administrator",
+                "role": "admin",
+                "district": "Chennai",
+                "is_active": True,
+                "account_status": "ACTIVE",
+            }
+            at.session_state["user_id"] = SOLE_ADMIN_UUID
+            at.session_state["role"] = "admin"
+            at.run()
+
+            rendered_text = "\n".join(
+                [getattr(m, "value", "") for m in at.markdown]
+                + [getattr(h, "value", "") for h in at.header]
+            )
+            self.assertFalse(at.exception, f"Unexpected AppTest exception: {at.exception}")
+            self.assertEqual(at.session_state["active_workspace"], "admin")
+            self.assertNotIn("ASPIRANT DASHBOARD", rendered_text)
+
 
 class TestPasswordRecoveryStagingIntegration(unittest.TestCase):
     """

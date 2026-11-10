@@ -16,6 +16,8 @@ Welcome to the **Fulcrum-India** engineering, architecture, operations, and gove
   Exact copy-paste cheat sheet: which folder goes to `/opt/fulcrum/`, `.sh` commands, fresh Supabase SQL migrations, Resend/Hostinger DNS, Docker disk cleanup, and backup `.py` commands.
 * **[Daily Maintenance & Disk Cleanup Guide (ELI5)](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/02_DEPLOYMENT_AND_OPERATIONS/DAILY_MAINTENANCE_AND_DISK_CLEANUP_ELI5.md)**  
   Simple daily/weekly/monthly owner checklist, safe `docker image prune -f` / `docker builder prune -f` disk cleanup, and emergency rescue commands.
+* **[E2E Tests, Crash Readiness & Log Collection Guide (ELI5)](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/02_DEPLOYMENT_AND_OPERATIONS/E2E_TESTING_AND_CRASH_LOG_COLLECTION_ELI5.md)**  
+  Safe offline E2E test commands, which staging scripts never to run against live `.env`, and 1-command crash-log capture for AGY.
 
 ---
 
@@ -41,6 +43,7 @@ Operational runbooks, resource allocation, and VPS guides:
 * **`RESEND_SMTP_AND_FORGOT_PASSWORD_ELI5_GUIDE.md`** — Resend + Hostinger DNS + Supabase SMTP + WebSocket recovery walkthrough (ELI5).
 * **`SERVER_RECREATION_AND_BACKUP_ELI5_PLAYBOOK.md`** — Full server recreation from scratch, `/opt/fulcrum/` setup, `.sh` scripts, fresh Supabase SQL, Resend DNS, disk cleanup & backup `.py` commands (ELI5).
 * **`DAILY_MAINTENANCE_AND_DISK_CLEANUP_ELI5.md`** — Daily/weekly/monthly owner maintenance checklist, dead-image disk cleanup commands, and rescue cheat sheet (ELI5).
+* **`E2E_TESTING_AND_CRASH_LOG_COLLECTION_ELI5.md`** — Safe offline E2E suites, crash safety reality check, and 1-command log capture for AGY (ELI5).
 * **`DEPLOYMENT_RUNBOOK_KVM2.md`** — Hostinger KVM 2 Ubuntu 24.04 server configuration.
 * **`WINSCP_FRESH_DEPLOYMENT_GUIDE.md`** — Detailed visual WinSCP deployment walkthrough.
 * **`ROLLBACK_CONTINGENCY_PLAN.md`** — 45-second zero-downtime rollback runbook.

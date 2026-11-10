@@ -16,11 +16,26 @@ import streamlit as st
 import html
 from datetime import datetime, timezone
 
+import json
+
 def _safe_esc(val, default=""):
     """Crash-proof HTML escape that safely handles None, booleans, and non-string types."""
     if val is None:
         return default
     return html.escape(str(val))
+
+def _safe_profile_data(record: dict) -> dict:
+    """Safely extracts profile_data as a dict even if None or serialized JSON text."""
+    pd = (record or {}).get("profile_data")
+    if isinstance(pd, dict):
+        return pd
+    if isinstance(pd, str) and pd.strip():
+        try:
+            parsed = json.loads(pd)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 import secrets
 import uuid
 import math
@@ -219,8 +234,10 @@ def render_admin_portal(admin_profile: dict):
             col_sel1, col_sel2 = st.columns([2, 1])
             with col_sel1:
                 def _format_asp_label(a):
-                    bname = a.get('profile_data',{}).get('business',{}).get('business_name','Enterprise')
-                    dist = a.get('district','TN')
+                    _pd = _safe_profile_data(a)
+                    _biz = _pd.get('business') if isinstance(_pd.get('business'), dict) else {}
+                    bname = _biz.get('business_name', 'Enterprise') or 'Enterprise'
+                    dist = a.get('district', 'TN')
                     roles = multi_roles_map.get(a['id']) or [a.get('role', 'aspirant')]
                     extra = [r.title() for r in roles if r != 'aspirant']
                     extra_str = f" [{', '.join(extra)}]" if extra else ""
@@ -530,7 +547,7 @@ def render_admin_portal(admin_profile: dict):
                             bio=cg_bio
                         )
                         if g_prof:
-                            st.session_state["admin_guide_create_success"] = f"✅ Guide account '{cg_name}' ({cg_email}) created successfully with temporary credentials. First-login password change is enforced."
+                            st.session_state["admin_guide_create_success"] = f"✅ Guide account '{cg_name}' ({cg_email}) created successfully! They appear in the roster as Pending NDA and become assignable once they log in and accept the NDA."
                             st.rerun()
                         else:
                             st.error(err or "Failed to create guide.")
@@ -557,7 +574,13 @@ def render_admin_portal(admin_profile: dict):
             )
             for g in guides:
                 gid = g["id"]
-                exp_g = g.get('profile_data', {}).get('expertise', 'Mentorship')
+                exp_g = _safe_profile_data(g).get('expertise', 'Mentorship')
+                g_status = str(g.get("role_grant_status") or "active").lower()
+                g_badge = (
+                    '<span style="background:#FFFBEB; color:#B45309; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">⏳ PENDING NDA</span>'
+                    if g_status == "pending_nda"
+                    else '<span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE GUIDE</span>'
+                )
                 g_photo_url = guide_photo_map.get(gid)
                 g_avatar_html = render_professional_avatar_html(
                     full_name=g.get("full_name", "Guide"),
@@ -577,7 +600,7 @@ def render_admin_portal(admin_profile: dict):
                     f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Expertise: {_safe_esc(exp_g)} | Email: {_safe_esc(g.get("email"))}</div>'
                     f'</div>'
                     f'</div>'
-                    f'<span style="background:#ECFDF5; color:#059669; border:1px solid #A7F3D0; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE GUIDE</span>'
+                    f'{g_badge}'
                     f'</div>'
                     f'</div>',
                     unsafe_allow_html=True
@@ -670,7 +693,7 @@ def render_admin_portal(admin_profile: dict):
                             industry=cs_ind
                         )
                         if s_prof:
-                            st.session_state["admin_sme_create_success"] = f"✅ SME account '{cs_name}' ({cs_email}) created successfully with temporary credentials. First-login password change is enforced."
+                            st.session_state["admin_sme_create_success"] = f"✅ SME account '{cs_name}' ({cs_email}) created successfully! They appear in the roster as Pending NDA and become assignable once they log in and accept the NDA."
                             st.rerun()
                         else:
                             st.error(err or "Failed to create SME.")
@@ -697,7 +720,13 @@ def render_admin_portal(admin_profile: dict):
             )
             for s in smes:
                 sid = s["id"]
-                exp_s = s.get('profile_data', {}).get('expertise', 'Advisory')
+                exp_s = _safe_profile_data(s).get('expertise', 'Advisory')
+                s_status = str(s.get("role_grant_status") or "active").lower()
+                s_badge = (
+                    '<span style="background:#FEF3C7; color:#92400E; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">⏳ PENDING NDA</span>'
+                    if s_status == "pending_nda"
+                    else '<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE SME</span>'
+                )
                 s_photo_url = sme_photo_map.get(sid)
                 s_avatar_html = render_professional_avatar_html(
                     full_name=s.get("full_name", "SME"),
@@ -717,7 +746,7 @@ def render_admin_portal(admin_profile: dict):
                     f'<div style="color:#475569; font-size:0.85rem; margin-top:0.2rem;">Domain: {_safe_esc(exp_s)} | Email: {_safe_esc(s.get("email"))}</div>'
                     f'</div>'
                     f'</div>'
-                    f'<span style="background:#FFFBEB; color:#D97706; border:1px solid #FDE68A; font-size:0.75rem; font-weight:800; padding:3px 10px; border-radius:8px;">ACTIVE SME</span>'
+                    f'{s_badge}'
                     f'</div>'
                     f'</div>',
                     unsafe_allow_html=True
@@ -773,8 +802,8 @@ def render_admin_portal(admin_profile: dict):
 
         guides = list_profiles_by_role("guide", requesting_actor_id=admin_id)
         smes = list_profiles_by_role("sme", requesting_actor_id=admin_id)
-        guide_dict = {g["id"]: f"{g.get('full_name', 'Guide')} — {g.get('profile_data',{}).get('expertise','Guide')}" for g in guides}
-        sme_dict = {s["id"]: f"{s.get('full_name', 'SME')} — {s.get('profile_data',{}).get('expertise','SME')}" for s in smes}
+        guide_dict = {g["id"]: f"{g.get('full_name', 'Guide')} — {_safe_profile_data(g).get('expertise', 'Guide')}" for g in guides}
+        sme_dict = {s["id"]: f"{s.get('full_name', 'SME')} — {_safe_profile_data(s).get('expertise', 'SME')}" for s in smes}
 
         c_as_sch1, c_as_sch2 = st.columns([3, 1])
         with c_as_sch1:
@@ -873,13 +902,11 @@ def render_admin_portal(admin_profile: dict):
                     seen_aids.add(aid_curr)
                     valid_active_rels.append(r)
 
-            if not valid_active_rels:
-                st.info("No active mentor allocations yet. Pair an entrepreneur using the forms above.")
-            else:
+            active_allocations = []
+            if valid_active_rels:
                 asp_ids_to_fetch = [r["aspirant_id"] for r in valid_active_rels]
                 asp_profiles_map = get_profiles_batch(asp_ids_to_fetch, requesting_actor_id=admin_id)
 
-                active_allocations = []
                 for r in valid_active_rels:
                     aid_curr = r["aspirant_id"]
                     asp_prof = asp_profiles_map.get(aid_curr)

@@ -1017,6 +1017,7 @@ def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: st
         local_db = get_local_db()
         import uuid
         mentor_user_id = str(uuid.uuid4())
+        now_iso = datetime.now(timezone.utc).isoformat()
         profile = {
             "id": mentor_user_id,
             "email": email,
@@ -1032,9 +1033,27 @@ def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: st
                 "temp_password_issued": True
             },
             "is_active": True,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "created_at": now_iso
         }
         local_db.create_user_with_password(email, effective_temp_password, profile)
+        if hasattr(local_db, "upsert_user_role"):
+            local_db.upsert_user_role({
+                "user_id": mentor_user_id,
+                "role": role,
+                "status": "pending_nda",
+                "granted_by": admin_user_id,
+                "granted_at": now_iso,
+                "activated_at": None,
+                "suspended_at": None,
+                "revoked_at": None,
+                "revocation_reason": None,
+                "updated_at": now_iso,
+            })
+        try:
+            from services.cache import invalidate_memo
+            invalidate_memo()
+        except Exception:
+            pass
         local_db.log_activity(admin_user_id, f"create_{role}", "profiles", mentor_user_id, {"full_name": full_name, "email": email})
         return profile, None
 
@@ -1088,6 +1107,25 @@ def admin_create_mentor(admin_user_id: str, role: str, full_name: str, email: st
         admin_client.table("profiles").upsert(profile, on_conflict="id").execute()
     except Exception as e:
         return None, f"Failed to save mentor profile in Supabase database: {e}"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        admin_client.table("user_roles").upsert({
+            "user_id": mentor_user_id,
+            "role": role,
+            "status": "pending_nda",
+            "granted_by": admin_user_id,
+            "granted_at": now_iso,
+            "activated_at": None,
+            "suspended_at": None,
+            "revoked_at": None,
+            "revocation_reason": None,
+            "updated_at": now_iso,
+        }, on_conflict="user_id, role").execute()
+        from services.cache import invalidate_memo
+        invalidate_memo()
+    except Exception as e:
+        return None, f"Mentor profile saved, but failed to initialize role grant in user_roles: {e}"
 
     return profile, None
 

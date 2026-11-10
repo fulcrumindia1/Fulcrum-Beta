@@ -11,6 +11,7 @@ Implements the 5 new administrative oversight consoles:
 
 import streamlit as st
 import html
+import json
 import textwrap
 from datetime import datetime
 from services.roles import (
@@ -43,7 +44,29 @@ from services.profiles import list_profiles_by_role, get_profile
 def _safe(v, default="—"):
     if v is None:
         return default
-    return html.escape(str(v))
+    s = str(v)
+    return default if not s.strip() else html.escape(s)
+
+
+def _render_html(raw_html: str) -> None:
+    """Render HTML block safely without CommonMark blank-line or indented code leaks."""
+    clean = "\n".join(line.lstrip() for line in raw_html.splitlines() if line.strip())
+    st.markdown(clean, unsafe_allow_html=True)
+
+
+def _safe_profile_data(record: dict) -> dict:
+    """Return profile_data as a dict even if a backend returned serialized JSON."""
+    raw = (record or {}).get("profile_data")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +92,14 @@ def render_admin_role_grants_tab(admin_id: str):
             suspended_badges = " ".join([f"<span style='background:#6B7280; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>SUSPENDED: {r.upper()}</span>" for r in u.get("suspended_roles", [])])
             revoked_badges = " ".join([f"<span style='background:#EF4444; color:#fff; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>REVOKED: {r.upper()}</span>" for r in u["revoked_roles"]])
 
-            st.markdown(textwrap.dedent(f"""
+            badges_list = [b for b in (active_badges, pending_badges, suspended_badges, revoked_badges) if b]
+            all_badges_html = (
+                " ".join(badges_list)
+                if badges_list
+                else "<span style='background:#E2E8F0; color:#475569; padding:2px 8px; border-radius:10px; font-size:0.75rem; font-weight:700;'>NO ROLES</span>"
+            )
+
+            _render_html(f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:12px; padding:1rem; margin-bottom:0.75rem; box-shadow:0 1px 3px rgba(0,0,0,0.03);">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -77,11 +107,11 @@ def render_admin_role_grants_tab(admin_id: str):
                         <div style="font-size:0.8rem; color:#64748B;">{_safe(u['email'])} · 📍 {_safe(u['district'])}</div>
                     </div>
                     <div>
-                        {active_badges} {pending_badges} {suspended_badges} {revoked_badges}
+                        {all_badges_html}
                     </div>
                 </div>
             </div>
-            """).strip(), unsafe_allow_html=True)
+            """)
 
     with col_g2:
         st.markdown("#### Grant Additional Role")
@@ -324,18 +354,18 @@ def render_admin_complaints_tab(admin_id: str):
             status_color = "#F59E0B" if status == "PENDING" else ("#3B82F6" if status == "UNDER_REVIEW" else "#10B981")
 
             with st.expander(f"Report: {asp.get('full_name', 'Founder')} on {guide.get('full_name', 'Guide')} [{status}]", expanded=(status == "PENDING")):
-                st.markdown(textwrap.dedent(f"""
+                _render_html(f"""
                 <div style="margin-bottom:0.75rem;">
-                    <p style="margin:0; font-size:0.9rem;"><strong>Entrepreneur:</strong> {asp.get('full_name')} ({asp.get('email')})</p>
-                    <p style="margin:0; font-size:0.9rem;"><strong>Assigned Guide:</strong> {guide.get('full_name')} ({guide.get('email')})</p>
-                    <p style="margin:0; font-size:0.9rem;"><strong>Report Reason:</strong> <span style="font-weight:700; color:#DC2626;">{c.get('reason', '').replace('_', ' ').title()}</span></p>
-                    <p style="margin:0; font-size:0.85rem; color:#64748B;">Submitted At: {c.get('created_at', '')[:19].replace('T', ' ')}</p>
+                    <p style="margin:0; font-size:0.9rem;"><strong>Entrepreneur:</strong> {_safe(asp.get('full_name'))} ({_safe(asp.get('email'))})</p>
+                    <p style="margin:0; font-size:0.9rem;"><strong>Assigned Guide:</strong> {_safe(guide.get('full_name'))} ({_safe(guide.get('email'))})</p>
+                    <p style="margin:0; font-size:0.9rem;"><strong>Report Reason:</strong> <span style="font-weight:700; color:#DC2626;">{html.escape(str(c.get('reason', '')).replace('_', ' ').title())}</span></p>
+                    <p style="margin:0; font-size:0.85rem; color:#64748B;">Submitted At: {html.escape(str(c.get('created_at', ''))[:19].replace('T', ' '))}</p>
                 </div>
                 <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:8px; padding:0.85rem; margin-bottom:1rem; font-size:0.9rem; color:#1E293B;">
                     <strong>Entrepreneur Statement:</strong><br/>
                     {_safe(c.get('details'))}
                 </div>
-                """).strip(), unsafe_allow_html=True)
+                """)
 
                 if c.get("resolution_notes"):
                     st.info(f"Resolution Notes: {c.get('resolution_notes')}")
@@ -669,14 +699,14 @@ def render_admin_sme_conflicts_tab(admin_id: str):
     with tab_dir:
       if is_tab_active(tab_dir):
         for s in smes:
-            p_data = s.get("profile_data", {})
-            st.markdown(f"""
+            p_data = _safe_profile_data(s)
+            _render_html(f"""
             <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:10px; padding:1rem; margin-bottom:0.75rem;">
                 <div style="font-weight:700; font-size:1.05rem; color:#0F172A;">{_safe(s.get('full_name'))}</div>
                 <div style="color:#2563EB; font-size:0.82rem; font-weight:600;">{_safe(p_data.get('expertise', 'Specialist'))} · {_safe(p_data.get('industry', 'Domain Advisory'))}</div>
                 <div style="font-size:0.8rem; color:#64748B; margin-top:2px;">Email: {_safe(s.get('email'))} · Phone: {_safe(s.get('phone', '—'))} · District: {_safe(s.get('district', 'Tamil Nadu'))}</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
     with tab_conf:
       if is_tab_active(tab_conf):
@@ -697,7 +727,7 @@ def render_admin_sme_conflicts_tab(admin_id: str):
                 color = "#DC2626" if (has_conf and c_status not in ("RESOLVED", "DISMISSED")) else "#10B981"
                 text = f"CONFLICT ({c_status})" if has_conf else "CLEARED / NO CONFLICT"
 
-                st.markdown(f"""
+                _render_html(f"""
                 <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {color}; border-radius:10px; padding:0.9rem; margin-bottom:0.5rem;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <div>
@@ -710,7 +740,7 @@ def render_admin_sme_conflicts_tab(admin_id: str):
                         </div>
                     </div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
 
                 if has_conf and c_status not in ("RESOLVED", "DISMISSED") and c.get("aspirant_id") and c.get("sme_id"):
                     if st.button(

@@ -912,18 +912,18 @@ def main():
                     if not active_r and not pending_r:
                         active_r = ["aspirant"]
 
-                ws_options = []
-                if "aspirant" in active_r:
-                    ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
-                if "guide" in active_r or "guide" in pending_r:
-                    g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
-                    ws_options.append(("guide", g_lbl))
-                if "sme" in active_r or "sme" in pending_r:
-                    s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
-                    ws_options.append(("sme", s_lbl))
+                    ws_options = []
+                    if "aspirant" in active_r:
+                        ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
+                    if "guide" in active_r or "guide" in pending_r:
+                        g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
+                        ws_options.append(("guide", g_lbl))
+                    if "sme" in active_r or "sme" in pending_r:
+                        s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
+                        ws_options.append(("sme", s_lbl))
 
-                if not ws_options:
-                    ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
+                    if not ws_options:
+                        ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
 
             if "active_workspace" not in st.session_state:
                 st.session_state["active_workspace"] = base_p_role

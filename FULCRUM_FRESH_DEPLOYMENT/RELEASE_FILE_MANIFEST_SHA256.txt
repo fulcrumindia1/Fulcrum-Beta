@@ -9,7 +9,7 @@ SHA-256 HASH                                                       SIZE (BYTES) 
 c332b09d2a288861c1097660496c87723f7a3a1e710ba9c8d1d521515577adb1   322            .streamlit/config.toml
 7549e8b832aec130dcefe93aa1e5cf8ba73c102e94df9dd1d02d5efda0d5706e   247            Caddyfile
 7589e836caa9c81cf3ba053ad23a5ed217404d702b6b76e5199819bb4323cbe7   2452           Dockerfile
-d7f6a1b462b27301e7f8fb2fc8ac45ffdf06f39f66b8868b21cacec40d6d9890   63146          app.py
+ac3c2ded6b0ff4184fceee584cb4d0383aaa82e393a45445c2d510a66e393aa7   63190          app.py
 b879101ef508037bfe122a223b207c9a24fa8450047d9687549e6faf321928cb   1565           docker-compose.yml
 1b3658c08e3c33b9d75f866fe4e1aafa48066dd104fce7c57b24527edf04f27d   61509          migrations/000_complete_beta_setup.sql
 6a3a420e9438c4b7d438c83d8fa793c812aa488cdfb3d614227f5fdb5c31ef90   10338          migrations/001_multi_role_and_legal.sql
@@ -35,7 +35,7 @@ c7d4e30cb3487ce1a2c2ecc6ecdbc4237ded667de6e83754a9f7f626d2f4aba5   720402       
 5d6164ed786147fc15686ca07d1d440bbff6190996db1780d41b810f00534a8f   54084          services/account_lifecycle.py
 74f2a06282407b419901db9899a8a2afcfb552a8eaa29b0d37d202927ae88b04   7557           services/admin_metrics.py
 e1a8da94d8fc3128a07c6de1e6d0721b55e65cb10f31675fb49112b198ea00db   25876          services/aspirant_photos.py
-d2be7b78671523fca3567ea06db7a1e9a138e902aa85e47c6bc1815415e827f5   52668          services/auth.py
+b81290d35a271368a242597ef458b0ea5115e8f06d641c0c6d526e6cc4410e64   54090          services/auth.py
 186abaddacf7e1673fd01e5a7c77c618829f7aeff4369e650896ca0b84b3bc30   3588           services/auth_callback_component.py
 c63516d622f3dda9cdcd5ddd07589c8b8c0c41c32c8d639c9af27c5f09be16de   5932           services/cache.py
 af9229e1115b811376b5102fdb5a259d2370d8fa6b6ac8ba8845419d9d2fae0d   10872          services/collaboration.py
@@ -50,7 +50,7 @@ fa35129ed620bb66dc0dd051d4f7c03bd8096cb3d71cd8cd78b11722951d9341   32087        
 d6f51a23e7091b84180274363043c84a04d22b7dfb83606a9062473a3c7acb62   123147         services/local_db.py
 34cd44741229a4d412fe27be7e2b3d8e15e3c8e409bc5cff787c9bc1ee38478c   4079           services/logger.py
 6be08cc521fbccb44f45d9b186c807279de00140fd2892df23b99db41a9f0220   13890          services/notifications.py
-7f79c87f2c904a07021abdd198af28b71cbb9691ec5d438b15322bf773f926f6   14342          services/pagination.py
+5168eaad8236c1686bb31d25765c23383f8095c6c6a3f991b37587a8ea231bae   14763          services/pagination.py
 b0f760427e1c8139fc58fcc25faca2696ac3040d6d1612db4c1087c12a24b7c8   38304          services/pdf_generator.py
 69eda65caab274613558b5c6b670e13e0f3586af03af06ce60162696d5f168ff   2823           services/perf.py
 1939d1649c51b90be7ecaf0564dace1c2252597855950c524b414211cb8cf500   24844          services/professional_photos.py
@@ -63,9 +63,9 @@ aa03629a6f7e6cef5bad710b6a26c27568ec2bbd3689bec25186c2fea638d6c3   25561        
 6bcfdd00414b6fe842d912924df784573ba79096755527ba12ec8c635dd76caf   40482          services/schemes.py
 d1e9841beee3638ba6999be37c1507c112c2db01266a5551bb5ac2f75c525795   28540          services/schemes_ui.py
 0fed549fa9cec35f773d9dc4604ea19435636b62fc33b9f054fa6919e629f340   37             views/__init__.py
-957aa22b59b4326cb763196ef507dc5ff2a2349fe40be2b3593fcd250920343c   95791          views/admin.py
+f1a0e838b6540ec7d37354a03aa417e42b0d60955bd006c3eb33cadf8eaa4989   97097          views/admin.py
 c0be3563dd5cd2ea3f8ed6fd0005f7189faa8e789ed03b0457b7ea9f3530bfbf   22026          views/admin_account_lifecycle.py
-601bcba02865fed5743e3c86626748c4c81675d50c13b708cd777288f8ee4877   54478          views/admin_governance.py
+5c661301a5322de5aac407cf3601cf6bcde0f1c36e4b602d27ce18eada4f33e4   55483          views/admin_governance.py
 9b5f2f49507226415997fa6d84711a275d1e43b10afcaa3f4b7ae666beca6ec3   75436          views/aspirant.py
 f012a038305e0ddf455d4d095fafac21baf9841fcfae1fe76f2c08771158977f   105565         views/guide.py
 49e1f7fbca32b280e1f331fafe9a18b096b0bbd85de396eb6abb5848f31c2200   3867           views/journey_edit_dialog.py
