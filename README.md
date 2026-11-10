@@ -1,5 +1,11 @@
 # FULCRUM-INDIA: Cluster A
 
+> [!TIP]
+> **Production & Operations Documentation:**
+> * 📘 **[Master Documentation Index](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/README.md)** (Full categorized archive)
+> * 🚀 **[Operational Runbook: WinSCP, Commands & .env Guide](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/OPERATIONAL_RUNBOOK_WINSCP_COMMANDS_AND_ENV_GUIDE.md)**
+> * 🔑 **[Password Recovery & Email Rate Limits Guide](file:///c:/Users/hp/Desktop/Fulcrum-Alpha/fulcrum-cluster-b/DOCUMENTATION/PASSWORD_RECOVERY_AND_EMAIL_RATE_LIMITS_ELI5.md)**
+
 **Core Relationship + Profile + Journey + Communication + Scheme Intelligence System**
 
 Rebuilt from first principles inside `Fulcrum-Alpha/fulcrum-cluster-a/` as a lightweight, secure, and maintainable **Streamlit + Supabase** application.
