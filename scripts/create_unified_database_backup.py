@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import csv
+import base64
 import sqlite3
 import shutil
 import zipfile
@@ -36,19 +37,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.auth import get_supabase_admin_client, _get_secrets
+from scripts.supabase_backup_manager import BACKUP_TABLES, backup_storage_files, _with_retry
 
-ALL_TABLES = [
-    "profiles",
-    "relationships",
-    "journeys",
-    "journey_events",
-    "help_requests",
-    "notifications",
-    "assignment_history",
-    "schemes",
-    "scheme_releases",
-    "activity_log",
-]
+
+def _json_default(obj):
+    if isinstance(obj, bytes):
+        return base64.b64encode(obj).decode("ascii")
+    return str(obj)
+
+ALL_TABLES = BACKUP_TABLES
 
 BACKUP_DIR = PROJECT_ROOT / "backups"
 SQLITE_DB_PATH = PROJECT_ROOT / "cluster_a.db"
@@ -80,7 +77,9 @@ def generate_unified_backup():
             "url": "",
             "auth_users_count": 0,
             "table_counts": {},
-            "total_records": 0
+            "total_records": 0,
+            "storage_files": {},
+            "total_storage_files": 0,
         },
         "sqlite_backup": {
             "status": "pending",
@@ -103,7 +102,7 @@ def generate_unified_backup():
         try:
             # 1. Auth Users
             print("  -> Fetching Supabase Auth Users...")
-            users = admin.auth.admin.list_users()
+            users = _with_retry(lambda: admin.auth.admin.list_users())
             auth_data = []
             for u in users:
                 auth_data.append({
@@ -121,38 +120,55 @@ def generate_unified_backup():
 
             # 2. Database Tables
             total_supa_records = 0
+            profile_ids = []
             for table in ALL_TABLES:
-                records = []
-                page_size = 1000
-                offset = 0
-                while True:
-                    res = admin.table(table).select("*").range(offset, offset + page_size - 1).execute()
-                    batch = res.data or []
-                    records.extend(batch)
-                    if len(batch) < page_size:
-                        break
-                    offset += page_size
+                try:
+                    records = []
+                    page_size = 1000
+                    offset = 0
+                    while True:
+                        res = _with_retry(lambda t=table, o=offset: admin.table(t).select("*").range(o, o + page_size - 1).execute())
+                        batch = res.data or []
+                        records.extend(batch)
+                        if len(batch) < page_size:
+                            break
+                        offset += page_size
 
-                # Save JSON
-                with open(supabase_dir / f"{table}.json", "w", encoding="utf-8") as f:
-                    json.dump(records, f, indent=2, default=str, ensure_ascii=False)
+                    if table == "profiles":
+                        profile_ids = [r.get("id") for r in records if r.get("id")]
 
-                # Save CSV
-                if records:
-                    fieldnames = list(records[0].keys())
-                    with open(supabase_dir / f"{table}.csv", "w", newline="", encoding="utf-8") as f:
-                        writer = csv.DictWriter(f, fieldnames=fieldnames)
-                        writer.writeheader()
-                        for row in records:
-                            cleaned_row = {
-                                k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
-                                for k, v in row.items()
-                            }
-                            writer.writerow(cleaned_row)
+                    # Save JSON
+                    with open(supabase_dir / f"{table}.json", "w", encoding="utf-8") as f:
+                        json.dump(records, f, indent=2, default=_json_default, ensure_ascii=False)
 
-                manifest["supabase_backup"]["table_counts"][table] = len(records)
-                total_supa_records += len(records)
-                print(f"     [OK] Table '{table}': {len(records)} records")
+                    # Save CSV
+                    if records:
+                        fieldnames = list(records[0].keys())
+                        with open(supabase_dir / f"{table}.csv", "w", newline="", encoding="utf-8") as f:
+                            writer = csv.DictWriter(f, fieldnames=fieldnames)
+                            writer.writeheader()
+                            for row in records:
+                                cleaned_row = {
+                                    k: (
+                                        base64.b64encode(v).decode("ascii")
+                                        if isinstance(v, bytes)
+                                        else (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+                                    )
+                                    for k, v in row.items()
+                                }
+                                writer.writerow(cleaned_row)
+
+                    manifest["supabase_backup"]["table_counts"][table] = len(records)
+                    total_supa_records += len(records)
+                    print(f"     [OK] Table '{table}': {len(records)} records")
+                except Exception as tbl_err:
+                    manifest["supabase_backup"]["table_counts"][table] = f"error: {tbl_err}"
+                    print(f"     [!] Table '{table}' error: {tbl_err}")
+
+            # 3. Storage Buckets (Profile Photos & Headshots)
+            bucket_counts, total_files = backup_storage_files(admin, str(supabase_dir), profile_ids=profile_ids)
+            manifest["supabase_backup"]["storage_files"] = bucket_counts
+            manifest["supabase_backup"]["total_storage_files"] = total_files
 
             manifest["supabase_backup"]["total_records"] = total_supa_records
             manifest["supabase_backup"]["status"] = "success"
@@ -191,11 +207,9 @@ def generate_unified_backup():
             try:
                 cur.execute(f"SELECT * FROM {table}")
                 rows = [dict(r) for r in cur.fetchall()]
-                manifest["sqlite_backup"]["table_counts"][table] = len(rows)
-                total_sqlite_records += len(rows)
 
                 with open(sqlite_dir / f"{table}.json", "w", encoding="utf-8") as f:
-                    json.dump(rows, f, indent=2, ensure_ascii=False)
+                    json.dump(rows, f, indent=2, default=_json_default, ensure_ascii=False)
 
                 if rows:
                     fieldnames = list(rows[0].keys())
@@ -204,13 +218,20 @@ def generate_unified_backup():
                         writer.writeheader()
                         for row in rows:
                             cleaned_row = {
-                                k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+                                k: (
+                                    base64.b64encode(v).decode("ascii")
+                                    if isinstance(v, bytes)
+                                    else (json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+                                )
                                 for k, v in row.items()
                             }
                             writer.writerow(cleaned_row)
+                manifest["sqlite_backup"]["table_counts"][table] = len(rows)
+                total_sqlite_records += len(rows)
                 print(f"     [OK] Table '{table}': {len(rows)} records")
             except Exception as e:
                 manifest["sqlite_backup"]["table_counts"][table] = f"error: {e}"
+                print(f"     [!] Table '{table}' error: {e}")
 
         conn.close()
         manifest["sqlite_backup"]["total_records"] = total_sqlite_records
@@ -238,9 +259,10 @@ def generate_unified_backup():
 - Source URL: {manifest['supabase_backup'].get('url')}
 - Auth Accounts: {manifest['supabase_backup'].get('auth_users_count')}
 - Total Database Records: {manifest['supabase_backup'].get('total_records')}
+- Storage Files (Photos): {manifest['supabase_backup'].get('total_storage_files', 0)}
 - Tables Included:
 {chr(10).join([f"  - {t}: {c} rows" for t, c in manifest['supabase_backup'].get('table_counts', {}).items()])}
-- Files: JSON and CSV representations of each table + `auth_users.json`
+- Files: JSON and CSV representations of each table, `auth_users.json`, and `storage_files/`
 
 ### 2. `sqlite_local/` (Local / Offline Testing Database)
 - Source File: `cluster_a.db` ({manifest['sqlite_backup'].get('file_size_bytes', 0) / 1024:.1f} KB)
@@ -285,7 +307,7 @@ Or directly copy `sqlite_local/cluster_a.db` into the project root.
     print(" [SUCCESS] Unified Database Backup Archive Created Successfully!")
     print(f" Archive File : {zip_path}")
     print(f" Size         : {zip_size_kb:.1f} KB")
-    print(f" Supabase DB  : {manifest['supabase_backup']['total_records']} rows, {manifest['supabase_backup']['auth_users_count']} auth accounts")
+    print(f" Supabase DB  : {manifest['supabase_backup']['total_records']} rows, {manifest['supabase_backup']['auth_users_count']} auth accounts, {manifest['supabase_backup'].get('total_storage_files', 0)} photos")
     print(f" Local SQLite : {manifest['sqlite_backup']['total_records']} rows, {manifest['sqlite_backup']['file_size_bytes'] / 1024:.1f} KB")
     print("=" * 75)
     return str(zip_path)

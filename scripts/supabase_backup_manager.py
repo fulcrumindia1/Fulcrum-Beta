@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import csv
+import time
 import shutil
 import zipfile
 from datetime import datetime
@@ -33,23 +34,151 @@ if sys.platform == "win32":
 from services.auth import get_supabase_admin_client, get_supabase_client
 
 BACKUP_TABLES = [
+    # 1. Identity, Roles & Permissions
     "profiles",
-    "relationships",
+    "user_roles",
+
+    # 2. Legal Compliance & NDAs
+    "legal_documents",
+    "legal_acceptances",
+
+    # 3. Core Entrepreneur Journeys & Milestones
     "journeys",
     "journey_events",
-    "help_requests",
-    "notifications",
+    "journey_event_revisions",
+
+    # 4. Mentorship Allocations & Operational Review
+    "relationships",
     "assignment_history",
+    "scheme_support_reviews",
+    "case_discussions",
+    "guide_complaints",
+    "sme_conflict_declarations",
+    "inactivity_logs",
+    "external_contact_logs",
+
+    # 5. Schemes Catalogue & Gatekeeper Releases
     "schemes",
     "scheme_releases",
+
+    # 6. Communications & In-App Alerts
+    "help_requests",
+    "notifications",
+
+    # 7. Photo Records Metadata
+    "aspirant_photos",
+    "professional_photos",
+
+    # 8. Immutable Governance & Audit Logs
     "activity_log",
+    "account_lifecycle_log",
+]
+
+STORAGE_BUCKETS = [
+    "aspirant-profile-photos",
+    "professional-headshots",
 ]
 
 BACKUP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backups"))
 
 
+def backup_storage_files(admin, target_dir: str, profile_ids: list | None = None) -> tuple[dict, int]:
+    """
+    Downloads uploaded images/headshots from Supabase Storage buckets into target_dir/storage_files/.
+    Combines explicit DB paths (aspirant_photos / professional_photos) with bucket scanning.
+    Returns (bucket_counts_dict, total_files_downloaded).
+    """
+    print("\n[3/4] Exporting Supabase Storage Buckets (Profile Photos & Headshots)...")
+    storage_base = os.path.join(target_dir, "storage_files")
+    os.makedirs(storage_base, exist_ok=True)
+    bucket_counts = {}
+    total_downloaded = 0
+
+    # 1. Collect all explicit file paths from photo tables
+    files_to_download: dict[str, set[str]] = {b: set() for b in STORAGE_BUCKETS}
+    for table, default_bucket in [
+        ("aspirant_photos", "aspirant-profile-photos"),
+        ("professional_photos", "professional-headshots"),
+    ]:
+        try:
+            res = admin.table(table).select("storage_bucket, storage_path").execute()
+            for row in (res.data or []):
+                b = row.get("storage_bucket") or default_bucket
+                p = row.get("storage_path")
+                if b and p:
+                    files_to_download.setdefault(b, set()).add(p)
+        except Exception as e:
+            print(f"  Notice querying {table} paths: {e}")
+
+    # 2. Check bucket roots and active user folders
+    active_ids_set = set(str(pid) for pid in (profile_ids or []) if pid)
+    for bucket in STORAGE_BUCKETS:
+        try:
+            root_items = admin.storage.from_(bucket).list("", {"limit": 1000}) or []
+            folders = [it.get("name") for it in root_items if it.get("name") and it.get("id") is None]
+            root_files = [it.get("name") for it in root_items if it.get("name") and it.get("id") is not None]
+            for rf in root_files:
+                files_to_download[bucket].add(rf)
+
+            # Scan all folders if small count (<= 25), otherwise scan folders for active profiles
+            folders_to_scan = folders if len(folders) <= 25 else [f for f in folders if f in active_ids_set]
+            for folder_name in folders_to_scan:
+                for attempt in range(2):
+                    try:
+                        sub_items = admin.storage.from_(bucket).list(folder_name, {"limit": 50}) or []
+                        for sub in sub_items:
+                            sub_name = sub.get("name")
+                            if sub_name and sub.get("id") is not None:
+                                files_to_download[bucket].add(f"{folder_name}/{sub_name}")
+                        break
+                    except Exception:
+                        time.sleep(0.5)
+        except Exception as e:
+            print(f"  Notice listing bucket '{bucket}': {e}")
+
+    # 3. Download all discovered files with retry logic
+    for bucket, paths in files_to_download.items():
+        bucket_dir = os.path.join(storage_base, bucket)
+        os.makedirs(bucket_dir, exist_ok=True)
+        count = 0
+        for rel_path in sorted(paths):
+            dest_file = os.path.join(bucket_dir, rel_path.replace("/", os.sep))
+            os.makedirs(os.path.dirname(dest_file), exist_ok=True)
+            for attempt in range(4):
+                try:
+                    data = admin.storage.from_(bucket).download(rel_path)
+                    if data:
+                        with open(dest_file, "wb") as f:
+                            f.write(data)
+                        count += 1
+                        break
+                except Exception as dl_err:
+                    if attempt == 3:
+                        print(f"  ⚠ Failed downloading {bucket}/{rel_path}: {dl_err}")
+                    time.sleep(1)
+
+        bucket_counts[bucket] = count
+        total_downloaded += count
+        print(f"  ✓ Storage bucket '{bucket}': {count} files saved")
+
+    return bucket_counts, total_downloaded
+
+
+def _with_retry(fn, retries: int = 4, delay: float = 1.0):
+    """Executes fn() with exponential-ish retry backoff for transient TLS/network drops."""
+    last_err = None
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))
+    raise last_err
+
+
 def backup_supabase():
-    """Extracts all tables and auth users from Supabase and packs them into a .zip archive."""
+    """Extracts all tables, auth users, and storage photos from Supabase and packs them into a .zip archive."""
     print("=" * 70)
     print(" [FULCRUM-INDIA] Initiating Supabase Full Data Backup")
     print("=" * 70)
@@ -68,14 +197,16 @@ def backup_supabase():
         "timestamp": timestamp,
         "backup_date_iso": datetime.now().isoformat(),
         "tables": {},
+        "storage_files": {},
         "auth_users_count": 0,
         "total_records": 0,
+        "total_storage_files": 0,
     }
 
     # 1. Backup Auth Users Metadata
-    print("\n[1/3] Exporting Supabase Auth Users...")
+    print("\n[1/4] Exporting Supabase Auth Users...")
     try:
-        users = admin.auth.admin.list_users()
+        users = _with_retry(lambda: admin.auth.admin.list_users())
         auth_data = []
         for u in users:
             auth_data.append({
@@ -95,8 +226,9 @@ def backup_supabase():
         print(f"  ⚠ Failed to export Auth users list: {e}")
 
     # 2. Backup Each Public Table
-    print("\n[2/3] Exporting Database Tables (JSON + CSV)...")
+    print("\n[2/4] Exporting Database Tables (JSON + CSV)...")
     total_records = 0
+    profile_ids = []
     for table in BACKUP_TABLES:
         try:
             # Fetch all records without pagination limits
@@ -104,12 +236,15 @@ def backup_supabase():
             page_size = 1000
             offset = 0
             while True:
-                res = admin.table(table).select("*").range(offset, offset + page_size - 1).execute()
+                res = _with_retry(lambda t=table, o=offset: admin.table(t).select("*").range(o, o + page_size - 1).execute())
                 batch = res.data or []
                 records.extend(batch)
                 if len(batch) < page_size:
                     break
                 offset += page_size
+
+            if table == "profiles":
+                profile_ids = [r.get("id") for r in records if r.get("id")]
 
             # Save as JSON
             table_json_path = os.path.join(temp_folder, f"{table}.json")
@@ -140,12 +275,17 @@ def backup_supabase():
 
     metadata["total_records"] = total_records
 
+    # 3. Backup Storage Buckets (Profile Photos & Headshots)
+    bucket_counts, total_files = backup_storage_files(admin, temp_folder, profile_ids=profile_ids)
+    metadata["storage_files"] = bucket_counts
+    metadata["total_storage_files"] = total_files
+
     # Save metadata.json
     with open(os.path.join(temp_folder, "metadata.json"), "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
-    # 3. Create ZIP Archive
-    print("\n[3/3] Packaging into Compressed ZIP Archive...")
+    # 4. Create ZIP Archive
+    print("\n[4/4] Packaging into Compressed ZIP Archive...")
     zip_filename = f"supabase_backup_{timestamp}.zip"
     zip_path = os.path.join(BACKUP_DIR, zip_filename)
 
@@ -165,12 +305,13 @@ def backup_supabase():
     print(f"  ZIP File  : {zip_path}")
     print(f"  Size      : {zip_size_kb:.1f} KB")
     print(f"  Records   : {total_records} database rows + {metadata['auth_users_count']} auth accounts")
+    print(f"  Photos    : {total_files} storage bucket files")
     print("=" * 70)
     return zip_path
 
 
 def restore_supabase(zip_file_path: str):
-    """Restores tables from a backup .zip archive back into Supabase."""
+    """Restores tables and storage bucket files from a backup .zip archive back into Supabase."""
     print("=" * 70)
     print(" [FULCRUM-INDIA] Initiating Supabase Data Restoration")
     print(f" Source ZIP: {zip_file_path}")
@@ -194,8 +335,15 @@ def restore_supabase(zip_file_path: str):
         with zipfile.ZipFile(zip_file_path, "r") as zipf:
             zipf.extractall(temp_extract_dir)
 
-        # Read metadata
+        # Detect data folder (handles both direct backup and unified backup archive formats)
+        data_dir = temp_extract_dir
+        if os.path.exists(os.path.join(temp_extract_dir, "supabase_cloud")):
+            data_dir = os.path.join(temp_extract_dir, "supabase_cloud")
+
+        # Read metadata if present
         meta_path = os.path.join(temp_extract_dir, "metadata.json")
+        if not os.path.exists(meta_path) and os.path.exists(os.path.join(data_dir, "metadata.json")):
+            meta_path = os.path.join(data_dir, "metadata.json")
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
@@ -203,7 +351,7 @@ def restore_supabase(zip_file_path: str):
             print(f" Total records in backup: {meta.get('total_records')}")
 
         # Pre-provision Auth Users if restoring into a fresh/new Supabase project
-        auth_file = os.path.join(temp_extract_dir, "auth_users.json")
+        auth_file = os.path.join(data_dir, "auth_users.json")
         if os.path.exists(auth_file):
             try:
                 with open(auth_file, "r", encoding="utf-8") as f:
@@ -234,16 +382,14 @@ def restore_supabase(zip_file_path: str):
 
         # Restore tables in dependency order
         for table in BACKUP_TABLES:
-            table_file = os.path.join(temp_extract_dir, f"{table}.json")
+            table_file = os.path.join(data_dir, f"{table}.json")
             if not os.path.exists(table_file):
-                print(f" [SKIP] No file found for table '{table}'")
                 continue
 
             with open(table_file, "r", encoding="utf-8") as f:
                 records = json.load(f)
 
             if not records:
-                print(f" - Table '{table}': 0 records to restore.")
                 continue
 
             print(f" - Restoring table '{table}' ({len(records)} records)...")
@@ -260,6 +406,40 @@ def restore_supabase(zip_file_path: str):
 
             print(f"   ✓ Successfully upserted {success_count}/{len(records)} records into '{table}'.")
 
+        # Restore storage files if present in the archive
+        storage_dir = os.path.join(data_dir, "storage_files")
+        if not os.path.exists(storage_dir) and os.path.exists(os.path.join(temp_extract_dir, "storage_files")):
+            storage_dir = os.path.join(temp_extract_dir, "storage_files")
+
+        if os.path.exists(storage_dir):
+            print("\n - Restoring Storage Buckets (Profile Photos & Headshots)...")
+            for bucket_name in os.listdir(storage_dir):
+                b_path = os.path.join(storage_dir, bucket_name)
+                if not os.path.isdir(b_path):
+                    continue
+                try:
+                    # Idempotently ensure bucket exists
+                    try:
+                        admin.storage.create_bucket(bucket_name, options={"public": False})
+                    except Exception:
+                        pass
+
+                    uploaded = 0
+                    for root, _, files in os.walk(b_path):
+                        for f in files:
+                            full_p = os.path.join(root, f)
+                            rel_p = os.path.relpath(full_p, b_path).replace("\\", "/")
+                            with open(full_p, "rb") as fh:
+                                file_bytes = fh.read()
+                            try:
+                                admin.storage.from_(bucket_name).upload(rel_p, file_bytes, {"upsert": "true"})
+                                uploaded += 1
+                            except Exception as up_err:
+                                print(f"   ⚠ Could not upload {bucket_name}/{rel_p}: {up_err}")
+                    print(f"   ✓ Restored {uploaded} files into bucket '{bucket_name}'.")
+                except Exception as e:
+                    print(f"  Notice restoring bucket '{bucket_name}': {e}")
+
         print("=" * 70)
         print(" [SUCCESS] Supabase Restoration Finished Successfully!")
         print("=" * 70)
@@ -269,7 +449,7 @@ def restore_supabase(zip_file_path: str):
 
 
 def restore_to_sqlite(zip_file_path: str):
-    """Emergency offline restore: populates local SQLite if Supabase backend is unreachable."""
+    """Emergency offline restore: populates local SQLite from a backup archive."""
     print("=" * 70)
     print(" [FULCRUM-INDIA] Emergency Restoration into Local SQLite Database")
     print(f" Source ZIP: {zip_file_path}")
@@ -291,206 +471,42 @@ def restore_to_sqlite(zip_file_path: str):
         with zipfile.ZipFile(zip_file_path, "r") as zipf:
             zipf.extractall(temp_extract_dir)
 
-        # Restore profiles
-        prof_file = os.path.join(temp_extract_dir, "profiles.json")
-        if os.path.exists(prof_file):
-            with open(prof_file, "r", encoding="utf-8") as f:
-                profs = json.load(f)
-            cur = conn.cursor()
-            for p in profs:
-                cur.execute("""
-                    INSERT OR REPLACE INTO profiles (id, email, role, full_name, phone, district, state, profile_data, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    p.get("id"),
-                    p.get("email"),
-                    p.get("role"),
-                    p.get("full_name"),
-                    p.get("phone"),
-                    p.get("district"),
-                    p.get("state", "Tamil Nadu"),
-                    json.dumps(p.get("profile_data") or {}, ensure_ascii=False),
-                    1 if p.get("is_active", True) else 0,
-                    p.get("created_at"),
-                    p.get("updated_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(profs)} profiles into local SQLite.")
+        # Detect data folder (handles both direct backup and unified backup archive formats)
+        data_dir = temp_extract_dir
+        if os.path.exists(os.path.join(temp_extract_dir, "supabase_cloud")):
+            data_dir = os.path.join(temp_extract_dir, "supabase_cloud")
+        elif os.path.exists(os.path.join(temp_extract_dir, "sqlite_local")):
+            data_dir = os.path.join(temp_extract_dir, "sqlite_local")
 
-        # Restore relationships
-        rel_file = os.path.join(temp_extract_dir, "relationships.json")
-        if os.path.exists(rel_file):
-            with open(rel_file, "r", encoding="utf-8") as f:
-                rels = json.load(f)
-            cur = conn.cursor()
-            for r in rels:
-                cur.execute("""
-                    INSERT OR REPLACE INTO relationships (id, aspirant_id, guide_id, sme_id, sme_ids, guide_ids, status, notes, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    r.get("id"),
-                    r.get("aspirant_id"),
-                    r.get("guide_id"),
-                    r.get("sme_id"),
-                    json.dumps(r.get("sme_ids") or []),
-                    json.dumps(r.get("guide_ids") or []),
-                    r.get("status", "active"),
-                    r.get("notes"),
-                    r.get("created_at"),
-                    r.get("updated_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(rels)} relationships into local SQLite.")
+        cur = conn.cursor()
+        for table in BACKUP_TABLES:
+            table_file = os.path.join(data_dir, f"{table}.json")
+            if not os.path.exists(table_file):
+                continue
+            with open(table_file, "r", encoding="utf-8") as f:
+                records = json.load(f)
+            if not records:
+                continue
 
-        # Restore journeys
-        j_file = os.path.join(temp_extract_dir, "journeys.json")
-        if os.path.exists(j_file):
-            with open(j_file, "r", encoding="utf-8") as f:
-                journeys = json.load(f)
-            cur = conn.cursor()
-            for j in journeys:
-                cur.execute("""
-                    INSERT OR REPLACE INTO journeys (id, aspirant_id, title, business_type, stage, start_date, status, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    j.get("id"), j.get("aspirant_id"), j.get("title"), j.get("business_type"),
-                    j.get("stage", "idea"), j.get("start_date"), j.get("status", "active"),
-                    j.get("created_at"), j.get("updated_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(journeys)} journeys into local SQLite.")
-
-        # Restore journey_events
-        je_file = os.path.join(temp_extract_dir, "journey_events.json")
-        if os.path.exists(je_file):
-            with open(je_file, "r", encoding="utf-8") as f:
-                events = json.load(f)
-            cur = conn.cursor()
-            for e in events:
-                cur.execute("""
-                    INSERT OR REPLACE INTO journey_events (id, journey_id, aspirant_id, actor_id, actor_role, event_type, event_data, event_date, deleted_at, deleted_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    e.get("id"), e.get("journey_id"), e.get("aspirant_id"), e.get("actor_id"),
-                    e.get("actor_role"), e.get("event_type"),
-                    json.dumps(e.get("event_data") or {}, ensure_ascii=False) if isinstance(e.get("event_data"), (dict, list)) else e.get("event_data", "{}"),
-                    e.get("event_date"), e.get("deleted_at"), e.get("deleted_by"),
-                    e.get("created_at"), e.get("updated_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(events)} journey events into local SQLite.")
-
-        # Restore help_requests
-        hr_file = os.path.join(temp_extract_dir, "help_requests.json")
-        if os.path.exists(hr_file):
-            with open(hr_file, "r", encoding="utf-8") as f:
-                reqs = json.load(f)
-            cur = conn.cursor()
-            for hr in reqs:
-                cur.execute("""
-                    INSERT OR REPLACE INTO help_requests (id, aspirant_id, subject, message, priority, status, admin_response, responded_by, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    hr.get("id"), hr.get("aspirant_id"), hr.get("subject"), hr.get("message"),
-                    hr.get("priority", "MEDIUM"), hr.get("status", "OPEN"),
-                    hr.get("admin_response"), hr.get("responded_by"),
-                    hr.get("created_at"), hr.get("updated_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(reqs)} help requests into local SQLite.")
-
-        # Restore schemes
-        sch_file = os.path.join(temp_extract_dir, "schemes.json")
-        if os.path.exists(sch_file):
-            with open(sch_file, "r", encoding="utf-8") as f:
-                schemes = json.load(f)
-            cur = conn.cursor()
-            for s in schemes:
-                cur.execute("""
-                    INSERT OR REPLACE INTO schemes (id, source_id, name, agency, ministry, scheme_type, category_type, funding_type, stage, amount, brief, description, process, timeline, application_url, status, is_active, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    s.get("id"), s.get("source_id"), s.get("name"), s.get("agency"), s.get("ministry"),
-                    s.get("scheme_type"), s.get("category_type"), s.get("funding_type"), s.get("stage"),
-                    s.get("amount"), s.get("brief"), s.get("description"), s.get("process"), s.get("timeline"),
-                    s.get("application_url"), s.get("status", "active"), 1 if s.get("is_active", True) else 0,
-                    s.get("created_at"), s.get("updated_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(schemes)} schemes into local SQLite.")
-
-        # Restore notifications
-        notif_file = os.path.join(temp_extract_dir, "notifications.json")
-        if os.path.exists(notif_file):
-            with open(notif_file, "r", encoding="utf-8") as f:
-                notifs = json.load(f)
-            cur = conn.cursor()
-            for n in notifs:
-                cur.execute("""
-                    INSERT OR REPLACE INTO notifications (id, user_id, title, message, notification_type, is_read, metadata, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    n.get("id"), n.get("user_id"), n.get("title"), n.get("message"),
-                    n.get("notification_type", "SYSTEM"), 1 if n.get("is_read") else 0,
-                    json.dumps(n.get("metadata") or {}, ensure_ascii=False) if isinstance(n.get("metadata"), (dict, list)) else n.get("metadata", "{}"),
-                    n.get("created_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(notifs)} notifications into local SQLite.")
-
-        # Restore assignment_history
-        ah_file = os.path.join(temp_extract_dir, "assignment_history.json")
-        if os.path.exists(ah_file):
-            with open(ah_file, "r", encoding="utf-8") as f:
-                ahs = json.load(f)
-            cur = conn.cursor()
-            for a in ahs:
-                cur.execute("""
-                    INSERT OR REPLACE INTO assignment_history (id, relationship_id, aspirant_id, mentor_id, mentor_role, action, assigned_by, notes, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    a.get("id"), a.get("relationship_id"), a.get("aspirant_id"), a.get("mentor_id"),
-                    a.get("mentor_role"), a.get("action"), a.get("assigned_by"), a.get("notes"),
-                    a.get("created_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(ahs)} assignment_history entries into local SQLite.")
-
-        # Restore scheme_releases
-        sr_file = os.path.join(temp_extract_dir, "scheme_releases.json")
-        if os.path.exists(sr_file):
-            with open(sr_file, "r", encoding="utf-8") as f:
-                srs = json.load(f)
-            cur = conn.cursor()
-            for sr in srs:
-                cur.execute("""
-                    INSERT OR REPLACE INTO scheme_releases (id, aspirant_id, scheme_id, guide_id, notes, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    sr.get("id"), sr.get("aspirant_id"), sr.get("scheme_id"), sr.get("guide_id"),
-                    sr.get("notes"), sr.get("status", "released"), sr.get("created_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(srs)} scheme_releases into local SQLite.")
-
-        # Restore activity_log
-        al_file = os.path.join(temp_extract_dir, "activity_log.json")
-        if os.path.exists(al_file):
-            with open(al_file, "r", encoding="utf-8") as f:
-                als = json.load(f)
-            cur = conn.cursor()
-            for al in als:
-                cur.execute("""
-                    INSERT OR REPLACE INTO activity_log (id, user_id, action, target_type, target_id, details, ip_address, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    al.get("id"), al.get("user_id"), al.get("action"), al.get("target_type"),
-                    al.get("target_id"),
-                    json.dumps(al.get("details") or {}, ensure_ascii=False) if isinstance(al.get("details"), (dict, list)) else al.get("details", "{}"),
-                    al.get("ip_address"), al.get("created_at")
-                ))
-            conn.commit()
-            print(f"  ✓ Restored {len(als)} activity_log records into local SQLite.")
+            try:
+                cols_info = cur.execute(f"PRAGMA table_info({table})").fetchall()
+                if not cols_info:
+                    continue
+                col_names = [c[1] for c in cols_info]
+                placeholders = ", ".join(["?"] * len(col_names))
+                sql = f"INSERT OR REPLACE INTO {table} ({', '.join(col_names)}) VALUES ({placeholders})"
+                for r in records:
+                    row_vals = []
+                    for c in col_names:
+                        v = r.get(c)
+                        if isinstance(v, (dict, list)):
+                            v = json.dumps(v, ensure_ascii=False)
+                        row_vals.append(v)
+                    cur.execute(sql, row_vals)
+                conn.commit()
+                print(f"  ✓ Restored {len(records)} rows into local SQLite table '{table}'.")
+            except Exception as e:
+                print(f"  ⚠ SQLite restore error on '{table}': {e}")
 
         print("=" * 70)
         print(" [SUCCESS] Local SQLite Emergency Restoration Complete!")
