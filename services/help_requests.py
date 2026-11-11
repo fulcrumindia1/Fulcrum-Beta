@@ -9,6 +9,7 @@ Replaces complex WebSockets/chat with a lean, reliable ticketing queue.
 Supports dual backends: Supabase (primary) and SQLite (explicit local development).
 """
 
+import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, List, Tuple
@@ -59,6 +60,85 @@ def _clean_missing_columns(payload: dict) -> dict:
     for col in NEW_TRACKING_COLUMNS:
         cleaned.pop(col, None)
     return cleaned
+
+
+_LEGACY_STATUS_FALLBACK = {
+    "WAITING_ON_ASPIRANT": "IN_PROGRESS",
+    "WAITING_ON_GUIDE_SME": "IN_PROGRESS",
+    "REPLIED": "IN_PROGRESS",
+    "ACTION_REQUIRED": "OPEN",
+}
+
+
+def _update_help_request_adaptive(
+    client,
+    request_id: str,
+    update_payload: Dict,
+    legacy_aspirant_reply: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Updates a help_requests row in Supabase, handling:
+    - Legacy help_requests_status_check (23514) before Migration 011 is applied
+    - Missing tracking columns (PGRST204 / schema cache)
+    - RLS-filtered empty responses (falls back to admin client)
+    Returns (effective_status, error_message).
+    """
+    active_c = client
+    admin_c = _get_admin_client()
+    current = dict(update_payload)
+    last_err: Optional[Exception] = None
+
+    for _ in range(6):
+        try:
+            res = active_c.table("help_requests").update(current).eq("id", request_id).execute()
+            if getattr(res, "data", None):
+                return str(current.get("status") or ""), None
+            if admin_c and admin_c != active_c:
+                active_c = admin_c
+                continue
+            return str(current.get("status") or ""), None
+        except Exception as exc:
+            last_err = exc
+            err_str = str(exc)
+            modified = False
+
+            if "23514" in err_str or "help_requests_status_check" in err_str:
+                cur_status = current.get("status")
+                if cur_status in _LEGACY_STATUS_FALLBACK:
+                    current["status"] = _LEGACY_STATUS_FALLBACK[cur_status]
+                    modified = True
+
+            if (
+                "PGRST204" in err_str
+                or "schema cache" in err_str
+                or "does not exist" in err_str
+                or any(col in err_str for col in NEW_TRACKING_COLUMNS)
+                or (legacy_aspirant_reply is not None and "aspirant_response" in err_str)
+            ):
+                m_col = re.search(r"'([A-Za-z0-9_]+)'", err_str)
+                if m_col and m_col.group(1) in current and m_col.group(1) != "status":
+                    missing_col = m_col.group(1)
+                    current.pop(missing_col, None)
+                    if missing_col == "aspirant_response" and legacy_aspirant_reply:
+                        current["admin_response"] = f"Aspirant Reply: {legacy_aspirant_reply}"
+                    modified = True
+                else:
+                    cleaned = _clean_missing_columns(current)
+                    if legacy_aspirant_reply is not None and "aspirant_response" in cleaned:
+                        cleaned.pop("aspirant_response", None)
+                        cleaned["admin_response"] = f"Aspirant Reply: {legacy_aspirant_reply}"
+                    if cleaned != current:
+                        current = cleaned
+                        modified = True
+
+            if not modified and admin_c and admin_c != active_c:
+                active_c = admin_c
+                modified = True
+
+            if not modified:
+                return None, f"Failed to update help request in Supabase: {exc}"
+
+    return None, f"Failed to update help request in Supabase: {last_err}"
 
 def _enrich_mentor_names(rows: List[Dict], client=None) -> List[Dict]:
     """Enriches consultation ticket rows with guide_name and sme_name from profiles if missing."""
@@ -485,6 +565,7 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
 
     backend = get_data_backend()
     now_iso = datetime.now(timezone.utc).isoformat()
+    effective_status = new_status
 
     if backend == "supabase":
         client = _get_user_client() or _get_admin_client()
@@ -523,19 +604,13 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
             if new_status == "RESOLVED":
                 update_payload["resolved_by"] = guide_id
 
-            u_res = client.table("help_requests").update(update_payload).eq("id", request_id).execute()
-            if not getattr(u_res, "data", None):
-                admin_client = _get_admin_client()
-                if admin_client and admin_client != client:
-                    admin_client.table("help_requests").update(update_payload).eq("id", request_id).execute()
+            persisted_status, upd_err = _update_help_request_adaptive(client, request_id, update_payload)
+            if upd_err:
+                return False, upd_err
+            if persisted_status:
+                effective_status = persisted_status
         except Exception as e:
-            admin_client = _get_admin_client()
-            active_c = admin_client or client
-            safe_payload = _clean_missing_columns(update_payload)
-            try:
-                active_c.table("help_requests").update(safe_payload).eq("id", request_id).execute()
-            except Exception as e2:
-                return False, f"Failed to update help request in Supabase: {e2}"
+            return False, f"Failed to update help request in Supabase: {e}"
     else:
         # SQLite mode
         local_db = get_local_db()
@@ -566,7 +641,7 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
     create_notification(
         user_id=aspirant_id,
         title=f"Guide Responded: {subject}",
-        message=f"Your Guide replied: '{response.strip()[:100]}...' (Status: {new_status})",
+        message=f"Your Guide replied: '{response.strip()[:100]}...' (Status: {effective_status})",
         notification_type="help_ticket_replied",
         actor_id=guide_id
     )
@@ -676,6 +751,7 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
 
     backend = get_data_backend()
     now_iso = datetime.now(timezone.utc).isoformat()
+    effective_status = new_status
 
     if backend == "supabase":
         client = _get_user_client() or _get_admin_client()
@@ -715,19 +791,13 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
             if new_status == "RESOLVED":
                 update_payload["resolved_by"] = sme_id
 
-            u_res = client.table("help_requests").update(update_payload).eq("id", request_id).execute()
-            if not getattr(u_res, "data", None):
-                admin_client = _get_admin_client()
-                if admin_client and admin_client != client:
-                    admin_client.table("help_requests").update(update_payload).eq("id", request_id).execute()
+            persisted_status, upd_err = _update_help_request_adaptive(client, request_id, update_payload)
+            if upd_err:
+                return False, upd_err
+            if persisted_status:
+                effective_status = persisted_status
         except Exception as e:
-            admin_client = _get_admin_client()
-            active_c = admin_client or client
-            safe_payload = _clean_missing_columns(update_payload)
-            try:
-                active_c.table("help_requests").update(safe_payload).eq("id", request_id).execute()
-            except Exception as e2:
-                return False, f"Failed to update help request in Supabase: {e2}"
+            return False, f"Failed to update help request in Supabase: {e}"
     else:
         # SQLite mode
         local_db = get_local_db()
@@ -760,7 +830,7 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
     create_notification(
         user_id=aspirant_id,
         title=f"Domain Specialist Responded: {subject}",
-        message=f"SME specialist replied: '{response.strip()[:100]}...' (Status: {new_status})",
+        message=f"SME specialist replied: '{response.strip()[:100]}...' (Status: {effective_status})",
         notification_type="help_ticket_replied",
         actor_id=sme_id
     )
@@ -791,7 +861,9 @@ def resolve_request(request_id: str, new_status: str, admin_response: str, admin
                 "resolved_by": admin_id if new_status == "RESOLVED" else None,
                 "updated_at": now_iso
             }
-            client.table("help_requests").update(update_payload).eq("id", request_id).execute()
+            _, upd_err = _update_help_request_adaptive(client, request_id, update_payload)
+            if upd_err:
+                return False, upd_err
         except Exception as e:
             return False, f"Failed to resolve request in Supabase: {e}"
     else:
@@ -1230,7 +1302,7 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
             mentor_recipient_id = req.get("requester_id") or req.get("assigned_guide_id") or req.get("assigned_sme_id")
             threaded_asp_resp = _append_threaded_reply(req.get("aspirant_response"), response)
 
-            # Set status to WAITING_ON_GUIDE_SME and track aspirant response without touching last_mentor_response_at
+            # Set status to WAITING_ON_GUIDE_SME (or IN_PROGRESS fallback on legacy constraints) and track aspirant response
             update_payload = {
                 "status": STATUS_WAITING_ON_GUIDE_SME,
                 "aspirant_response": threaded_asp_resp,
@@ -1240,31 +1312,17 @@ def aspirant_respond_request(request_id: str, aspirant_id: str, response: str) -
                 "last_interaction_actor_role": "aspirant",
                 "updated_at": now_iso
             }
-            try:
-                client.table("help_requests").update(update_payload).eq("id", request_id).execute()
-            except Exception:
-                update_payload.pop("aspirant_response", None)
-                update_payload.pop("last_aspirant_response_at", None)
-                update_payload.pop("last_interaction_actor_id", None)
-                update_payload.pop("last_interaction_actor_role", None)
-                update_payload["admin_response"] = f"Aspirant Reply: {threaded_asp_resp}"
-                client.table("help_requests").update(update_payload).eq("id", request_id).execute()
+            _, upd_err = _update_help_request_adaptive(
+                client,
+                request_id,
+                update_payload,
+                legacy_aspirant_reply=threaded_asp_resp,
+            )
+            if upd_err:
+                return False, upd_err
 
         except Exception as e:
-            admin_client = _get_admin_client()
-            if admin_client and admin_client != client:
-                try:
-                    fallback_payload = {
-                        "status": STATUS_WAITING_ON_GUIDE_SME,
-                        "admin_response": f"Aspirant Reply: {response.strip()}",
-                        "last_handled_at": now_iso,
-                        "updated_at": now_iso
-                    }
-                    admin_client.table("help_requests").update(fallback_payload).eq("id", request_id).execute()
-                except Exception as e2:
-                    return False, f"Failed to submit response to Supabase: {e2}"
-            else:
-                return False, f"Failed to submit response to Supabase: {e}"
+            return False, f"Failed to submit response to Supabase: {e}"
     else:
         # SQLite mode
         local_db = get_local_db()

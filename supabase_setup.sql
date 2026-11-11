@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS public.help_requests (
     directive_issued_at TIMESTAMPTZ,
     created_at         TIMESTAMPTZ DEFAULT NOW(),
     updated_at         TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT help_requests_status_check CHECK (status IN ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'ESCALATED', 'PENDING_ADMIN', 'DIRECTIVE_ISSUED'))
+    CONSTRAINT help_requests_status_check CHECK (status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME', 'ACTION_REQUIRED', 'REPLIED', 'RESOLVED', 'ESCALATED', 'PENDING_ADMIN', 'DIRECTIVE_ISSUED'))
 );
 
 -- Idempotent column additions for existing / partially initialized databases
@@ -142,7 +142,7 @@ BEGIN
     ALTER TABLE public.help_requests DROP CONSTRAINT IF EXISTS help_requests_status_check;
     ALTER TABLE public.help_requests
         ADD CONSTRAINT help_requests_status_check
-        CHECK (status IN ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'ESCALATED', 'PENDING_ADMIN', 'DIRECTIVE_ISSUED'));
+        CHECK (status IN ('OPEN', 'IN_PROGRESS', 'WAITING_ON_ASPIRANT', 'WAITING_ON_GUIDE_SME', 'ACTION_REQUIRED', 'REPLIED', 'RESOLVED', 'ESCALATED', 'PENDING_ADMIN', 'DIRECTIVE_ISSUED'));
 END $$;
 
 -- ─────────────────────────────────────────────────────────────

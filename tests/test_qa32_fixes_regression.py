@@ -674,3 +674,106 @@ def test_def004_supabase_mode_paginate_profiles_and_metrics(monkeypatch):
     assert metrics["aspirants_count"] == 3
 
 
+def test_help_requests_adaptive_status_fallback_and_migration_011(monkeypatch):
+    """Verify Guide/SME/Aspirant replies survive un-migrated help_requests_status_check (23514) and Migration 011 defines all statuses."""
+    import services.help_requests as hr
+    import services.cache as cache_mod
+    from services.roles import SOLE_ADMIN_UUID
+
+    mig_011 = (REPO_ROOT / "migrations" / "011_expand_help_requests_status_check.sql").read_text(encoding="utf-8")
+    for s_val in ("WAITING_ON_ASPIRANT", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED", "REPLIED", "IN_PROGRESS", "RESOLVED"):
+        assert s_val in mig_011
+
+    cache_mod._MEMO_STORE.clear() if hasattr(cache_mod, "_MEMO_STORE") else None
+
+    class _StatusCheckFakeQuery:
+        def __init__(self, tbl_name, rows, allowed_statuses):
+            self._tbl = tbl_name
+            self._rows = rows
+            self._allowed = allowed_statuses
+            self._op = "select"
+            self._payload = None
+            self._filters = []
+
+        def select(self, *args, **kwargs):
+            self._op = "select"
+            return self
+
+        def update(self, payload):
+            self._op = "update"
+            self._payload = dict(payload)
+            return self
+
+        def eq(self, k, v):
+            self._filters.append((k, v))
+            return self
+
+        def execute(self):
+            matched = [r for r in self._rows if all(str(r.get(k)) == str(v) for k, v in self._filters)]
+            if self._op == "update":
+                if self._tbl == "help_requests":
+                    st_val = self._payload.get("status")
+                    if st_val and st_val not in self._allowed:
+                        raise Exception(
+                            "{'message': 'new row for relation \"help_requests\" violates check constraint \"help_requests_status_check\"', 'code': '23514'}"
+                        )
+                for r in matched:
+                    r.update(self._payload)
+                return type("R", (), {"data": [dict(r) for r in matched]})()
+            return type("R", (), {"data": [dict(r) for r in matched]})()
+
+    class _StatusCheckFakeSB:
+        def __init__(self, rows, allowed_statuses):
+            self._rows = rows
+            self._allowed = allowed_statuses
+
+        def table(self, name):
+            return _StatusCheckFakeQuery(name, self._rows, self._allowed)
+
+    legacy_allowed = {"OPEN", "IN_PROGRESS", "RESOLVED", "ESCALATED", "PENDING_ADMIN", "DIRECTIVE_ISSUED"}
+    rows = [
+        {"id": "req-g", "aspirant_id": "qa_b", "assigned_guide_id": "qa_a", "assigned_sme_id": None, "subject": "G", "status": "OPEN", "guide_response": None},
+        {"id": "req-s", "aspirant_id": "qa_b", "assigned_guide_id": None, "assigned_sme_id": "qa_c", "subject": "S", "status": "OPEN", "sme_response": None},
+        {"id": "req-a", "aspirant_id": "qa_b", "assigned_guide_id": "qa_a", "assigned_sme_id": None, "subject": "A", "status": "OPEN", "aspirant_response": None},
+    ]
+    fake_legacy_sb = _StatusCheckFakeSB(rows, legacy_allowed)
+
+    st.session_state.clear()
+    monkeypatch.setattr(hr, "get_data_backend", lambda: "supabase")
+    monkeypatch.setattr(hr, "_get_user_client", lambda: fake_legacy_sb)
+    monkeypatch.setattr(hr, "_get_admin_client", lambda: fake_legacy_sb)
+    monkeypatch.setattr("services.account_lifecycle.get_account_status", lambda uid: {"account_status": "ACTIVE"})
+    monkeypatch.setattr("services.governance.check_sme_has_conflict", lambda s, a: False)
+    monkeypatch.setattr("services.notifications.create_notification", lambda **kw: ({}, None))
+
+    # Guide reply with WAITING_ON_ASPIRANT (UI default) succeeds under legacy DB constraint
+    ok_g, err_g = hr.guide_respond_request("req-g", "qa_a", "WAITING_ON_ASPIRANT", "Guide action items")
+    assert ok_g is True, err_g
+    assert rows[0]["status"] == "IN_PROGRESS"
+    assert rows[0]["guide_response"] == "Guide action items"
+    assert rows[0]["last_interaction_actor_role"] == "guide"
+
+    # SME reply with WAITING_ON_ASPIRANT succeeds under legacy DB constraint
+    ok_s, err_s = hr.sme_respond_request("req-s", "qa_c", "WAITING_ON_ASPIRANT", "SME GST guidance")
+    assert ok_s is True, err_s
+    assert rows[1]["status"] == "IN_PROGRESS"
+    assert rows[1]["sme_response"] == "SME GST guidance"
+
+    # Aspirant reply (WAITING_ON_GUIDE_SME) preserves aspirant_response rather than falling back to admin_response
+    ok_a, err_a = hr.aspirant_respond_request("req-a", "qa_b", "Founder follow-up docs attached")
+    assert ok_a is True, err_a
+    assert rows[2]["status"] == "IN_PROGRESS"
+    assert rows[2]["aspirant_response"] == "Founder follow-up docs attached"
+    assert rows[2].get("admin_response") is None
+
+    # After Migration 011 is applied, WAITING_ON_ASPIRANT persists natively
+    expanded_allowed = legacy_allowed | {"WAITING_ON_ASPIRANT", "WAITING_ON_GUIDE_SME", "ACTION_REQUIRED", "REPLIED"}
+    fake_011_sb = _StatusCheckFakeSB(rows, expanded_allowed)
+    monkeypatch.setattr(hr, "_get_user_client", lambda: fake_011_sb)
+    monkeypatch.setattr(hr, "_get_admin_client", lambda: fake_011_sb)
+    ok_g2, err_g2 = hr.guide_respond_request("req-g", "qa_a", "WAITING_ON_ASPIRANT", "Please upload incorporation cert")
+    assert ok_g2 is True, err_g2
+    assert rows[0]["status"] == "WAITING_ON_ASPIRANT"
+
+
+

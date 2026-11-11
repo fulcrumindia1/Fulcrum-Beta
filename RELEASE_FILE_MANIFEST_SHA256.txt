@@ -1,7 +1,7 @@
 # ==============================================================================
 # FULCRUM PRODUCTION RELEASE MANIFEST — SHA-256 CHECKSUMS
 # Package: FULCRUM_FRESH_DEPLOYMENT
-# Total Files: 68
+# Total Files: 69
 # ==============================================================================
 SHA-256 HASH                                                       SIZE (BYTES)   FILE PATH
 --------------------------------------------------------------------------------------------------------------
@@ -11,7 +11,7 @@ c332b09d2a288861c1097660496c87723f7a3a1e710ba9c8d1d521515577adb1   322          
 7589e836caa9c81cf3ba053ad23a5ed217404d702b6b76e5199819bb4323cbe7   2452           Dockerfile
 364f2736dfe8a5d433f658702e7e0314af65b379dd9e70346040f2da95980624   65113          app.py
 b879101ef508037bfe122a223b207c9a24fa8450047d9687549e6faf321928cb   1565           docker-compose.yml
-1b3658c08e3c33b9d75f866fe4e1aafa48066dd104fce7c57b24527edf04f27d   61509          migrations/000_complete_beta_setup.sql
+b6d41d96b4f365938faae70ee62dd8a8585421cafeec24db50888b7e232de0ed   61663          migrations/000_complete_beta_setup.sql
 6a3a420e9438c4b7d438c83d8fa793c812aa488cdfb3d614227f5fdb5c31ef90   10338          migrations/001_multi_role_and_legal.sql
 d451b2fb151cb805ed02630a6ee6add958bab29b0e74800945aeaee40cd19fd2   1596           migrations/002_journey_event_revisions.sql
 afb9e8c000ab0a5ff81e64a14b3257393f0fa1763f758f318784e42fa38094e5   3449           migrations/003_aspirant_profile_photos.sql
@@ -22,6 +22,7 @@ dfe85ab2cd1fe3d9521507292535e2c93b5a7c30bb175dbd26bae43e6d86b2a9   4291         
 261bfe6ac4c3c4275b8dd30389113be0bbd58016321afad75978f9f6c5dbc5b9   9915           migrations/008_single_admin_lock_professional_photos_and_workflow_columns.sql
 604d313202b0de04d30a04fd42eff935077b82234e7bccca3bcfac45bb449558   12769          migrations/009_account_lifecycle_and_archive.sql
 e04563271226855150e5731f1f6e61cc9514bd282c62dba5fd1638aa0abd6530   2503           migrations/010_align_account_lifecycle_columns.sql
+670673131eb318f8fa2fa6e5c686ed9f2a6d21830d5b2b2922d22738550dcf4c   1130           migrations/011_expand_help_requests_status_check.sql
 580a708f7f49770e7feb5c4fb7aae1f51747ba1d8d7217343664534724369545   181            packages.txt
 b0c53aafd07f76fd481b6c8df88c80fc8d867d3de3872acb977510d6f2a4955d   293            requirements.txt
 bce9b97f9ce69983feb1a91c37827e0958c4f0068af8be1a9ed23a6eb0183384   7791           scripts/FRESH_FULCRUM_ONLY_DEPLOY.sh
@@ -43,7 +44,7 @@ af9229e1115b811376b5102fdb5a259d2370d8fa6b6ac8ba8845419d9d2fae0d   10872        
 475a033742838ed56afb26731774c7b26574a44bdcf57fa200462ec1469dae45   6673           services/constants.py
 d771077bf32e38404bcfd98e4c2b83ee8852eb09560e137ec733e36e69177b1d   18099          services/external_contact.py
 378d906ca4749f4bcb374fb24ab84513cc3f57716fc5cb7d405fafa04c1cef41   13145          services/governance.py
-1a90743f79f6b0b0963dc1440895bd2150126ce00fd889a9c75477d56e5f18c6   59863          services/help_requests.py
+1b81ca03ed175818925aa824eab419fe3a52e4e65744d21aa32afcf5ff9a4f52   61331          services/help_requests.py
 091f37186ec5b67b3b01e11ff2d2d88c128a15b0df50a1d0d1c57ad1c4b919bf   2766           services/html_to_pdf_worker.py
 436b8797860413ecb082ce653bf8fa6b8e3e2feec9c5b530b8bc1656ace6d956   37036          services/inactivity.py
 6aa797764f8ee35846d7672d9889903c464519ec39229adc0cfe20719ba7409e   46974          services/journey.py
