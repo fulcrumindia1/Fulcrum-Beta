@@ -22,7 +22,7 @@ dfe85ab2cd1fe3d9521507292535e2c93b5a7c30bb175dbd26bae43e6d86b2a9   4291         
 261bfe6ac4c3c4275b8dd30389113be0bbd58016321afad75978f9f6c5dbc5b9   9915           migrations/008_single_admin_lock_professional_photos_and_workflow_columns.sql
 604d313202b0de04d30a04fd42eff935077b82234e7bccca3bcfac45bb449558   12769          migrations/009_account_lifecycle_and_archive.sql
 e04563271226855150e5731f1f6e61cc9514bd282c62dba5fd1638aa0abd6530   2503           migrations/010_align_account_lifecycle_columns.sql
-670673131eb318f8fa2fa6e5c686ed9f2a6d21830d5b2b2922d22738550dcf4c   1130           migrations/011_expand_help_requests_status_check.sql
+80e49b435a2b11767ec25bde47bcb07d4587c6cc24695f2a1b241fcd6a577c4b   1131           migrations/011_expand_help_requests_status_check.sql
 580a708f7f49770e7feb5c4fb7aae1f51747ba1d8d7217343664534724369545   181            packages.txt
 b0c53aafd07f76fd481b6c8df88c80fc8d867d3de3872acb977510d6f2a4955d   293            requirements.txt
 bce9b97f9ce69983feb1a91c37827e0958c4f0068af8be1a9ed23a6eb0183384   7791           scripts/FRESH_FULCRUM_ONLY_DEPLOY.sh
