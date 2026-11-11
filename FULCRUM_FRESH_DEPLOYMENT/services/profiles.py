@@ -14,10 +14,75 @@ Automation:
 
 import json
 from datetime import datetime, timezone
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Set
 from services.auth import get_supabase_client, get_supabase_admin_client, get_data_backend
 from services.local_db import get_local_db
 from services.cache import get_memo, set_memo, invalidate_memo
+
+
+def _get_relationship_authorized_ids_supabase(admin_cli, actor_id: str) -> Set[str]:
+    """Returns peer/mentee/mentor user IDs connected to actor_id via active relationships (including guide_ids/sme_ids arrays)."""
+    authorized_ids: Set[str] = set()
+    if not admin_cli or not actor_id:
+        return authorized_ids
+    actor_str = str(actor_id)
+    rel_filter = (
+        f"aspirant_id.eq.{actor_str},guide_id.eq.{actor_str},sme_id.eq.{actor_str},"
+        f"guide_ids.cs.{{{actor_str}}},sme_ids.cs.{{{actor_str}}}"
+    )
+    rows: List[Dict] = []
+    try:
+        rel_res = (
+            admin_cli.table("relationships")
+            .select("aspirant_id, guide_id, guide_ids, sme_id, sme_ids")
+            .eq("status", "active")
+            .or_(rel_filter)
+            .execute()
+        )
+        rows = rel_res.data or []
+    except Exception:
+        try:
+            rel_res = (
+                admin_cli.table("relationships")
+                .select("aspirant_id, guide_id, guide_ids, sme_id, sme_ids")
+                .eq("status", "active")
+                .execute()
+            )
+            rows = rel_res.data or []
+        except Exception as ex_rel:
+            print(f"[Profiles] Relationship check notice: {ex_rel}")
+            rows = []
+
+    for r in rows:
+        r_asp = str(r.get("aspirant_id") or "")
+        raw_g = r.get("guide_ids") or []
+        if isinstance(raw_g, str):
+            try:
+                raw_g = json.loads(raw_g)
+            except Exception:
+                raw_g = []
+        r_gids = [str(gid) for gid in raw_g if gid]
+        if r.get("guide_id") and str(r["guide_id"]) not in r_gids:
+            r_gids.append(str(r["guide_id"]))
+
+        raw_s = r.get("sme_ids") or []
+        if isinstance(raw_s, str):
+            try:
+                raw_s = json.loads(raw_s)
+            except Exception:
+                raw_s = []
+        r_sids = [str(sid) for sid in raw_s if sid]
+        if r.get("sme_id") and str(r["sme_id"]) not in r_sids:
+            r_sids.append(str(r["sme_id"]))
+
+        if actor_str == r_asp:
+            authorized_ids.update(r_gids + r_sids)
+        elif actor_str in r_gids or actor_str in r_sids:
+            if r_asp:
+                authorized_ids.add(r_asp)
+            # Co-mentors on the same active caseload can inspect sibling team profiles (Guide/Co-Guide/SME)
+            authorized_ids.update(r_gids + r_sids)
+    return authorized_ids
 
 def _get_user_client():
     """Returns the authenticated user's Supabase client (RLS-enforced)."""
@@ -119,31 +184,8 @@ def get_profile(
             st_info = get_account_status(actor_id)
             if st_info.get("account_status") == "ACTIVE" and st_info.get("is_active", True):
                 admin_cli = _get_admin_client()
-                if admin_cli:
-                    try:
-                        rel_res = admin_cli.table("relationships").select("aspirant_id, guide_id, guide_ids, sme_id, sme_ids")\
-                            .eq("status", "active")\
-                            .or_(f"aspirant_id.eq.{actor_id},guide_id.eq.{actor_id},sme_id.eq.{actor_id}")\
-                            .execute()
-                        for r in (rel_res.data or []):
-                            r_asp = str(r.get("aspirant_id") or "")
-                            r_gids = [str(gid) for gid in (r.get("guide_ids") or []) if gid]
-                            if r.get("guide_id"):
-                                r_gids.append(str(r["guide_id"]))
-                            r_sids = [str(sid) for sid in (r.get("sme_ids") or []) if sid]
-                            if r.get("sme_id"):
-                                r_sids.append(str(r["sme_id"]))
-
-                            if str(actor_id) == r_asp:
-                                if str(user_id) in r_gids or str(user_id) in r_sids:
-                                    authorized = True
-                                    break
-                            elif str(actor_id) in r_gids or str(actor_id) in r_sids:
-                                if str(user_id) == r_asp:
-                                    authorized = True
-                                    break
-                    except Exception as ex_rel:
-                        print(f"[Profiles] Relationship check notice: {ex_rel}")
+                if str(user_id) in _get_relationship_authorized_ids_supabase(admin_cli, str(actor_id)):
+                    authorized = True
 
         if not authorized:
             # Denied: Actor does not have verified permission to inspect this profile
@@ -330,29 +372,7 @@ def get_profiles_batch(
                     # Non-admin user: verify account status is ACTIVE
                     st_info = get_account_status(actor_id)
                     if st_info.get("account_status") == "ACTIVE" and st_info.get("is_active", True):
-                        # Query active pairwise relationships to determine authorized targets
-                        try:
-                            rel_res = admin.table("relationships").select("aspirant_id, guide_id, guide_ids, sme_id, sme_ids")\
-                                .eq("status", "active")\
-                                .or_(f"aspirant_id.eq.{actor_id},guide_id.eq.{actor_id},sme_id.eq.{actor_id}")\
-                                .execute()
-                            for r in (rel_res.data or []):
-                                r_asp = str(r.get("aspirant_id") or "")
-                                r_gids = [str(gid) for gid in (r.get("guide_ids") or []) if gid]
-                                if r.get("guide_id"):
-                                    r_gids.append(str(r["guide_id"]))
-                                r_sids = [str(sid) for sid in (r.get("sme_ids") or []) if sid]
-                                if r.get("sme_id"):
-                                    r_sids.append(str(r["sme_id"]))
-
-                                if str(actor_id) == r_asp:
-                                    # Actor is Aspirant: authorized to view assigned mentors
-                                    authorized_ids.update(r_gids + r_sids)
-                                elif str(actor_id) in r_gids or str(actor_id) in r_sids:
-                                    # Actor is Guide or SME: authorized to view assigned Aspirant
-                                    authorized_ids.add(r_asp)
-                        except Exception as ex_rel:
-                            print(f"[Profiles] Relationship authorization query error: {ex_rel}")
+                        authorized_ids = _get_relationship_authorized_ids_supabase(admin, str(actor_id))
                 else:
                     # Missing actor identity without system capability -> Deny all
                     authorized_ids = set()
@@ -547,7 +567,7 @@ def update_aspirant_profile(
             import streamlit as st
             session_user = st.session_state.get("user")
             session_user_id = st.session_state.get("user_id")
-            session_role = st.session_state.get("role")
+            session_role = st.session_state.get("active_workspace") or st.session_state.get("role")
             if session_user and session_role != "admin" and str(session_user_id) != str(user_id):
                 return None, "Unauthorized: You do not have permission to modify another user's profile."
         except Exception:
@@ -577,16 +597,22 @@ def update_aspirant_profile(
     state = (state or current.get("state", "Tamil Nadu")).strip()
 
     existing_pdata = current.get("profile_data") or {}
+    if isinstance(existing_pdata, str):
+        try:
+            existing_pdata = json.loads(existing_pdata)
+        except Exception:
+            existing_pdata = {}
     if not isinstance(existing_pdata, dict):
         existing_pdata = {}
 
-    profile_data = {
+    profile_data = dict(existing_pdata)
+    profile_data.update({
         "personal": personal_data or {},
         "professional": professional_data or {},
         "business": business_data or {},
         "demographics": demographics_data or {},
         "assistance_need": assistance_need_data if assistance_need_data is not None else existing_pdata.get("assistance_need", {})
-    }
+    })
 
     updated_record = {
         "id": user_id,

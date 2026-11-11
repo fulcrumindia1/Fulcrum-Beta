@@ -34,14 +34,13 @@ def _invalidate_user_notifications(user_id: str) -> None:
 def is_notification_allowed(actor_id: Optional[str], target_user_id: str, notification_type: str) -> bool:
     """
     PART 8 — NOTIFICATION SAFETY
-    Verifies that actor_id is authorized to notify target_user_id.
+    Verifies that actor_id is authorized to notify target_user_id across single or hybrid roles.
     - System/automated (actor_id None): Allowed.
     - Self notification: Allowed.
     - Admin actor: Allowed to notify anyone.
     - Target is Admin: Any authenticated user can notify Admin.
-    - Aspirant actor: Can only notify assigned Guide(s) or SME(s).
-    - Guide actor: Can only notify an assigned Aspirant.
-    - SME actor: Can only notify an assigned Aspirant.
+    - Aspirant role holder: Can notify assigned Guide(s) or SME(s).
+    - Guide / SME role holder: Can notify an assigned Aspirant (or peer co-mentor on shared case).
     - All other arbitrary cross-user notifications are blocked.
     """
     if not actor_id or actor_id == target_user_id:
@@ -49,37 +48,43 @@ def is_notification_allowed(actor_id: Optional[str], target_user_id: str, notifi
 
     from services.profiles import get_profile
     from services.relationships import get_aspirant_mentors
+    from services.roles import get_active_roles, is_strict_admin
 
     actor_prof = get_profile(actor_id)
     if not actor_prof:
         return False
-    actor_role = actor_prof.get("role", "aspirant")
 
-    if actor_role == "admin":
+    if is_strict_admin(user_id=actor_id, user_dict=actor_prof):
         return True
 
     target_prof = get_profile(target_user_id)
     if not target_prof:
         return False
-    target_role = target_prof.get("role", "aspirant")
 
-    # Anyone can notify an Admin (support/escalation)
-    if target_role == "admin":
+    if is_strict_admin(user_id=target_user_id, user_dict=target_prof):
         return True
 
-    if actor_role == "aspirant":
+    actor_roles = set(get_active_roles(actor_id))
+    base_actor_role = str(actor_prof.get("role") or "aspirant").strip().lower()
+    if base_actor_role in ("aspirant", "guide", "sme"):
+        actor_roles.add(base_actor_role)
+
+    if "aspirant" in actor_roles:
         mentors = get_aspirant_mentors(actor_id) or {}
         valid_mentor_ids = [m["id"] for m in mentors.get("guides", [])] + [m["id"] for m in mentors.get("smes", [])]
-        return target_user_id in valid_mentor_ids
+        if target_user_id in valid_mentor_ids:
+            return True
 
-    if actor_role in ("guide", "sme"):
+    if "guide" in actor_roles or "sme" in actor_roles:
         mentors = get_aspirant_mentors(target_user_id) or {}
-        if actor_role == "guide":
+        if "guide" in actor_roles:
             valid_guide_ids = [m["id"] for m in mentors.get("guides", [])]
-            return actor_id in valid_guide_ids
-        elif actor_role == "sme":
+            if actor_id in valid_guide_ids:
+                return True
+        if "sme" in actor_roles:
             valid_sme_ids = [m["id"] for m in mentors.get("smes", [])]
-            return actor_id in valid_sme_ids
+            if actor_id in valid_sme_ids:
+                return True
 
     return False
 
@@ -153,14 +158,89 @@ def create_notification(
     except Exception as e:
         return None, f"Local DB notification error: {e}"
 
-def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
+_MENTOR_ASSIGNED_TITLE_MARKERS = (
+    "new mentee",
+    "co-guide",
+    "assigned as",
+    "added to advisory",
+    "unassigned",
+    "caseload",
+    "reassigned from",
+)
+
+
+def infer_notification_workspace(notif: Dict) -> str:
+    """Infers the target workspace ('aspirant', 'guide', 'sme', 'admin', or 'all') for a notification."""
+    if not isinstance(notif, dict):
+        return "all"
+    explicit = str(notif.get("target_role") or notif.get("workspace") or "").strip().lower()
+    if explicit in ("aspirant", "guide", "sme", "admin", "all"):
+        return explicit
+
+    ntype = str(notif.get("notification_type") or "").strip()
+    ntype_low = ntype.lower()
+    title_low = str(notif.get("title") or "").lower()
+    msg_low = str(notif.get("message") or "").lower()
+    combined = f"{title_low} {msg_low}"
+
+    if ntype in ("account_restored", "account_resumed", "account_suspended", "system_alert"):
+        return "all"
+    if ntype in ("CONFIDENTIAL_COMPLAINT", "SCHEME_SUPPORT_REVIEW", "admin_directive_needed", "INACTIVITY_CRITICAL"):
+        return "admin"
+    if ntype in ("scheme_released", "CONFIDENTIAL_COMPLAINT_UPDATE", "programme_completed", "mentor_guidance_issued", "help_ticket_replied"):
+        return "aspirant"
+    if ntype in ("SCHEME_REVIEW_DECISION", "INACTIVITY_REMINDER", "INACTIVITY_WARNING", "admin_directive_issued"):
+        return "sme" if ("domain sme" in combined or " sme" in combined or "sme " in combined) else "guide"
+    if ntype in ("help_ticket_created", "aspirant_reply_submitted"):
+        if "[domain sme]" in combined or "domain sme" in combined or "sme consultation" in combined:
+            return "sme"
+        return "guide"
+    if ntype in ("guide_assigned", "guide_reassigned", "guide_unassigned"):
+        if any(m in combined for m in _MENTOR_ASSIGNED_TITLE_MARKERS) or "you have been assigned" in msg_low or "you are no longer assigned" in msg_low:
+            return "guide"
+        return "aspirant"
+    if ntype in ("sme_assigned", "sme_reassigned", "sme_unassigned"):
+        if any(m in combined for m in _MENTOR_ASSIGNED_TITLE_MARKERS) or "you have been assigned" in msg_low or "you are no longer assigned" in msg_low:
+            return "sme"
+        return "aspirant"
+    if ntype in ("role_granted", "role_reinstated", "role_revoked", "role_suspended"):
+        if "domain sme" in combined or " sme " in combined or "sme role" in combined:
+            return "sme"
+        if "guide" in combined:
+            return "guide"
+        if "aspirant" in combined:
+            return "aspirant"
+        return "all"
+    if ntype_low.startswith("sme"):
+        return "sme"
+    if ntype_low.startswith("guide"):
+        return "guide"
+    return "all"
+
+
+def filter_notifications_by_workspace(notifs: List[Dict], workspace: Optional[str]) -> List[Dict]:
+    """Filters a notification list to items belonging to `workspace` or universal ('all') notices."""
+    if not workspace:
+        return list(notifs or [])
+    ws = str(workspace).strip().lower()
+    if ws not in ("aspirant", "guide", "sme", "admin"):
+        return list(notifs or [])
+    filtered = []
+    for n in (notifs or []):
+        inferred = infer_notification_workspace(n)
+        if inferred in (ws, "all"):
+            filtered.append(n)
+    return filtered
+
+
+def list_notifications(user_id: str, unread_only: bool = False, workspace: Optional[str] = None) -> List[Dict]:
     """Retrieves notifications for a user (with 30s session memoization)."""
     if not user_id:
         return []
     cache_key = f"notif_list:{user_id}:{bool(unread_only)}"
     cached = get_memo(cache_key)
     if cached is not None:
-        return cached
+        return filter_notifications_by_workspace(cached, workspace) if workspace else cached
 
     backend = get_data_backend()
 
@@ -178,7 +258,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                 res = q.order("created_at", desc=True).limit(50).execute()
                 if res.data is not None:
                     set_memo(cache_key, res.data, ttl_seconds=30)
-                    return res.data
+                    return filter_notifications_by_workspace(res.data, workspace) if workspace else res.data
                 if admin and admin != reader:
                     q2 = admin.table("notifications").select("*").eq("user_id", user_id)
                     if unread_only:
@@ -186,7 +266,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                     res2 = q2.order("created_at", desc=True).limit(50).execute()
                     if res2.data is not None:
                         set_memo(cache_key, res2.data, ttl_seconds=30)
-                        return res2.data
+                        return filter_notifications_by_workspace(res2.data, workspace) if workspace else res2.data
                 out = []
                 set_memo(cache_key, out, ttl_seconds=30)
                 return out
@@ -200,7 +280,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
                         res2 = q2.order("created_at", desc=True).limit(50).execute()
                         if res2.data is not None:
                             set_memo(cache_key, res2.data, ttl_seconds=30)
-                            return res2.data
+                            return filter_notifications_by_workspace(res2.data, workspace) if workspace else res2.data
                     except Exception:
                         pass
         return []
@@ -210,7 +290,7 @@ def list_notifications(user_id: str, unread_only: bool = False) -> List[Dict]:
     try:
         rows = get_local_db().list_notifications(user_id=user_id, unread_only=unread_only)
         set_memo(cache_key, rows, ttl_seconds=30)
-        return rows
+        return filter_notifications_by_workspace(rows, workspace) if workspace else rows
     except Exception as e:
         print(f"[Notifications] Local DB query error: {e}")
         return []

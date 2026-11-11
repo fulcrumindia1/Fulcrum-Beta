@@ -73,9 +73,27 @@ def get_admin_dashboard_metrics(admin_id: Optional[str] = None) -> Dict[str, int
         client = get_supabase_admin_client()
         if client:
             try:
-                # 1. Aspirants (Active non-admin accounts holding aspirant role)
+                # 1. Aspirants (Active non-admin accounts holding base aspirant role OR active aspirant grant)
                 res_asp = client.table("profiles").select("id", count="exact", head=True).eq("role", "aspirant").neq("is_active", False).execute()
-                metrics["aspirants_count"] = res_asp.count or 0
+                base_asp_count = res_asp.count or 0
+                extra_asp_count = 0
+                try:
+                    ur_asp = client.table("user_roles").select("user_id").eq("role", "aspirant").eq("status", "active").execute()
+                    grant_ids = [r["user_id"] for r in (ur_asp.data or []) if r.get("user_id")]
+                    if grant_ids:
+                        res_extra = (
+                            client.table("profiles")
+                            .select("id", count="exact", head=True)
+                            .in_("id", grant_ids)
+                            .neq("role", "aspirant")
+                            .neq("role", "admin")
+                            .neq("is_active", False)
+                            .execute()
+                        )
+                        extra_asp_count = res_extra.count or 0
+                except Exception:
+                    extra_asp_count = 0
+                metrics["aspirants_count"] = base_asp_count + extra_asp_count
 
                 # 2. Active Guides (Active grant in user_roles)
                 res_g = client.table("user_roles").select("id", count="exact", head=True).eq("role", "guide").eq("status", "active").execute()
@@ -120,8 +138,14 @@ def get_admin_dashboard_metrics(admin_id: Optional[str] = None) -> Dict[str, int
         conn = db._get_conn()
         cur = conn.cursor()
 
-        # Aspirants
-        cur.execute("SELECT COUNT(*) FROM profiles WHERE role = 'aspirant' AND is_active = 1")
+        # Aspirants (base role='aspirant' UNION active 'aspirant' role grant, non-admin, deduplicated)
+        cur.execute(
+            """
+            SELECT COUNT(DISTINCT p.id) FROM profiles p
+            LEFT JOIN user_roles ur ON ur.user_id = p.id AND ur.role = 'aspirant' AND ur.status = 'active'
+            WHERE p.is_active = 1 AND p.role != 'admin' AND (p.role = 'aspirant' OR ur.user_id IS NOT NULL)
+            """
+        )
         metrics["aspirants_count"] = cur.fetchone()[0]
 
         # Active Guides

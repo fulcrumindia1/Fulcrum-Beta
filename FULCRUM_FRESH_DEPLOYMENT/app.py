@@ -835,14 +835,83 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-            # User Profile Badge
+            # ─────────────────────────────────────────────────────────────────
+            # MULTI-ROLE: RESOLVE ACTIVE WORKSPACE BEFORE RENDERING BADGE
+            # ─────────────────────────────────────────────────────────────────
+            from services.roles import get_user_roles, is_strict_admin
+            from services.account_lifecycle import get_account_status
+            user_id = user.get("id")
+            base_p_role = str(user.get("role", "aspirant")).strip().lower()
+
+            with tracker.stage("account_lifecycle_ms"):
+                acc_lifecycle = get_account_status(user_id)
+            acc_status_sb = str(acc_lifecycle.get("account_status") or "DENIED").strip().upper()
+            is_blocked_sb = (acc_status_sb in ("TEMPORARILY_SUSPENDED", "ARCHIVED", "DENIED")) or (not acc_lifecycle.get("is_active", True) and acc_status_sb != "PENDING_DELETION")
+
+            is_single_admin = False
+            ws_options = [(base_p_role, "Workspace")]
+            if not is_blocked_sb:
+                with tracker.stage("roles_nda_ms"):
+                    is_single_admin = is_strict_admin(user_dict=user)
+
+                    if is_single_admin:
+                        # Single Platform Admin is strictly an Admin, never an Aspirant or Mentor
+                        ws_options = [("admin", "🏛️ Admin Dashboard")]
+                        st.session_state["active_workspace"] = "admin"
+                    else:
+                        if base_p_role in ("admin", "district_admin", "operational_admin"):
+                            base_p_role = "aspirant"
+                            user["role"] = "aspirant"
+                            st.session_state["role"] = "aspirant"
+
+                        all_grants = get_user_roles(user_id, prefetched_profile=user) if user_id else []
+                        active_r = [
+                            g["role"] for g in all_grants
+                            if g.get("status") == "active" and g.get("role") not in ("admin", "district_admin", "operational_admin")
+                        ]
+                        pending_r = [
+                            g["role"] for g in all_grants
+                            if g.get("status") == "pending_nda" and g.get("role") not in ("admin", "district_admin", "operational_admin")
+                        ]
+
+                        if not active_r and not pending_r:
+                            active_r = ["aspirant"]
+
+                        ws_options = []
+                        if "aspirant" in active_r:
+                            ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
+                        if "guide" in active_r or "guide" in pending_r:
+                            g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
+                            ws_options.append(("guide", g_lbl))
+                        if "sme" in active_r or "sme" in pending_r:
+                            s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
+                            ws_options.append(("sme", s_lbl))
+
+                        if not ws_options:
+                            ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
+
+                if "active_workspace" not in st.session_state:
+                    st.session_state["active_workspace"] = base_p_role
+
+                curr_ws = st.session_state["active_workspace"]
+                ws_keys = [opt[0] for opt in ws_options]
+                if curr_ws not in ws_keys:
+                    curr_ws = ws_keys[0]
+                    st.session_state["active_workspace"] = curr_ws
+                if not is_single_admin and curr_ws in ("aspirant", "guide", "sme"):
+                    st.session_state["role"] = curr_ws
+                    role = curr_ws
+            else:
+                curr_ws = st.session_state.get("active_workspace") or base_p_role
+
+            # User Profile Badge bound strictly to active workspace (DEF-32-010)
             role_badges = {
-                "aspirant": {"label": "Aspirant", "bg": "rgba(59, 130, 246, 0.2)", "color": "#60a5fa"},
+                "aspirant": {"label": "Verified Aspirant", "bg": "rgba(59, 130, 246, 0.2)", "color": "#60a5fa"},
                 "guide": {"label": "Verified Guide", "bg": "rgba(16, 185, 129, 0.2)", "color": "#34d399"},
-                "sme": {"label": "Domain SME", "bg": "rgba(14, 165, 233, 0.2)", "color": "#38bdf8"},
+                "sme": {"label": "Verified Domain SME", "bg": "rgba(14, 165, 233, 0.2)", "color": "#38bdf8"},
                 "admin": {"label": "Program Admin", "bg": "rgba(236, 72, 153, 0.2)", "color": "#f472b6"}
             }
-            rb = role_badges.get(role, {"label": role.upper(), "bg": "rgba(255,255,255,0.1)", "color": "#fff"})
+            rb = role_badges.get(curr_ws, {"label": str(curr_ws).upper(), "bg": "rgba(255,255,255,0.1)", "color": "#fff"})
 
             st.markdown(f"""
             <div style="background: rgba(17, 24, 39, 0.75); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 0.85rem; margin-top: 1rem; margin-bottom: 0.75rem;">
@@ -864,75 +933,12 @@ def main():
             </div>
             """, unsafe_allow_html=True)
 
-            # ─────────────────────────────────────────────────────────────────
-            # MULTI-ROLE: CURRENT WORKSPACE SELECTOR (Single Role Query)
-            # ─────────────────────────────────────────────────────────────────
-            from services.roles import get_user_roles, is_strict_admin
-            from services.account_lifecycle import get_account_status
-            user_id = user.get("id")
-            base_p_role = str(user.get("role", "aspirant")).strip().lower()
-
-            with tracker.stage("account_lifecycle_ms"):
-                acc_lifecycle = get_account_status(user_id)
-            acc_status_sb = str(acc_lifecycle.get("account_status") or "DENIED").strip().upper()
-            is_blocked_sb = (acc_status_sb in ("TEMPORARILY_SUSPENDED", "ARCHIVED", "DENIED")) or (not acc_lifecycle.get("is_active", True) and acc_status_sb != "PENDING_DELETION")
-
             if is_blocked_sb:
                 st.write("")
                 if st.button("🚪 Logout", use_container_width=True, key="btn_sidebar_logout_blocked"):
                     logout_user()
                     st.rerun()
                 return
-
-            with tracker.stage("roles_nda_ms"):
-                is_single_admin = is_strict_admin(user_dict=user)
-
-                if is_single_admin:
-                    # Single Platform Admin is strictly an Admin, never an Aspirant or Mentor
-                    active_r = ["admin"]
-                    pending_r = []
-                    ws_options = [("admin", "🏛️ Admin Dashboard")]
-                    st.session_state["active_workspace"] = "admin"
-                else:
-                    if base_p_role in ("admin", "district_admin", "operational_admin"):
-                        base_p_role = "aspirant"
-                        user["role"] = "aspirant"
-                        st.session_state["role"] = "aspirant"
-
-                    all_grants = get_user_roles(user_id, prefetched_profile=user) if user_id else []
-                    active_r = [
-                        g["role"] for g in all_grants
-                        if g.get("status") == "active" and g.get("role") not in ("admin", "district_admin", "operational_admin")
-                    ]
-                    pending_r = [
-                        g["role"] for g in all_grants
-                        if g.get("status") == "pending_nda" and g.get("role") not in ("admin", "district_admin", "operational_admin")
-                    ]
-
-                    if not active_r and not pending_r:
-                        active_r = ["aspirant"]
-
-                    ws_options = []
-                    if "aspirant" in active_r:
-                        ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
-                    if "guide" in active_r or "guide" in pending_r:
-                        g_lbl = "🧭 Guide Dashboard" + (" (Pending NDA)" if "guide" in pending_r else "")
-                        ws_options.append(("guide", g_lbl))
-                    if "sme" in active_r or "sme" in pending_r:
-                        s_lbl = "🔬 SME Dashboard" + (" (Pending NDA)" if "sme" in pending_r else "")
-                        ws_options.append(("sme", s_lbl))
-
-                    if not ws_options:
-                        ws_options.append(("aspirant", "🌱 Aspirant Dashboard"))
-
-            if "active_workspace" not in st.session_state:
-                st.session_state["active_workspace"] = base_p_role
-
-            curr_ws = st.session_state["active_workspace"]
-            ws_keys = [opt[0] for opt in ws_options]
-            if curr_ws not in ws_keys:
-                curr_ws = ws_keys[0]
-                st.session_state["active_workspace"] = curr_ws
 
             if not is_single_admin and len(ws_options) > 1:
                 st.markdown("""
@@ -1004,26 +1010,51 @@ def main():
                 )
                 if selected_ws != curr_ws:
                     st.session_state["active_workspace"] = selected_ws
+                    if selected_ws in ("aspirant", "guide", "sme"):
+                        st.session_state["role"] = selected_ws
                     st.rerun()
 
             # ─────────────────────────────────────────────────────────────────
-            # IN-APP NOTIFICATION CENTER (Universal & Mobile-Friendly)
+            # IN-APP NOTIFICATION CENTER (Workspace-Isolated & Mobile-Friendly)
             # ─────────────────────────────────────────────────────────────────
-            from services.notifications import list_notifications, mark_as_read, mark_all_as_read
+            from services.notifications import (
+                list_notifications,
+                mark_as_read,
+                mark_all_as_read,
+                filter_notifications_by_workspace,
+            )
             with tracker.stage("notifications_ms"):
-                user_notifs = list_notifications(user_id) if user_id else []
+                all_user_notifs = list_notifications(user_id) if user_id else []
+            has_multi_ws = (not is_single_admin and len(ws_options) > 1)
+            show_all_ws = bool(st.session_state.get("sb_notif_show_all_ws", False)) if has_multi_ws else True
+            user_notifs = (
+                all_user_notifs
+                if show_all_ws
+                else filter_notifications_by_workspace(all_user_notifs, curr_ws)
+            )
             unread_count = sum(1 for n in user_notifs if not n.get("is_read"))
             st.session_state["_current_unread_count"] = unread_count
 
             notif_expander_title = f"🔔 Notifications ({unread_count} New)" if unread_count > 0 else "🔔 Notifications"
             with st.expander(notif_expander_title, expanded=(unread_count > 0)):
+                if has_multi_ws:
+                    st.checkbox(
+                        f"Include other workspaces ({len(all_user_notifs)} total)",
+                        value=show_all_ws,
+                        key="sb_notif_show_all_ws",
+                    )
                 if user_id:
                     if not user_notifs:
-                        st.caption("No notifications yet.")
+                        st.caption("No notifications for this workspace." if has_multi_ws and not show_all_ws else "No notifications yet.")
                     else:
                         if unread_count > 0:
                             if st.button("Mark all as read", key="btn_notif_mark_all", use_container_width=True):
-                                mark_all_as_read(user_id)
+                                if has_multi_ws and not show_all_ws:
+                                    for _un in user_notifs:
+                                        if not _un.get("is_read") and _un.get("id"):
+                                            mark_as_read(_un["id"], user_id)
+                                else:
+                                    mark_all_as_read(user_id)
                                 st.rerun()
                         for n in user_notifs[:6]:
                             is_unread = not n.get("is_read")
@@ -1183,11 +1214,11 @@ def main():
             col_c1, col_c2, col_c3 = st.columns([1, 2, 1])
             with col_c2:
                 with st.form("form_first_login_pw"):
-                    np1 = st.text_input("New Permanent Password *", type="password", placeholder="At least 6 characters", help="Choose a strong password")
+                    np1 = st.text_input("New Permanent Password *", type="password", placeholder="At least 8 characters", help="Choose a strong password (minimum 8 characters)")
                     np2 = st.text_input("Confirm New Password *", type="password", placeholder="Re-type password")
                     if st.form_submit_button("SET PERMANENT PASSWORD & ENTER", type="primary", use_container_width=True):
-                        if not np1 or len(np1) < 6:
-                            st.error("Password must be at least 6 characters long.")
+                        if not np1 or len(np1) < 8:
+                            st.error("Password must be at least 8 characters long.")
                         elif np1 != np2:
                             st.error("Passwords do not match. Please re-enter.")
                         else:

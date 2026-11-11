@@ -715,17 +715,26 @@ def render_admin_sme_conflicts_tab(admin_id: str):
         else:
             from services.profiles import get_profiles_batch
             from services.relationships import unassign_sme
+            from services.governance import resolve_sme_conflict
             sme_ids = [c.get("sme_id") for c in conflicts if c.get("sme_id")]
             asp_ids = [c.get("aspirant_id") for c in conflicts if c.get("aspirant_id")]
             all_p = get_profiles_batch(list(set(sme_ids + asp_ids)), requesting_actor_id=admin_id)
             for c in conflicts:
+                cid = c.get("id")
                 sme_p = all_p.get(c.get("sme_id", "")) or {}
                 asp_p = all_p.get(c.get("aspirant_id", "")) or {}
                 has_conf = c.get("has_conflict", False)
                 c_status = str(c.get("status") or "DECLARED").upper()
 
-                color = "#DC2626" if (has_conf and c_status not in ("RESOLVED", "DISMISSED")) else "#10B981"
-                text = f"CONFLICT ({c_status})" if has_conf else "CLEARED / NO CONFLICT"
+                if not has_conf or c_status in ("REJECTED", "RESOLVED", "DISMISSED", "CLEARED"):
+                    color = "#10B981"
+                    text = "CLEARED / NO CONFLICT" if not has_conf else f"CLEARED ({c_status})"
+                elif c_status == "APPROVED":
+                    color = "#F59E0B"
+                    text = "RECUSAL APPROVED"
+                else:
+                    color = "#DC2626"
+                    text = f"CONFLICT ({c_status})"
 
                 _render_html(f"""
                 <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-left:4px solid {color}; border-radius:10px; padding:0.9rem; margin-bottom:0.5rem;">
@@ -742,23 +751,53 @@ def render_admin_sme_conflicts_tab(admin_id: str):
                 </div>
                 """)
 
-                if has_conf and c_status not in ("RESOLVED", "DISMISSED") and c.get("aspirant_id") and c.get("sme_id"):
+                if has_conf and c_status not in ("APPROVED", "REJECTED", "RESOLVED", "DISMISSED", "CLEARED") and c.get("aspirant_id") and c.get("sme_id"):
+                    c_b1, c_b2 = st.columns(2)
+                    with c_b1:
+                        if st.button(
+                            f"🔄 Approve Recusal & Unassign {sme_p.get('full_name', 'SME')} from {asp_p.get('full_name', 'Aspirant')}",
+                            key=f"btn_resolve_coi_{cid}",
+                            type="primary",
+                            use_container_width=True,
+                        ):
+                            ok_u, err_u = unassign_sme(
+                                aspirant_id=c["aspirant_id"],
+                                sme_id=c["sme_id"],
+                                admin_id=admin_id,
+                                reason=f"Conflict of Interest Recusal Approved: {c.get('conflict_details', '')}"
+                            )
+                            if ok_u or (err_u and "not currently assigned" in err_u.lower()):
+                                ok_rc, err_rc = resolve_sme_conflict(cid, admin_id, "APPROVED")
+                                if ok_rc:
+                                    st.success("Conflicted SME recusal approved, unassigned, and logged in Assignment History.")
+                                    st.rerun()
+                                else:
+                                    st.error(err_rc or "Unassigned SME, but failed to update conflict status.")
+                            else:
+                                st.error(err_u or "Failed to unassign SME.")
+                    with c_b2:
+                        if st.button(
+                            f"🔓 Dismiss / Clear Conflict Restriction",
+                            key=f"btn_dismiss_coi_{cid}",
+                            use_container_width=True,
+                        ):
+                            ok_cl, err_cl = resolve_sme_conflict(cid, admin_id, "REJECTED")
+                            if ok_cl:
+                                st.success("Conflict restriction cleared. SME may now be assigned if needed.")
+                                st.rerun()
+                            else:
+                                st.error(err_cl or "Failed to clear conflict.")
+                elif has_conf and c_status == "APPROVED":
                     if st.button(
-                        f"🔄 Approve Recusal & Unassign {sme_p.get('full_name', 'SME')} from {asp_p.get('full_name', 'Aspirant')}",
-                        key=f"btn_resolve_coi_{c.get('id')}",
-                        type="primary"
+                        f"🔓 Lift Recusal Restriction ({sme_p.get('full_name', 'SME')} ➔ {asp_p.get('full_name', 'Aspirant')})",
+                        key=f"btn_lift_coi_{cid}",
                     ):
-                        ok_u, err_u = unassign_sme(
-                            aspirant_id=c["aspirant_id"],
-                            sme_id=c["sme_id"],
-                            admin_id=admin_id,
-                            reason=f"Conflict of Interest Recusal Approved: {c.get('conflict_details', '')}"
-                        )
-                        if ok_u:
-                            st.success("Conflicted SME unassigned and logged in Assignment History.")
+                        ok_lf, err_lf = resolve_sme_conflict(cid, admin_id, "REJECTED")
+                        if ok_lf:
+                            st.success("Recusal restriction lifted cleanly.")
                             st.rerun()
                         else:
-                            st.error(err_u or "Failed to unassign SME.")
+                            st.error(err_lf or "Failed to lift recusal restriction.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

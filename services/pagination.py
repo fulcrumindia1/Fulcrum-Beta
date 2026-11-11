@@ -46,19 +46,61 @@ def paginate_profiles(
         client = get_supabase_admin_client() or get_supabase_client()
         if client:
             try:
-                q = client.table("profiles").select("*", count="exact").eq("role", role).neq("is_active", False)
+                grant_uids: List[str] = []
+                if role == "aspirant":
+                    try:
+                        ur_res = (
+                            client.table("user_roles")
+                            .select("user_id")
+                            .eq("role", "aspirant")
+                            .eq("status", "active")
+                            .execute()
+                        )
+                        grant_uids = [r["user_id"] for r in (ur_res.data or []) if r.get("user_id")]
+                    except Exception:
+                        grant_uids = []
+
+                def _apply_profile_filters(qb):
+                    if search and search.strip():
+                        s = search.strip()
+                        qb = qb.or_(f"full_name.ilike.%{s}%,email.ilike.%{s}%")
+                    if district and district != "ALL":
+                        qb = qb.eq("district", district)
+                    return qb
+
+                q = _apply_profile_filters(
+                    client.table("profiles").select("*", count="exact").eq("role", role).neq("is_active", False)
+                )
                 if role == "aspirant":
                     q = q.neq("role", "admin")
-                if search and search.strip():
-                    s = search.strip()
-                    q = q.or_(f"full_name.ilike.%{s}%,email.ilike.%{s}%")
-                if district and district != "ALL":
-                    q = q.eq("district", district)
-
                 q = q.order(sort_by, desc=sort_desc)
-                res = q.range(offset, offset + page_size - 1).execute()
+                fetch_start = 0 if grant_uids else offset
+                res = q.range(fetch_start, offset + page_size - 1).execute()
                 total = res.count or 0
                 rows = res.data or []
+
+                if grant_uids and role == "aspirant":
+                    q_extra = _apply_profile_filters(
+                        client.table("profiles")
+                        .select("*")
+                        .in_("id", grant_uids)
+                        .neq("role", "aspirant")
+                        .neq("role", "admin")
+                        .neq("is_active", False)
+                    )
+                    extra_rows = q_extra.execute().data or []
+                    if extra_rows:
+                        by_id = {r["id"]: r for r in rows if r.get("id")}
+                        for er in extra_rows:
+                            if er.get("id") and er["id"] not in by_id:
+                                by_id[er["id"]] = er
+                        total = total + len(extra_rows)
+                        merged = list(by_id.values())
+                        merged.sort(key=lambda r: str(r.get(sort_by) or ""), reverse=sort_desc)
+                        rows = merged[offset:offset + page_size]
+                    else:
+                        rows = rows[offset:offset + page_size]
+
                 for r in rows:
                     r["completion_pct"] = calculate_completion(r)
                 return rows, total
@@ -72,8 +114,17 @@ def paginate_profiles(
         conn = db._get_conn()
         cur = conn.cursor()
 
-        where_clauses = ["role = ?", "is_active = 1"]
-        params: List[Any] = [role]
+        safe_sort = sort_by if sort_by in ("created_at", "updated_at", "full_name", "email", "district") else "created_at"
+        if role == "aspirant":
+            where_clauses = [
+                "(role = 'aspirant' OR EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = profiles.id AND ur.role = 'aspirant' AND ur.status = 'active'))",
+                "role != 'admin'",
+                "is_active = 1",
+            ]
+            params: List[Any] = []
+        else:
+            where_clauses = ["role = ?", "is_active = 1"]
+            params = [role]
         if search and search.strip():
             where_clauses.append("(full_name LIKE ? OR email LIKE ?)")
             params.extend([f"%{search.strip()}%", f"%{search.strip()}%"])
@@ -87,7 +138,7 @@ def paginate_profiles(
 
         order_dir = "DESC" if sort_desc else "ASC"
         cur.execute(
-            f"SELECT * FROM profiles WHERE {where_sql} ORDER BY {sort_by} {order_dir} LIMIT ? OFFSET ?",
+            f"SELECT * FROM profiles WHERE {where_sql} ORDER BY {safe_sort} {order_dir} LIMIT ? OFFSET ?",
             params + [page_size, offset]
         )
         col_names = [d[0] for d in cur.description]

@@ -624,7 +624,7 @@ def render_aspirant_portal(user_profile: dict):
                         # For contributions by Guide, SME, or Admin, the founder can curate their roadmap
                         if is_included:
                             if st.button("✕ Not Needed", key=f"excl_{event['id']}", help="Exclude this milestone from your roadmap"):
-                                ok, err = toggle_event_roadmap_inclusion(event["id"], user_id, False)
+                                ok, err = toggle_event_roadmap_inclusion(event["id"], user_id, False, actor_id=user_id, actor_role="aspirant")
                                 if ok:
                                     st.session_state["del_event_success"] = "Milestone marked as Not Needed for your roadmap."
                                 else:
@@ -632,7 +632,7 @@ def render_aspirant_portal(user_profile: dict):
                                 st.rerun()
                         else:
                             if st.button("✓ Needed", key=f"incl_{event['id']}", help="Include this milestone back in your active roadmap"):
-                                ok, err = toggle_event_roadmap_inclusion(event["id"], user_id, True)
+                                ok, err = toggle_event_roadmap_inclusion(event["id"], user_id, True, actor_id=user_id, actor_role="aspirant")
                                 if ok:
                                     st.session_state["del_event_success"] = "Milestone included back in your active roadmap."
                                 else:
@@ -714,7 +714,29 @@ def render_aspirant_portal(user_profile: dict):
 
 
         st.markdown("<div style='height: 1.25rem;'></div>", unsafe_allow_html=True)
-        with st.expander("🛡️ Contact Fulcrum Support / Report Confidential Concern"):
+        from services.governance import list_aspirant_complaints
+        my_complaints = list_aspirant_complaints(user_id)
+        if my_complaints:
+            open_cnt = sum(1 for mc in my_complaints if str(mc.get("status", "open")).upper() in ("OPEN", "PENDING"))
+            rev_cnt = sum(1 for mc in my_complaints if str(mc.get("status", "")).upper() in ("REVIEWED", "UNDER_REVIEW"))
+            res_cnt = sum(1 for mc in my_complaints if str(mc.get("status", "")).upper() == "RESOLVED")
+            latest = my_complaints[0]
+            latest_st = str(latest.get("status", "open")).upper()
+            st.markdown(f"""
+            <div style="background:#F8FAFC; border:1px solid #CBD5E1; border-left:4px solid #3B82F6; border-radius:10px; padding:0.75rem 1rem; margin-bottom:0.6rem;">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+                    <span style="font-weight:700; color:#0F172A; font-size:0.9rem;">📋 Fulcrum Support Reports ({len(my_complaints)} Total)</span>
+                    <span style="font-size:0.78rem; color:#475569; font-weight:600;">Open: {open_cnt} · In Review: {rev_cnt} · Resolved: {res_cnt} · Latest: <strong>{latest_st}</strong></span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        exp_label = (
+            f"🛡️ Contact Fulcrum Support / Report Confidential Concern ({len(my_complaints)} Reports)"
+            if my_complaints
+            else "🛡️ Contact Fulcrum Support / Report Confidential Concern"
+        )
+        with st.expander(exp_label):
             st.caption("This report is submitted directly and confidentially to **Fulcrum Support**. Your assigned mentors will not see this communication.")
             if not guide:
                 st.info("ℹ️ You currently do not have an active Guide assigned. Your message will be routed directly to the Fulcrum Support administration team.")
@@ -742,8 +764,6 @@ def render_aspirant_portal(user_profile: dict):
                     else:
                         st.error(res or "Failed to submit request.")
 
-            from services.governance import list_aspirant_complaints
-            my_complaints = list_aspirant_complaints(user_id)
             if my_complaints:
                 st.markdown("##### 📋 Your Submitted Confidential Support Reports")
                 for mc in my_complaints:

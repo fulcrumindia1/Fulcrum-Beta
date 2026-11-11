@@ -246,3 +246,115 @@ def decide_scheme_support_review(
 
     return True, None
 
+
+def delegate_scheme_to_guide(
+    admin_id: str,
+    scheme_id: str,
+    guide_id: str,
+    note: str,
+    aspirant_id: Optional[str] = None,
+    priority: str = "HIGH",
+) -> Tuple[bool, Optional[str]]:
+    """
+    Allows Sole Platform Administrator to recommend or delegate a Scheme from Tab 6
+    directly to a Guide (optionally linked to a specific Aspirant dossier).
+    """
+    from services.roles import require_sole_admin
+    ok_admin, err_admin = require_sole_admin(actor_id=admin_id)
+    if not ok_admin:
+        return False, err_admin
+
+    if not scheme_id or not guide_id or not (note and note.strip()):
+        return False, "Scheme, Guide, and recommendation note are required."
+
+    from services.schemes import get_scheme
+    from services.profiles import get_profile
+    from services.notifications import create_notification
+
+    scheme = get_scheme(scheme_id)
+    if not scheme:
+        return False, "Selected scheme not found."
+    guide_prof = get_profile(guide_id)
+    if not guide_prof:
+        return False, "Selected Guide profile not found."
+
+    clean_note = note.strip()
+    clean_prio = str(priority or "HIGH").strip().upper()
+    scheme_name = scheme.get("name", scheme_id)
+    asp_prof = get_profile(aspirant_id) if aspirant_id else None
+    asp_label = f" for {asp_prof.get('full_name', 'Entrepreneur')}" if asp_prof else ""
+
+    notif_msg = (
+        f"Fulcrum Directorate recommended '{scheme_name}'{asp_label} "
+        f"[Priority: {clean_prio}]. Directive: {clean_note}"
+    )
+    ok_n, err_n = create_notification(
+        user_id=guide_id,
+        title=f"Scheme Priority Recommendation [{clean_prio}]: {scheme_name}",
+        message=notif_msg,
+        notification_type="admin_directive_issued",
+        actor_id=admin_id,
+    )
+    if not ok_n:
+        return False, err_n or "Failed to dispatch scheme recommendation notification to Guide."
+
+    # When linked to a specific Aspirant, also record an Admin Directive entry on their mentorship thread
+    if aspirant_id and asp_prof:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        dir_id = str(uuid.uuid4())
+        subject = f"Scheme Priority Delegation: {scheme_name}"
+        directive_body = f"[{clean_prio}] Scheme '{scheme_name}' ({scheme_id}) recommended by Administration. {clean_note}"
+        backend = get_data_backend()
+        if backend == "supabase":
+            admin = get_supabase_admin_client()
+            if admin:
+                try:
+                    admin.table("help_requests").insert({
+                        "id": dir_id,
+                        "aspirant_id": aspirant_id,
+                        "subject": subject,
+                        "message": f"Delegated scheme recommendation from Tab 6 Catalogue: {scheme_name}",
+                        "priority": clean_prio,
+                        "status": "DIRECTIVE_ISSUED",
+                        "assigned_guide_id": guide_id,
+                        "request_type": "mentor_admin_query",
+                        "target_role": "admin",
+                        "requester_id": admin_id,
+                        "requester_role": "admin",
+                        "admin_directive": directive_body,
+                        "directive_issued_by": admin_id,
+                        "directive_issued_at": now_iso,
+                        "assigned_at": now_iso,
+                        "created_at": now_iso,
+                        "updated_at": now_iso,
+                    }).execute()
+                    invalidate_memo(f"requests:{aspirant_id}")
+                except Exception as ex_d:
+                    print(f"[SchemeReviews] Optional help_requests delegation record notice: {ex_d}")
+        else:
+            try:
+                conn = get_local_db()._get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO help_requests (
+                        id, aspirant_id, subject, message, priority, status,
+                        assigned_guide_id, request_type, admin_directive,
+                        directive_issued_by, directive_issued_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, 'DIRECTIVE_ISSUED', ?, 'mentor_admin_query', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        dir_id, aspirant_id, subject,
+                        f"Delegated scheme recommendation: {scheme_name}",
+                        clean_prio, guide_id, directive_body,
+                        admin_id, now_iso, now_iso, now_iso,
+                    ),
+                )
+                conn.commit()
+                conn.close()
+                invalidate_memo(f"requests:{aspirant_id}")
+            except Exception as ex_sql:
+                print(f"[SchemeReviews] SQLite delegation record notice: {ex_sql}")
+
+    return True, None
+

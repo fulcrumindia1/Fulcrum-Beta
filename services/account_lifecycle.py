@@ -12,10 +12,11 @@ Distinct from role grants (user_roles.status):
 - Supports dual backends: Supabase (production authoritative) & SQLite (local development).
 """
 
+import re
 import uuid
 import json
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Set, Any
 
 from services.auth import get_supabase_admin_client, get_supabase_client, get_data_backend
 from services.local_db import get_local_db
@@ -62,6 +63,270 @@ def _invalidate_account_caches(user_id: str) -> None:
     invalidate_memo("active_profiles_for_role:")
     invalidate_memo("list_profiles_by_role:")
     invalidate_memo("multi_role_users")
+
+
+# Runtime schema cache & PostgREST column compatibility helpers (supports both
+# live pre-009 status_reason/old_status/details schema and Migration 009 columns)
+_UNSUPPORTED_COLS_CACHE: Dict[str, Set[str]] = {}
+
+_PROFILE_COL_ALIASES: Dict[str, Optional[str]] = {
+    "lifecycle_reason": "status_reason",
+    "status_reason": "lifecycle_reason",
+    "retention_notes": "status_reason",
+    "status_updated_at": "updated_at",
+    "status_updated_by": None,
+    "deletion_requested_by": None,
+    "archived_at": None,
+    "restored_at": None,
+    "reactivated_at": None,
+}
+
+_LOG_COL_ALIASES: Dict[str, Optional[str]] = {
+    "previous_status": "old_status",
+    "old_status": "previous_status",
+    "metadata": "details",
+    "details": "metadata",
+}
+
+
+def _extract_missing_col_name(err_msg: str) -> Optional[str]:
+    """Parses missing column identifier from PostgREST PGRST204 or Postgres 42703 messages."""
+    for pat in (
+        r"Could not find the ['\"]([a-zA-Z0-9_]+)['\"] column",
+        r'column\s+"?([a-zA-Z0-9_]+)"?\s+(?:of relation|does not exist)',
+        r"\.([a-zA-Z0-9_]+)\s+does not exist",
+    ):
+        m = re.search(pat, err_msg, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _execute_supabase_adaptive(
+    admin: Any,
+    table_name: str,
+    op: str,
+    payload: Dict[str, Any],
+    eq_col: Optional[str] = None,
+    eq_val: Optional[Any] = None,
+    col_aliases: Optional[Dict[str, Optional[str]]] = None,
+) -> Any:
+    """Executes insert/update adaptively, caching PostgREST PGRST204 unsupported columns and remapping aliases."""
+    aliases = col_aliases or {}
+    unsupported = _UNSUPPORTED_COLS_CACHE.setdefault(table_name, set())
+
+    current: Dict[str, Any] = {}
+    for k, v in payload.items():
+        if k in unsupported:
+            mapped = aliases.get(k)
+            if mapped and mapped not in unsupported:
+                current.setdefault(mapped, v)
+            continue
+        current[k] = v
+
+    if not current:
+        current = dict(payload)
+
+    tried_cols: Set[str] = set(current.keys())
+    max_attempts = max(3, len(current) + 6)
+    for _ in range(max_attempts):
+        try:
+            tbl = admin.table(table_name)
+            q = tbl.update(current).eq(eq_col, eq_val) if op == "update" else tbl.insert(current)
+            return q.execute()
+        except Exception as err:
+            err_str = str(err)
+            is_col_err = (
+                "PGRST204" in err_str
+                or "42703" in err_str
+                or "Could not find the" in err_str
+                or ("column" in err_str.lower() and "exist" in err_str.lower())
+            )
+            bad_col = _extract_missing_col_name(err_str) if is_col_err else None
+            if not bad_col or bad_col not in current:
+                raise
+            unsupported.add(bad_col)
+            removed_val = current.pop(bad_col)
+            mapped = aliases.get(bad_col)
+            if mapped and mapped not in unsupported and mapped not in tried_cols:
+                tried_cols.add(mapped)
+                current.setdefault(mapped, removed_val)
+            # Fold stripped audit metadata safely into details/metadata payload when logging
+            if table_name == "account_lifecycle_log" and bad_col not in aliases:
+                detail_key = "details" if "details" in current else ("metadata" if "metadata" in current else None)
+                if detail_key and isinstance(current.get(detail_key), dict):
+                    current[detail_key][bad_col] = removed_val
+            if not current:
+                raise
+    raise RuntimeError(f"Adaptive Supabase {op} exhausted retries on {table_name}.")
+
+
+def _build_profile_lifecycle_payload(
+    admin: Any,
+    account_status: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    reason: Optional[str] = None,
+    actor_id: Optional[str] = None,
+    now_iso: Optional[str] = None,
+    action: Optional[str] = None,
+    legal_hold: Optional[bool] = None,
+    retention_notes: Optional[str] = None,
+    deletion_requested_at: Optional[str] = None,
+    deletion_requested_by: Optional[str] = None,
+    deletion_scheduled_for: Optional[str] = None,
+    clear_deletion: bool = False,
+) -> Dict[str, Any]:
+    """Builds a profile lifecycle update dict using verified or canonical column names."""
+    unsupported = _UNSUPPORTED_COLS_CACHE.get("profiles", set())
+    payload: Dict[str, Any] = {}
+    if account_status is not None:
+        payload["account_status"] = account_status
+    if is_active is not None:
+        payload["is_active"] = is_active
+    if reason is not None:
+        if "lifecycle_reason" in unsupported and "status_reason" not in unsupported:
+            payload["status_reason"] = reason
+        else:
+            payload["lifecycle_reason"] = reason
+    if retention_notes is not None:
+        payload["retention_notes"] = retention_notes
+    if legal_hold is not None:
+        payload["legal_hold"] = legal_hold
+    if now_iso:
+        payload["status_updated_at"] = now_iso
+        payload["updated_at"] = now_iso
+        if action == "ARCHIVE":
+            payload["archived_at"] = now_iso
+        elif action == "RESTORE":
+            payload["restored_at"] = now_iso
+            payload["reactivated_at"] = now_iso
+        elif action == "RESUME":
+            payload["reactivated_at"] = now_iso
+    if actor_id:
+        payload["status_updated_by"] = actor_id
+    if clear_deletion:
+        payload["deletion_requested_at"] = None
+        payload["deletion_requested_by"] = None
+        payload["deletion_scheduled_for"] = None
+    else:
+        if deletion_requested_at is not None:
+            payload["deletion_requested_at"] = deletion_requested_at
+        if deletion_requested_by is not None:
+            payload["deletion_requested_by"] = deletion_requested_by
+        if deletion_scheduled_for is not None:
+            payload["deletion_scheduled_for"] = deletion_scheduled_for
+    return payload
+
+
+def _supabase_update_and_log(
+    admin: Any,
+    user_id: str,
+    actor_id: Optional[str],
+    action: str,
+    prev_status: str,
+    new_status: str,
+    reason: str,
+    profile_payload: Dict[str, Any],
+    rollback_payload: Dict[str, Any],
+    now_iso: str,
+    log_metadata: Optional[Dict[str, Any]] = None,
+    strict_log: bool = True,
+    rollback_label: str = "Action",
+) -> Tuple[bool, Optional[str]]:
+    """Executes profile lifecycle update + immutable audit log insert with rollback on failure."""
+    _execute_supabase_adaptive(
+        admin,
+        "profiles",
+        "update",
+        profile_payload,
+        eq_col="id",
+        eq_val=user_id,
+        col_aliases=_PROFILE_COL_ALIASES,
+    )
+    meta_dict = dict(log_metadata or {"timestamp": now_iso})
+    meta_dict.setdefault("actor_id", actor_id or get_configured_admin_uuid())
+    log_payload = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "actor_id": actor_id or get_configured_admin_uuid(),
+        "action": action,
+        "previous_status": prev_status,
+        "new_status": new_status,
+        "reason": reason,
+        "metadata": meta_dict,
+        "created_at": now_iso,
+    }
+    try:
+        ins_log = _execute_supabase_adaptive(
+            admin,
+            "account_lifecycle_log",
+            "insert",
+            log_payload,
+            col_aliases=_LOG_COL_ALIASES,
+        )
+        if strict_log and (not ins_log or not getattr(ins_log, "data", None)):
+            _execute_supabase_adaptive(
+                admin, "profiles", "update", rollback_payload,
+                eq_col="id", eq_val=user_id, col_aliases=_PROFILE_COL_ALIASES,
+            )
+            return False, f"Failed to persist immutable lifecycle audit log. {rollback_label} rolled back."
+    except Exception as log_err:
+        if not strict_log:
+            print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+            return True, None
+        _execute_supabase_adaptive(
+            admin, "profiles", "update", rollback_payload,
+            eq_col="id", eq_val=user_id, col_aliases=_PROFILE_COL_ALIASES,
+        )
+        return False, f"Failed to persist immutable lifecycle audit log: {log_err}. {rollback_label} rolled back."
+    return True, None
+
+
+def _restore_relationship_snapshots(snapshots: List[Dict[str, Any]]) -> None:
+    """Compensating rollback restoring prior mentor assignments if archival fails."""
+    if not snapshots:
+        return
+    backend = get_data_backend()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if backend == "supabase":
+        admin = get_supabase_admin_client()
+        if admin:
+            for snap in snapshots:
+                try:
+                    admin.table("relationships").update({
+                        "guide_id": snap.get("guide_id"),
+                        "guide_ids": snap.get("guide_ids", []),
+                        "sme_id": snap.get("sme_id"),
+                        "sme_ids": snap.get("sme_ids", []),
+                        "updated_at": now_iso,
+                    }).eq("aspirant_id", snap["aspirant_id"]).execute()
+                except Exception as ex_r:
+                    print(f"[AccountLifecycle] Relationship rollback notice for {snap.get('aspirant_id')}: {ex_r}")
+    else:
+        db = get_local_db()
+        conn = db._get_conn()
+        cur = conn.cursor()
+        for snap in snapshots:
+            cur.execute(
+                """
+                UPDATE relationships
+                SET guide_id = ?, guide_ids = ?, sme_id = ?, sme_ids = ?, updated_at = ?
+                WHERE aspirant_id = ?
+                """,
+                (
+                    snap.get("guide_id"),
+                    json.dumps(snap.get("guide_ids", [])),
+                    snap.get("sme_id"),
+                    json.dumps(snap.get("sme_ids", [])),
+                    now_iso,
+                    snap["aspirant_id"],
+                ),
+            )
+        conn.commit()
+        conn.close()
+    invalidate_memo("all_relationships")
+    for snap in snapshots:
+        invalidate_memo(f"mentors:{snap['aspirant_id']}")
 
 
 def get_account_status(user_id: str, prefetched_profile: Optional[Dict] = None) -> Dict:
@@ -156,10 +421,13 @@ def get_account_status(user_id: str, prefetched_profile: Optional[Dict] = None) 
                 return res_not_found
         except Exception as e:
             err_str = str(e).lower()
-            # If migration 009 columns are not yet present in Supabase table, query standard fields
-            if "column" in err_str or "does not exist" in err_str or "42703" in err_str:
+            # If migration 009 columns differ from live schema, retry SELECT * before minimal fields
+            if "column" in err_str or "does not exist" in err_str or "42703" in err_str or "pgrst204" in err_str:
                 try:
-                    res_std = admin.table("profiles").select("id, is_active").eq("id", clean_uid).limit(1).execute()
+                    try:
+                        res_std = admin.table("profiles").select("*").eq("id", clean_uid).limit(1).execute()
+                    except Exception:
+                        res_std = admin.table("profiles").select("id, is_active").eq("id", clean_uid).limit(1).execute()
                     if res_std.data and len(res_std.data) > 0:
                         status_dict = res_std.data[0]
                     else:
@@ -356,40 +624,35 @@ def suspend_account(
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "account_status": "TEMPORARILY_SUSPENDED",
-                "is_active": False,
-                "lifecycle_reason": reason.strip(),
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or get_configured_admin_uuid(),
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            # Record audit log - fail closed if audit log cannot be persisted
-            try:
-                ins_log = admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or get_configured_admin_uuid(),
-                    "action": "SUSPEND",
-                    "previous_status": prev_status,
-                    "new_status": "TEMPORARILY_SUSPENDED",
-                    "reason": reason.strip(),
-                    "metadata": {"timestamp": now_iso},
-                    "created_at": now_iso
-                }).execute()
-                if not ins_log or not getattr(ins_log, "data", None):
-                    admin.table("profiles").update({
-                        "account_status": prev_status,
-                        "is_active": True if prev_status == "ACTIVE" else False
-                    }).eq("id", user_id).execute()
-                    return False, "Failed to persist immutable lifecycle audit log. Suspension rolled back."
-            except Exception as log_err:
-                admin.table("profiles").update({
-                    "account_status": prev_status,
-                    "is_active": True if prev_status == "ACTIVE" else False
-                }).eq("id", user_id).execute()
-                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Suspension rolled back."
+            eff_actor = actor_id or get_configured_admin_uuid()
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                account_status="TEMPORARILY_SUSPENDED",
+                is_active=False,
+                reason=reason.strip(),
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action="SUSPEND",
+            )
+            rb_payload = {
+                "account_status": prev_status,
+                "is_active": True if prev_status == "ACTIVE" else False,
+            }
+            ok_tx, err_tx = _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action="SUSPEND",
+                prev_status=prev_status,
+                new_status="TEMPORARILY_SUSPENDED",
+                reason=reason.strip(),
+                profile_payload=prof_payload,
+                rollback_payload=rb_payload,
+                now_iso=now_iso,
+                rollback_label="Suspension",
+            )
+            if not ok_tx:
+                return False, err_tx
         except Exception as e:
             return False, f"Failed to suspend account in Supabase: {e}"
     else:
@@ -462,39 +725,31 @@ def resume_account(
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "account_status": "ACTIVE",
-                "is_active": True,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or get_configured_admin_uuid(),
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            try:
-                ins_log = admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or get_configured_admin_uuid(),
-                    "action": "RESUME",
-                    "previous_status": curr_status,
-                    "new_status": "ACTIVE",
-                    "reason": note,
-                    "metadata": {"timestamp": now_iso},
-                    "created_at": now_iso
-                }).execute()
-                if not ins_log or not getattr(ins_log, "data", None):
-                    admin.table("profiles").update({
-                        "account_status": curr_status,
-                        "is_active": False
-                    }).eq("id", user_id).execute()
-                    return False, "Failed to persist immutable lifecycle audit log. Resume rolled back."
-            except Exception as log_err:
-                admin.table("profiles").update({
-                    "account_status": curr_status,
-                    "is_active": False
-                }).eq("id", user_id).execute()
-                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Resume rolled back."
+            eff_actor = actor_id or get_configured_admin_uuid()
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                account_status="ACTIVE",
+                is_active=True,
+                reason=note,
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action="RESUME",
+            )
+            ok_tx, err_tx = _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action="RESUME",
+                prev_status=curr_status,
+                new_status="ACTIVE",
+                reason=note,
+                profile_payload=prof_payload,
+                rollback_payload={"account_status": curr_status, "is_active": False},
+                now_iso=now_iso,
+                rollback_label="Resume",
+            )
+            if not ok_tx:
+                return False, err_tx
         except Exception as e:
             return False, f"Failed to resume account in Supabase: {e}"
     else:
@@ -677,6 +932,7 @@ def archive_account(
     rels = get_all_relationships()
     uid_str = str(user_id)
     handover_errors = []
+    modified_snapshots: Dict[str, Dict[str, Any]] = {}
 
     for rel in rels:
         aid = rel.get("aspirant_id")
@@ -686,12 +942,30 @@ def archive_account(
         # Handle Guide unassignment
         raw_gids = rel.get("guide_ids") or []
         if isinstance(raw_gids, str):
-            import json
             try: raw_gids = json.loads(raw_gids)
             except Exception: raw_gids = [raw_gids]
+        orig_gids = [str(g) for g in raw_gids if g]
         if rel.get("guide_id") and rel["guide_id"] not in raw_gids:
             raw_gids.insert(0, rel["guide_id"])
         guides_set = {str(gid) for gid in raw_gids if gid}
+
+        # Handle SME unassignment (collect original list before mutating)
+        raw_sids = rel.get("sme_ids") or []
+        if isinstance(raw_sids, str):
+            try: raw_sids = json.loads(raw_sids)
+            except Exception: raw_sids = [raw_sids]
+        orig_sids = [str(s) for s in raw_sids if s]
+        if rel.get("sme_id") and rel["sme_id"] not in raw_sids:
+            raw_sids.insert(0, rel["sme_id"])
+        smes_set = {str(sid) for sid in raw_sids if sid}
+
+        snap_before = {
+            "aspirant_id": aid,
+            "guide_id": rel.get("guide_id"),
+            "guide_ids": orig_gids,
+            "sme_id": rel.get("sme_id"),
+            "sme_ids": orig_sids,
+        }
 
         if uid_str in guides_set:
             ok_un, err_un = unassign_guide(
@@ -700,18 +974,10 @@ def archive_account(
                 admin_id=actor_id,
                 reason=f"Account archived by Administration: {reason.strip()}"
             )
-            if not ok_un:
+            if ok_un:
+                modified_snapshots.setdefault(aid, snap_before)
+            else:
                 handover_errors.append(f"Guide unassignment failed for mentee {aid}: {err_un}")
-
-        # Handle SME unassignment
-        raw_sids = rel.get("sme_ids") or []
-        if isinstance(raw_sids, str):
-            import json
-            try: raw_sids = json.loads(raw_sids)
-            except Exception: raw_sids = [raw_sids]
-        if rel.get("sme_id") and rel["sme_id"] not in raw_sids:
-            raw_sids.insert(0, rel["sme_id"])
-        smes_set = {str(sid) for sid in raw_sids if sid}
 
         if uid_str in smes_set:
             ok_un_sme, err_un_sme = unassign_sme(
@@ -720,12 +986,15 @@ def archive_account(
                 admin_id=actor_id,
                 reason=f"Account archived by Administration: {reason.strip()}"
             )
-            if not ok_un_sme:
+            if ok_un_sme:
+                modified_snapshots.setdefault(aid, snap_before)
+            else:
                 handover_errors.append(f"SME unassignment failed for mentee {aid}: {err_un_sme}")
 
     # P0 Safeguard: If any mentor unassignment or consultation transfer failed,
-    # halt archival immediately to prevent orphaned caseloads!
+    # halt archival immediately and restore any partial handover mutations!
     if handover_errors:
+        _restore_relationship_snapshots(list(modified_snapshots.values()))
         return False, f"Archival aborted: Handover incomplete due to errors: {'; '.join(handover_errors)}"
 
     # Update account status in persistence layer
@@ -733,44 +1002,41 @@ def archive_account(
     if backend == "supabase":
         admin = get_supabase_admin_client()
         if not admin:
+            _restore_relationship_snapshots(list(modified_snapshots.values()))
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "account_status": "ARCHIVED",
-                "is_active": False,
-                "lifecycle_reason": reason.strip(),
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or get_configured_admin_uuid(),
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            try:
-                ins_log = admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or get_configured_admin_uuid(),
-                    "action": "ARCHIVE",
-                    "previous_status": prev_status,
-                    "new_status": "ARCHIVED",
-                    "reason": reason.strip(),
-                    "metadata": {"timestamp": now_iso},
-                    "created_at": now_iso
-                }).execute()
-                if not ins_log or not getattr(ins_log, "data", None):
-                    admin.table("profiles").update({
-                        "account_status": prev_status,
-                        "is_active": True if prev_status == "ACTIVE" else False
-                    }).eq("id", user_id).execute()
-                    return False, "Failed to persist immutable lifecycle audit log. Archival rolled back."
-            except Exception as log_err:
-                admin.table("profiles").update({
-                    "account_status": prev_status,
-                    "is_active": True if prev_status == "ACTIVE" else False
-                }).eq("id", user_id).execute()
-                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Archival rolled back."
+            eff_actor = actor_id or get_configured_admin_uuid()
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                account_status="ARCHIVED",
+                is_active=False,
+                reason=reason.strip(),
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action="ARCHIVE",
+            )
+            rb_payload = {
+                "account_status": prev_status,
+                "is_active": True if prev_status == "ACTIVE" else False,
+            }
+            ok_tx, err_tx = _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action="ARCHIVE",
+                prev_status=prev_status,
+                new_status="ARCHIVED",
+                reason=reason.strip(),
+                profile_payload=prof_payload,
+                rollback_payload=rb_payload,
+                now_iso=now_iso,
+                rollback_label="Archival",
+            )
+            if not ok_tx:
+                _restore_relationship_snapshots(list(modified_snapshots.values()))
+                return False, err_tx
         except Exception as e:
-            return False, f"Failed to archive account in Supabase: {e}"
-        except Exception as e:
+            _restore_relationship_snapshots(list(modified_snapshots.values()))
             return False, f"Failed to archive account in Supabase: {e}"
     else:
         db = get_local_db()
@@ -803,6 +1069,7 @@ def archive_account(
                 actor_id=actor_id,
                 updated_at=now_iso
             )
+            _restore_relationship_snapshots(list(modified_snapshots.values()))
             return False, f"Failed to persist immutable lifecycle audit log: {e_log}. Archival rolled back."
 
     _invalidate_account_caches(user_id)
@@ -843,41 +1110,32 @@ def restore_account(
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "account_status": "ACTIVE",
-                "is_active": True,
-                "lifecycle_reason": note,
-                "deletion_requested_at": None,
-                "deletion_scheduled_for": None,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or get_configured_admin_uuid(),
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            try:
-                ins_log = admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or get_configured_admin_uuid(),
-                    "action": "RESTORE",
-                    "previous_status": curr_status,
-                    "new_status": "ACTIVE",
-                    "reason": note,
-                    "metadata": {"timestamp": now_iso},
-                    "created_at": now_iso
-                }).execute()
-                if not ins_log or not getattr(ins_log, "data", None):
-                    admin.table("profiles").update({
-                        "account_status": curr_status,
-                        "is_active": False
-                    }).eq("id", user_id).execute()
-                    return False, "Failed to persist immutable lifecycle audit log. Restoration rolled back."
-            except Exception as log_err:
-                admin.table("profiles").update({
-                    "account_status": curr_status,
-                    "is_active": False
-                }).eq("id", user_id).execute()
-                return False, f"Failed to persist immutable lifecycle audit log: {log_err}. Restoration rolled back."
+            eff_actor = actor_id or get_configured_admin_uuid()
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                account_status="ACTIVE",
+                is_active=True,
+                reason=note,
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action="RESTORE",
+                clear_deletion=True,
+            )
+            ok_tx, err_tx = _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action="RESTORE",
+                prev_status=curr_status,
+                new_status="ACTIVE",
+                reason=note,
+                profile_payload=prof_payload,
+                rollback_payload={"account_status": curr_status, "is_active": False},
+                now_iso=now_iso,
+                rollback_label="Restoration",
+            )
+            if not ok_tx:
+                return False, err_tx
         except Exception as e:
             return False, f"Failed to restore account in Supabase: {e}"
     else:
@@ -967,45 +1225,41 @@ def request_account_deletion(
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "account_status": "PENDING_DELETION",
-                "deletion_requested_at": now_iso,
-                "deletion_requested_by": actor_id or user_id,
-                "deletion_scheduled_for": scheduled_for,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or user_id,
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            try:
-                ins_log = admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or user_id,
-                    "action": "REQUEST_DELETION",
-                    "previous_status": curr_details.get("account_status", "ACTIVE"),
-                    "new_status": "PENDING_DELETION",
-                    "reason": note,
-                    "metadata": {"scheduled_for": scheduled_for, "grace_days": grace_days, "requested_by": actor_id},
-                    "created_at": now_iso
-                }).execute()
-                if not ins_log or not getattr(ins_log, "data", None):
-                    admin.table("profiles").update({
-                        "account_status": curr_details.get("account_status", "ACTIVE"),
-                        "deletion_requested_at": None,
-                        "deletion_requested_by": None,
-                        "deletion_scheduled_for": None
-                    }).eq("id", user_id).execute()
-                    return False, "Failed to persist immutable audit log in Supabase. Deletion request rolled back."
-            except Exception as log_err:
-                admin.table("profiles").update({
-                    "account_status": curr_details.get("account_status", "ACTIVE"),
-                    "deletion_requested_at": None,
-                    "deletion_requested_by": None,
-                    "deletion_scheduled_for": None
-                }).eq("id", user_id).execute()
-                return False, f"Failed to persist immutable audit log: {log_err}. Deletion request rolled back."
+            eff_actor = actor_id or user_id
+            prev_st = curr_details.get("account_status", "ACTIVE")
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                account_status="PENDING_DELETION",
+                reason=note,
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action="REQUEST_DELETION",
+                deletion_requested_at=now_iso,
+                deletion_requested_by=eff_actor,
+                deletion_scheduled_for=scheduled_for,
+            )
+            rb_payload = {
+                "account_status": prev_st,
+                "deletion_requested_at": None,
+                "deletion_requested_by": None,
+                "deletion_scheduled_for": None,
+            }
+            ok_tx, err_tx = _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action="REQUEST_DELETION",
+                prev_status=prev_st,
+                new_status="PENDING_DELETION",
+                reason=note,
+                profile_payload=prof_payload,
+                rollback_payload=rb_payload,
+                now_iso=now_iso,
+                log_metadata={"scheduled_for": scheduled_for, "grace_days": grace_days, "requested_by": actor_id},
+                rollback_label="Deletion request",
+            )
+            if not ok_tx:
+                return False, err_tx
         except Exception as e:
             return False, f"Failed to schedule account deletion in Supabase: {e}"
     else:
@@ -1069,44 +1323,37 @@ def cancel_account_deletion(
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "account_status": "ACTIVE",
-                "is_active": True,
-                "deletion_requested_at": None,
-                "deletion_requested_by": None,
-                "deletion_scheduled_for": None,
-                "lifecycle_reason": note,
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or user_id,
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            try:
-                ins_log = admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or user_id,
-                    "action": "CANCEL_DELETION",
-                    "previous_status": "PENDING_DELETION",
-                    "new_status": "ACTIVE",
-                    "reason": note,
-                    "metadata": {"timestamp": now_iso},
-                    "created_at": now_iso
-                }).execute()
-                if not ins_log or not getattr(ins_log, "data", None):
-                    admin.table("profiles").update({
-                        "account_status": "PENDING_DELETION",
-                        "deletion_requested_at": curr_details.get("deletion_requested_at"),
-                        "deletion_scheduled_for": curr_details.get("deletion_scheduled_for")
-                    }).eq("id", user_id).execute()
-                    return False, "Failed to persist immutable audit log in Supabase. Cancellation rolled back."
-            except Exception as log_err:
-                admin.table("profiles").update({
-                    "account_status": "PENDING_DELETION",
-                    "deletion_requested_at": curr_details.get("deletion_requested_at"),
-                    "deletion_scheduled_for": curr_details.get("deletion_scheduled_for")
-                }).eq("id", user_id).execute()
-                return False, f"Failed to persist immutable audit log: {log_err}. Cancellation rolled back."
+            eff_actor = actor_id or user_id
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                account_status="ACTIVE",
+                is_active=True,
+                reason=note,
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action="CANCEL_DELETION",
+                clear_deletion=True,
+            )
+            rb_payload = {
+                "account_status": "PENDING_DELETION",
+                "deletion_requested_at": curr_details.get("deletion_requested_at"),
+                "deletion_scheduled_for": curr_details.get("deletion_scheduled_for"),
+            }
+            ok_tx, err_tx = _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action="CANCEL_DELETION",
+                prev_status="PENDING_DELETION",
+                new_status="ACTIVE",
+                reason=note,
+                profile_payload=prof_payload,
+                rollback_payload=rb_payload,
+                now_iso=now_iso,
+                rollback_label="Cancellation",
+            )
+            if not ok_tx:
+                return False, err_tx
         except Exception as e:
             return False, f"Failed to cancel account deletion in Supabase: {e}"
     else:
@@ -1170,29 +1417,32 @@ def set_legal_hold(
         if not admin:
             return False, "Supabase admin client unavailable."
         try:
-            admin.table("profiles").update({
-                "legal_hold": enabled,
-                "lifecycle_reason": f"Legal hold {'applied' if enabled else 'released'}: {reason.strip()}",
-                "retention_notes": reason.strip(),
-                "status_updated_at": now_iso,
-                "status_updated_by": actor_id or get_configured_admin_uuid(),
-                "updated_at": now_iso
-            }).eq("id", user_id).execute()
-
-            try:
-                admin.table("account_lifecycle_log").insert({
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "actor_id": actor_id or get_configured_admin_uuid(),
-                    "action": action_label,
-                    "previous_status": curr_status,
-                    "new_status": curr_status,
-                    "reason": reason.strip(),
-                    "metadata": {"legal_hold": enabled, "notes": reason.strip()},
-                    "created_at": now_iso
-                }).execute()
-            except Exception as log_err:
-                print(f"[AccountLifecycle] Audit log write notice: {log_err}")
+            eff_actor = actor_id or get_configured_admin_uuid()
+            hold_reason = f"Legal hold {'applied' if enabled else 'released'}: {reason.strip()}"
+            prof_payload = _build_profile_lifecycle_payload(
+                admin,
+                legal_hold=enabled,
+                reason=hold_reason,
+                retention_notes=reason.strip(),
+                actor_id=eff_actor,
+                now_iso=now_iso,
+                action=action_label,
+            )
+            _supabase_update_and_log(
+                admin=admin,
+                user_id=user_id,
+                actor_id=eff_actor,
+                action=action_label,
+                prev_status=curr_status,
+                new_status=curr_status,
+                reason=reason.strip(),
+                profile_payload=prof_payload,
+                rollback_payload={"legal_hold": not enabled},
+                now_iso=now_iso,
+                log_metadata={"legal_hold": enabled, "notes": reason.strip()},
+                strict_log=False,
+                rollback_label="Legal hold",
+            )
         except Exception as e:
             return False, f"Failed to update legal hold in Supabase: {e}"
     else:

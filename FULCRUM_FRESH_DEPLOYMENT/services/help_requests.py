@@ -441,6 +441,36 @@ def list_guide_requests(guide_id: str) -> List[Dict]:
     set_memo(cache_key, local_rows, ttl_seconds=15)
     return local_rows
 
+def _authorize_mentor_session_role(required_role: str, target_mentor_id: str) -> Tuple[bool, Optional[str]]:
+    """Authorizes consultation replies using active_workspace + verified user_roles grants."""
+    role_plural = "Guides" if required_role == "guide" else "SMEs"
+    role_singular = "Guide" if required_role == "guide" else "SME"
+    try:
+        import streamlit as st
+        session_user = st.session_state.get("user")
+        session_role = str(st.session_state.get("role") or "").strip().lower()
+        session_ws = str(st.session_state.get("active_workspace") or "").strip().lower()
+        session_uid = st.session_state.get("user_id")
+        if not session_user:
+            return True, None
+        from services.roles import get_active_roles, is_strict_admin
+        user_dict = session_user if isinstance(session_user, dict) else None
+        if is_strict_admin(user_id=session_uid, user_dict=user_dict):
+            return True, None
+        eff_role = session_ws or session_role
+        if eff_role not in ("admin", required_role):
+            return False, f"Unauthorized: Only assigned {role_plural} or Admins may respond to this consultation."
+        if eff_role == required_role and str(session_uid) != str(target_mentor_id):
+            return False, f"Unauthorized: You cannot respond on behalf of another {role_singular}."
+        if session_ws == required_role and session_role != required_role and session_uid:
+            held_roles = set(get_active_roles(str(session_uid)))
+            if required_role not in held_roles:
+                return False, f"Unauthorized: Only assigned {role_plural} or Admins may respond to this consultation."
+    except Exception:
+        pass
+    return True, None
+
+
 def guide_respond_request(request_id: str, guide_id: str, new_status: str, response: str) -> Tuple[bool, Optional[str]]:
     """Guide responds to an assigned ticket and updates status."""
     from services.account_lifecycle import get_account_status
@@ -448,18 +478,10 @@ def guide_respond_request(request_id: str, guide_id: str, new_status: str, respo
     if acc_st in ("TEMPORARILY_SUSPENDED", "ARCHIVED"):
         return False, f"Unauthorized: Mentor account is {acc_st}."
 
-    # PART 7 — AUTHORIZATION: Verify caller is authorized
-    try:
-        import streamlit as st
-        session_user = st.session_state.get("user")
-        session_role = st.session_state.get("role")
-        session_uid = st.session_state.get("user_id")
-        if session_user and session_role not in ("admin", "guide"):
-            return False, "Unauthorized: Only assigned Guides or Admins may respond to this consultation."
-        if session_user and session_role == "guide" and str(session_uid) != str(guide_id):
-            return False, "Unauthorized: You cannot respond on behalf of another Guide."
-    except Exception:
-        pass
+    # PART 7 — AUTHORIZATION: Verify active workspace & verified Guide grant
+    ok_auth, err_auth = _authorize_mentor_session_role("guide", guide_id)
+    if not ok_auth:
+        return False, err_auth
 
     backend = get_data_backend()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -647,18 +669,10 @@ def sme_respond_request(request_id: str, sme_id: str, arg3: Optional[str] = None
         response = arg3
         new_status = arg4 or "IN_PROGRESS"
 
-    # PART 7 — AUTHORIZATION: Verify caller is authorized
-    try:
-        import streamlit as st
-        session_user = st.session_state.get("user")
-        session_role = st.session_state.get("role")
-        session_uid = st.session_state.get("user_id")
-        if session_user and session_role not in ("admin", "sme"):
-            return False, "Unauthorized: Only assigned SMEs or Admins may respond to this consultation."
-        if session_user and session_role == "sme" and str(session_uid) != str(sme_id):
-            return False, "Unauthorized: You cannot respond on behalf of another SME."
-    except Exception:
-        pass
+    # PART 7 — AUTHORIZATION: Verify active workspace & verified SME grant
+    ok_auth, err_auth = _authorize_mentor_session_role("sme", sme_id)
+    if not ok_auth:
+        return False, err_auth
 
     backend = get_data_backend()
     now_iso = datetime.now(timezone.utc).isoformat()

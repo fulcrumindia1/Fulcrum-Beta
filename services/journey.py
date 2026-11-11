@@ -257,9 +257,10 @@ def toggle_event_roadmap_inclusion(
       - Rejects foreign users/aspirants from modifying another entrepreneur's roadmap.
     Mentors (Guide/SME) and Admins retain full visibility with inclusion status indicators.
     """
-    # 1. Resolve effective actor identity & role from session if not explicitly provided
+    # 1. Resolve effective actor identity & workspace role from session if not explicitly provided
     session_user_id = None
     session_role = None
+    session_ws = None
     try:
         import streamlit as st
         if hasattr(st, "session_state"):
@@ -267,7 +268,8 @@ def toggle_event_roadmap_inclusion(
                 st.session_state.get("user", {}).get("id")
                 if isinstance(st.session_state.get("user"), dict) else None
             )
-            session_role = st.session_state.get("role") or (
+            session_ws = st.session_state.get("active_workspace")
+            session_role = session_ws or st.session_state.get("role") or (
                 st.session_state.get("user", {}).get("role")
                 if isinstance(st.session_state.get("user"), dict) else None
             )

@@ -58,7 +58,7 @@ from services.professional_photos import (
     upload_professional_photo,
     delete_professional_photo
 )
-from services.scheme_reviews import list_scheme_support_reviews, decide_scheme_support_review
+from services.scheme_reviews import list_scheme_support_reviews, decide_scheme_support_review, delegate_scheme_to_guide
 from views.admin_account_lifecycle import render_admin_account_lifecycle_tab
 from views.admin_governance import (
     render_admin_role_grants_tab,
@@ -77,6 +77,66 @@ from services.constants import (
     MASTER_CATEGORY_TYPES,
     MASTER_GEOGRAPHIC_SCOPES
 )
+
+
+def _get_or_init_provisional_password(state_key: str) -> str:
+    """Keeps Admin provisional passwords stable across Streamlit form reruns."""
+    if state_key not in st.session_state or not st.session_state[state_key]:
+        st.session_state[state_key] = secrets.token_urlsafe(12)
+    return st.session_state[state_key]
+
+
+def _render_admin_mentor_edit_expander(mentor: dict, role_label: str, key_prefix: str) -> None:
+    """Shared Admin edit form for updating Guide or SME contact & specialization details."""
+    mid = mentor.get("id")
+    if not mid:
+        return
+    m_pd = _safe_profile_data(mentor)
+    is_sme = (role_label.upper() == "SME")
+    with st.expander(f"✏️ Edit {role_label} Details — {mentor.get('full_name', role_label)}", expanded=False):
+        with st.form(f"form_adm_edit_{key_prefix}_{mid}"):
+            c_e1, c_e2 = st.columns(2)
+            with c_e1:
+                ed_name = st.text_input("Full Name *", value=mentor.get("full_name") or "", key=f"ed_name_{key_prefix}_{mid}")
+                ed_phone = st.text_input("Phone", value=mentor.get("phone") or "", key=f"ed_phone_{key_prefix}_{mid}")
+                cur_dist = mentor.get("district") or "Chennai"
+                if cur_dist in MASTER_DISTRICTS_TN:
+                    d_idx = MASTER_DISTRICTS_TN.index(cur_dist)
+                    d_custom_init = ""
+                else:
+                    d_idx = MASTER_DISTRICTS_TN.index("Other District / Non-TN (Specify)")
+                    d_custom_init = cur_dist
+                ed_dist_sel = st.selectbox("District", MASTER_DISTRICTS_TN, index=d_idx, key=f"ed_dist_{key_prefix}_{mid}")
+                ed_dist_custom = st.text_input("Custom Location (if Other)", value=d_custom_init, key=f"ed_cdist_{key_prefix}_{mid}")
+                ed_dist = ed_dist_custom.strip() if (ed_dist_sel == "Other District / Non-TN (Specify)" and ed_dist_custom.strip()) else ed_dist_sel
+            with c_e2:
+                exp_lbl = "Specialization Domain *" if is_sme else "Primary Expertise *"
+                ed_exp = st.text_input(exp_lbl, value=m_pd.get("expertise") or "", key=f"ed_exp_{key_prefix}_{mid}")
+                if is_sme:
+                    ed_ind = st.text_input("Industry Specialization", value=m_pd.get("industry") or "", key=f"ed_ind_{key_prefix}_{mid}")
+                else:
+                    ed_ind = m_pd.get("industry") or ""
+                ed_bio = st.text_area("Professional Summary / Bio", value=m_pd.get("bio") or "", height=80, key=f"ed_bio_{key_prefix}_{mid}")
+            if st.form_submit_button(f"SAVE {role_label.upper()} DETAILS", type="primary"):
+                if not ed_name.strip() or not ed_exp.strip():
+                    st.warning("Full Name and Specialization / Expertise are required.")
+                else:
+                    merged_pd = dict(m_pd)
+                    merged_pd["expertise"] = ed_exp.strip()
+                    merged_pd["bio"] = ed_bio.strip()
+                    if is_sme or ed_ind:
+                        merged_pd["industry"] = ed_ind.strip()
+                    upd, err_u = update_profile(mid, {
+                        "full_name": ed_name.strip(),
+                        "phone": ed_phone.strip(),
+                        "district": ed_dist,
+                        "profile_data": merged_pd,
+                    })
+                    if upd:
+                        st.success(f"Updated details for {ed_name.strip()}.")
+                        st.rerun()
+                    else:
+                        st.error(err_u or f"Failed to update {role_label} details.")
 
 def render_admin_portal(admin_profile: dict):
     if not is_strict_admin(user_dict=admin_profile):
@@ -525,11 +585,11 @@ def render_admin_portal(admin_profile: dict):
                     cg_email = st.text_input("Email *", placeholder="e.g. rajendran@mentor.in")
                     cg_phone = st.text_input("Phone Number", placeholder="9876543211")
                 with col_cg2:
-                    cg_loc_sel = st.selectbox("Location / District", MASTER_DISTRICTS_TN, index=13, key="cg_loc")
+                    cg_loc_sel = st.selectbox("Location / District", MASTER_DISTRICTS_TN, index=MASTER_DISTRICTS_TN.index("Chennai"), key="cg_loc")
                     cg_loc_custom = st.text_input("Custom Location / State (if 'Other' selected above)", placeholder="e.g. Bengaluru (Karnataka)", key="cg_custom_loc")
                     cg_loc = cg_loc_custom.strip() if (cg_loc_sel == "Other District / Non-TN (Specify)" and cg_loc_custom and cg_loc_custom.strip()) else cg_loc_sel
                     cg_exp = st.text_input("Primary Expertise *", placeholder="e.g. PMEGP Loan Specialist, Banking, Food Processing")
-                    gen_guide_pwd = secrets.token_urlsafe(12)
+                    gen_guide_pwd = _get_or_init_provisional_password("adm_cg_provisional_pwd")
                     cg_pwd = st.text_input("Temporary Password", value=gen_guide_pwd)
                 cg_bio = st.text_area("Professional Background", placeholder="Retired Chief Manager with 30 years experience in MSME lending.")
 
@@ -547,6 +607,7 @@ def render_admin_portal(admin_profile: dict):
                             bio=cg_bio
                         )
                         if g_prof:
+                            st.session_state.pop("adm_cg_provisional_pwd", None)
                             st.session_state["admin_guide_create_success"] = f"✅ Guide account '{cg_name}' ({cg_email}) created successfully! They appear in the roster as Pending NDA and become assignable once they log in and accept the NDA."
                             st.rerun()
                         else:
@@ -643,6 +704,7 @@ def render_admin_portal(admin_profile: dict):
                                     st.rerun()
                                 else:
                                     st.error(err_rm or "Remove failed.")
+                _render_admin_mentor_edit_expander(g, "Guide", "g")
             if total_guides > 25:
                 render_pagination_controls(total_guides, cur_g_page, page_size=25, key_prefix="adm_g")
 
@@ -669,11 +731,11 @@ def render_admin_portal(admin_profile: dict):
                     cs_email = st.text_input("Email *", placeholder="e.g. kumar@sme.in")
                     cs_phone = st.text_input("Phone Number", placeholder="9876543212")
                 with col_cs2:
-                    cs_loc_sel = st.selectbox("Location / District", MASTER_DISTRICTS_TN, index=13, key="cs_loc")
+                    cs_loc_sel = st.selectbox("Location / District", MASTER_DISTRICTS_TN, index=MASTER_DISTRICTS_TN.index("Chennai"), key="cs_loc")
                     cs_loc_custom = st.text_input("Custom Location / State (if 'Other' selected above)", placeholder="e.g. Mumbai (Maharashtra)", key="cs_custom_loc")
                     cs_loc = cs_loc_custom.strip() if (cs_loc_sel == "Other District / Non-TN (Specify)" and cs_loc_custom and cs_loc_custom.strip()) else cs_loc_sel
                     cs_exp = st.text_input("Specialization Domain *", placeholder="e.g. GST Auditing, Taxation, Corporate Compliance")
-                    gen_sme_pwd = secrets.token_urlsafe(12)
+                    gen_sme_pwd = _get_or_init_provisional_password("adm_cs_provisional_pwd")
                     cs_pwd = st.text_input("Temporary Password", value=gen_sme_pwd)
                 cs_ind = st.text_input("Industry Specialization", placeholder="e.g. Food Processing, Export, Manufacturing")
                 cs_bio = st.text_area("Professional Summary", placeholder="Chartered Accountant and GST consultant advising MSMEs for 15 years.")
@@ -693,6 +755,7 @@ def render_admin_portal(admin_profile: dict):
                             industry=cs_ind
                         )
                         if s_prof:
+                            st.session_state.pop("adm_cs_provisional_pwd", None)
                             st.session_state["admin_sme_create_success"] = f"✅ SME account '{cs_name}' ({cs_email}) created successfully! They appear in the roster as Pending NDA and become assignable once they log in and accept the NDA."
                             st.rerun()
                         else:
@@ -789,6 +852,7 @@ def render_admin_portal(admin_profile: dict):
                                     st.rerun()
                                 else:
                                     st.error(err_rm or "Remove failed.")
+                _render_admin_mentor_edit_expander(s, "SME", "s")
             if total_smes > 25:
                 render_pagination_controls(total_smes, cur_s_page, page_size=25, key_prefix="adm_s")
 
@@ -836,13 +900,21 @@ def render_admin_portal(admin_profile: dict):
                     else:
                         st.warning("No Guides available. Please create a Guide first.")
                         sel_g = None
+                    guide_asg_mode = st.radio(
+                        "Guide Assignment Mode",
+                        options=["🔄 Replace Primary Guide", "➕ Add Co-Guide (Concurrent Multi-Guide)"],
+                        index=0,
+                        help="Choose whether to replace the existing Primary Guide or add this Guide concurrently as a Co-Guide."
+                    )
                     g_notes = st.text_input("Mentorship Directive Notes", placeholder="e.g. Focus on PMEGP loan application & pricing")
 
                     if st.form_submit_button("ASSIGN GUIDE", type="primary"):
                         if sel_asp_for_g and sel_g:
-                            ok, err = assign_guide(sel_asp_for_g, sel_g, admin_id, g_notes)
+                            g_mode = "add" if "Add" in guide_asg_mode else "replace"
+                            ok, err = assign_guide(sel_asp_for_g, sel_g, admin_id, g_notes, mode=g_mode)
                             if ok:
-                                st.session_state["assign_guide_success"] = f"✅ Guide Assigned: {guide_dict[sel_g]} has been assigned to {asp_dict[sel_asp_for_g]}! Journey event logged."
+                                g_action_desc = "added as Co-Guide for" if g_mode == "add" else "assigned to"
+                                st.session_state["assign_guide_success"] = f"✅ Guide Assigned: {guide_dict[sel_g]} has been {g_action_desc} {asp_dict[sel_asp_for_g]}! Journey event logged."
                                 st.rerun()
                             else:
                                 st.error(err or "Assignment failed.")
@@ -1309,6 +1381,48 @@ def render_admin_portal(admin_profile: dict):
                             st.error(err or "Failed to add scheme.")
                     else:
                         st.warning("Scheme Name and Agency are required.")
+
+        # ── 1B. ADMIN-TO-GUIDE SCHEME DELEGATION & PRIORITY RECOMMENDATION ──
+        with st.expander("📨 Delegate / Recommend Scheme to Guide", expanded=False):
+            st.caption("Issue a priority directive recommending a catalogue scheme to a Dedicated Guide (and optionally link it to an Entrepreneur's mentorship thread).")
+            active_schemes_del = [s for s in all_schemes if s.get("is_active", True)]
+            del_guides = list_profiles_by_role("guide", requesting_actor_id=admin_id)
+            del_aspirants = list_profiles_by_role("aspirant", requesting_actor_id=admin_id)
+            if not active_schemes_del or not del_guides:
+                st.info("Active schemes and active Guides are required to delegate a recommendation.")
+            else:
+                sch_map = {s["id"]: f"{s.get('name', s['id'])} — {s.get('agency', '')}" for s in active_schemes_del}
+                g_del_map = {g["id"]: f"{g.get('full_name', 'Guide')} ({g.get('district', 'TN')})" for g in del_guides}
+                asp_del_map = {"NONE": "General Caseload Recommendation (All Eligible Mentees)"}
+                for a in del_aspirants:
+                    asp_del_map[a["id"]] = f"{a.get('full_name', 'Entrepreneur')} ({a.get('district', 'TN')})"
+
+                with st.form("form_delegate_scheme_guide"):
+                    c_del1, c_del2 = st.columns(2)
+                    with c_del1:
+                        del_sch_id = st.selectbox("Select Active Scheme *", list(sch_map.keys()), format_func=lambda k: sch_map[k], key="adm_del_sch")
+                        del_guide_id = st.selectbox("Target Guide *", list(g_del_map.keys()), format_func=lambda k: g_del_map[k], key="adm_del_g")
+                    with c_del2:
+                        del_asp_id = st.selectbox("Target Entrepreneur (Optional)", list(asp_del_map.keys()), format_func=lambda k: asp_del_map[k], key="adm_del_asp")
+                        del_prio = st.selectbox("Delegation Priority", ["HIGH", "URGENT", "MEDIUM"], index=0, key="adm_del_prio")
+                    del_note = st.text_area("Administrative Priority & Evaluation Note *", placeholder="e.g. Evaluate Udyam & DPR eligibility for this scheme prior to next review.", height=70, key="adm_del_note")
+                    if st.form_submit_button("SEND SCHEME RECOMMENDATION TO GUIDE", type="primary"):
+                        if not del_note.strip():
+                            st.warning("Please enter a recommendation note for the Guide.")
+                        else:
+                            ok_del, err_del = delegate_scheme_to_guide(
+                                admin_id=admin_id,
+                                scheme_id=del_sch_id,
+                                guide_id=del_guide_id,
+                                note=del_note.strip(),
+                                aspirant_id=None if del_asp_id == "NONE" else del_asp_id,
+                                priority=del_prio,
+                            )
+                            if ok_del:
+                                st.success(f"Scheme recommendation dispatched to {g_del_map[del_guide_id]}!")
+                                st.rerun()
+                            else:
+                                st.error(err_del or "Failed to delegate scheme.")
 
         st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
 

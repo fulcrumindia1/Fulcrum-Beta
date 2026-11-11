@@ -261,6 +261,55 @@ def declare_sme_conflict(
     if hasattr(db, "insert_sme_conflict"):
         db.insert_sme_conflict(record)
 
+    invalidate_memo("admin_dashboard_metrics")
+    return True, None
+
+
+def resolve_sme_conflict(
+    conflict_id: str,
+    admin_id: str,
+    decision: str = "APPROVED"
+) -> Tuple[bool, Optional[str]]:
+    """
+    Transitions a Conflict of Interest declaration after Administrative review.
+    Respects schema CHECK constraint ('DECLARED', 'APPROVED', 'REJECTED'):
+      - 'APPROVED': Recusal approved & SME unassigned; clears Open COI KPI while retaining recusal restriction.
+      - 'REJECTED': Conflict dismissed / recusal restriction cleared, allowing future SME assignment.
+    Requires verified Sole Admin authorization.
+    """
+    from services.roles import require_sole_admin
+    ok_admin, err_admin = require_sole_admin(actor_id=admin_id)
+    if not ok_admin:
+        return False, err_admin
+
+    if not conflict_id:
+        return False, "Conflict ID is required."
+
+    clean_decision = str(decision or "").strip().upper()
+    if clean_decision not in ("APPROVED", "REJECTED"):
+        return False, f"Invalid conflict decision '{decision}'. Expected 'APPROVED' or 'REJECTED'."
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    backend = get_data_backend()
+
+    if backend == "supabase":
+        admin = get_supabase_admin_client()
+        if not admin:
+            return False, "Supabase admin client unavailable."
+        try:
+            admin.table("sme_conflict_declarations").update({
+                "status": clean_decision,
+                "reviewed_by": admin_id,
+                "reviewed_at": now_iso,
+            }).eq("id", conflict_id).execute()
+        except Exception as e:
+            return False, f"Failed to update COI status in Supabase: {e}"
+    else:
+        db = get_local_db()
+        if hasattr(db, "update_sme_conflict"):
+            db.update_sme_conflict(conflict_id, clean_decision, reviewed_by=admin_id)
+
+    invalidate_memo("admin_dashboard_metrics")
     return True, None
 
 
@@ -268,7 +317,7 @@ def check_sme_has_conflict(sme_id: str, aspirant_id: str) -> bool:
     """Returns True if SME has an active (unresolved) conflict of interest declaration with an aspirant."""
     conflicts = list_sme_conflicts(sme_id=sme_id, aspirant_id=aspirant_id)
     for c in conflicts:
-        if c.get("has_conflict") is True and str(c.get("status") or "DECLARED").upper() not in ("RESOLVED", "DISMISSED", "CLEARED"):
+        if c.get("has_conflict") is True and str(c.get("status") or "DECLARED").upper() not in ("RESOLVED", "DISMISSED", "CLEARED", "REJECTED"):
             return True
     return False
 

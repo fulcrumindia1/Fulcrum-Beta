@@ -252,7 +252,7 @@ def get_aspirant_photo(
             import streamlit as st
             if hasattr(st, "session_state") and st.session_state.get("user_id"):
                 viewer_id = st.session_state.get("user_id")
-                viewer_role = viewer_role or st.session_state.get("role")
+                viewer_role = viewer_role or st.session_state.get("active_workspace") or st.session_state.get("role")
         except Exception:
             pass
 
